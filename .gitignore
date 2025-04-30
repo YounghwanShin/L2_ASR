@@ -1,2 +1,8 @@
 /Sample
 /preprocess
+/data
+/__pycache__
+data_split_code.py
+error_labeling.py
+textgrid_processing.py
+.env
