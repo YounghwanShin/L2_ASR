@@ -11,14 +11,6 @@ else
     exit 1
 fi
 
-if [ -f "download.sh" ]; then
-    echo "Running download.sh..."
-    bash download.sh
-else
-    echo "download.sh not found. Please make sure it exists in the current directory."
-    exit 1
-fi
-
 if [ -f "requirements.txt" ]; then
     echo "Installing dependencies from requirements.txt..."
     pip install -r requirements.txt
