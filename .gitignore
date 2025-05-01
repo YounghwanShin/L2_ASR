@@ -2,5 +2,7 @@
 /preprocess
 /data
 /__pycache__
-/src/data
 .env
+data_split_code.py
+error_labeling.py
+textgrid_processing.py

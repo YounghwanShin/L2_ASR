@@ -320,10 +320,11 @@ class FeatureFusion(nn.Module):
         return fused_features
 
 class ErrorAwarePhonemeDecoder(nn.Module):
-    def __init__(self, error_influence_weight=0.2, blank_index=0):
+    def __init__(self, error_influence_weight=0.2, blank_index=0, sil_index=1):
         super(ErrorAwarePhonemeDecoder, self).__init__()
         self.error_weight = error_influence_weight
-        self.blank_index = blank_index
+        self.blank_index = blank_index  # CTC 디코딩용 blank 인덱스 
+        self.sil_index = sil_index      # sil 토큰 인덱스
         
     def forward(self, phoneme_logits, error_probs):
         """
@@ -347,13 +348,13 @@ class ErrorAwarePhonemeDecoder(nn.Module):
         
         # 오류 영향 적용
         
-        # Deletion 오류: 원래 있어야 할 음소가 발음되지 않은 경우 - blank 토큰의 확률 증가
+        # Deletion 오류: 원래 있어야 할 음소가 발음되지 않은 경우 - sil 토큰의 확률 증가
         deletion_effect = phoneme_probs.clone()
-        blank_mask = torch.zeros_like(phoneme_probs)
-        blank_mask[:, :, self.blank_index] = 1.0
-        deletion_effect = deletion_effect * (1.0 - 0.6 * (1.0 - blank_mask)) + 0.6 * blank_mask
+        sil_mask = torch.zeros_like(phoneme_probs)
+        sil_mask[:, :, self.sil_index] = 1.0  # sil 토큰(ID=1)의 확률 증가
+        deletion_effect = deletion_effect * (1.0 - 0.6 * (1.0 - sil_mask)) + 0.6 * sil_mask
         deletion_effect = deletion_effect / deletion_effect.sum(dim=-1, keepdim=True)
-        
+
         # Substitution 오류: 다른 음소로 대체된 경우 - 상위 3개 음소 확률을 더 균등하게 분배
         top3_values, top3_indices = torch.topk(phoneme_probs, k=min(3, num_phonemes), dim=-1)
         boost_mask = torch.zeros_like(phoneme_probs).scatter_(-1, top3_indices, 1.0)
@@ -393,7 +394,8 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
                 unfreeze_top_percent=0.5,
                 error_influence_weight=0.2,
                 training_stage=1,
-                blank_index=0):
+                blank_index=0,
+                sil_index=1):
         super(DualWav2VecWithErrorAwarePhonemeRecognition, self).__init__()
         
         # 첫 번째 wav2vec2: 모든 파라미터 고정 + Bottleneck Adapter
@@ -440,7 +442,8 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
         # 오류 인식 결합 디코더
         self.error_aware_decoder = ErrorAwarePhonemeDecoder(
             error_influence_weight=error_influence_weight,
-            blank_index=blank_index
+            blank_index=blank_index,
+            sil_index=sil_index  # sil_index 추가
         )
         
     def set_training_stage(self, stage):
