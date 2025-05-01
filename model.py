@@ -353,7 +353,7 @@ class ErrorAwarePhonemeDecoder(nn.Module):
         sil_mask = torch.zeros_like(phoneme_probs)
         sil_mask[:, :, self.sil_index] = 1.0  # sil 토큰(ID=1)의 확률 증가
         deletion_effect = deletion_effect * (1.0 - 0.6 * (1.0 - sil_mask)) + 0.6 * sil_mask
-        deletion_effect = deletion_effect / deletion_effect.sum(dim=-1, keepdim=True)
+        deletion_effect = deletion_effect / (deletion_effect.sum(dim=-1, keepdim=True) + 1e-8)
 
         # Substitution 오류: 다른 음소로 대체된 경우 - 상위 3개 음소 확률을 더 균등하게 분배
         top3_values, top3_indices = torch.topk(phoneme_probs, k=min(3, num_phonemes), dim=-1)

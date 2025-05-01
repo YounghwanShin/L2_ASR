@@ -317,7 +317,7 @@ def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, e
         
         # 어텐션 마스크 생성
         attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-        attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
+        attention_mask = (attention_mask < audio_lengths.unsqueeze(1).to(device)).float()
         
         # 순전파
         phoneme_logits, adjusted_probs = model(waveforms, attention_mask)
