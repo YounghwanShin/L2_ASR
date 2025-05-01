@@ -49,7 +49,7 @@ class ErrorLabelDataset(Dataset):
         self.max_length = max_length
         
         # 오류 유형 매핑: C (정확함), D (삭제), A (추가/삽입), S (대체)
-        self.error_type_mapping = {'C': 3, 'D': 0, 'A': 2, 'S': 1}
+        self.error_type_mapping = {'C': 4, 'D': 1, 'A': 3, 'S': 2}
         
     def __len__(self):
         return len(self.wav_files)
@@ -78,8 +78,11 @@ class ErrorLabelDataset(Dataset):
         error_labels = item.get('error_labels', '')
         error_labels = [self.error_type_mapping[label] for label in error_labels.split()]
         error_labels = torch.tensor(error_labels, dtype=torch.long)
+
+        # 레이블 길이 정보 추가 반환
+        label_length = torch.tensor(len(error_labels), dtype=torch.long)
         
-        return waveform.squeeze(0), error_labels, wav_file
+        return waveform.squeeze(0), error_labels, label_length, wav_file
 
 # 2단계 학습을 위한 음소 인식 데이터셋
 class PhonemeRecognitionDataset(Dataset):
@@ -130,8 +133,8 @@ class PhonemeRecognitionDataset(Dataset):
         return waveform.squeeze(0), phoneme_labels, label_length, wav_file
 
 # 오류 탐지를 위한 배치 콜레이션 함수
-def error_collate_fn(batch):
-    waveforms, error_labels, wav_files = zip(*batch)
+def error_ctc_collate_fn(batch):
+    waveforms, error_labels, label_lengths, wav_files = zip(*batch)
     
     # 가변 길이 오디오를 위한 패딩
     max_audio_len = max([waveform.shape[0] for waveform in waveforms])
@@ -143,24 +146,25 @@ def error_collate_fn(batch):
         padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
         padded_waveforms.append(padded_waveform)
     
-    # 오디오 마스크 생성
+    # 오디오 길이 저장
     audio_lengths = torch.tensor([waveform.shape[0] for waveform in waveforms])
     
-    # 오류 레이블 패딩
-    max_error_len = max([labels.shape[0] for labels in error_labels])
+    # CTC 손실을 위한 레이블 준비
+    max_label_len = max([labels.shape[0] for labels in error_labels])
     padded_error_labels = []
     
     for labels in error_labels:
         label_len = labels.shape[0]
-        padding = max_error_len - label_len
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=-100)  # -100은 손실 계산에서 무시됨
+        padding = max_label_len - label_len
+        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)  # CTC blank 인덱스 (0)
         padded_error_labels.append(padded_labels)
     
     # 텐서로 변환
     padded_waveforms = torch.stack(padded_waveforms)
     padded_error_labels = torch.stack(padded_error_labels)
+    label_lengths = torch.tensor(label_lengths)
     
-    return padded_waveforms, padded_error_labels, audio_lengths, wav_files
+    return padded_waveforms, padded_error_labels, audio_lengths, label_lengths, wav_files
 
 # 음소 인식을 위한 배치 콜레이션 함수
 def phoneme_collate_fn(batch):
@@ -197,35 +201,34 @@ def phoneme_collate_fn(batch):
     return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
 
 # 오류 탐지 학습 함수
-def train_error_detection(model, dataloader, criterion, optimizer, device, epoch):
+def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, epoch):
     model.train()
     running_loss = 0.0
-    total_correct = 0
-    total_samples = 0
     
     progress_bar = tqdm(dataloader, desc=f'에폭 {epoch} [오류 탐지]')
     
-    for batch_idx, (waveforms, error_labels, audio_lengths, _) in enumerate(progress_bar):
+    for batch_idx, (waveforms, error_labels, audio_lengths, label_lengths, _) in enumerate(progress_bar):
         waveforms = waveforms.to(device)
         error_labels = error_labels.to(device)
+        audio_lengths = audio_lengths.to(device)
+        label_lengths = label_lengths.to(device)
         
         # wav2vec용 어텐션 마스크 생성
         attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
         attention_mask = (attention_mask < audio_lengths.unsqueeze(1).to(device)).float()
         
         # 순전파
-        phoneme_logits, adjusted_probs, error_probs = model(waveforms, attention_mask, return_error_probs=True)
+        phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
         
-        # 손실 계산
-        error_probs_reshaped = error_probs.view(-1, 4)  # (batch_size * seq_len, 4)
-        error_labels_reshaped = error_labels.view(-1)   # (batch_size * seq_len)
+        # CTC 손실 계산을 위해 log_softmax 적용
+        log_probs = torch.log_softmax(error_logits, dim=-1)
         
-        # -100 값 무시 (패딩)
-        mask = error_labels_reshaped != -100
-        error_probs_masked = error_probs_reshaped[mask]
-        error_labels_masked = error_labels_reshaped[mask]
+        # 모델 출력 시퀀스 길이 계산
+        input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
+                                 dtype=torch.long).to(device)
         
-        loss = criterion(error_probs_masked, error_labels_masked)
+        # CTC 손실 계산
+        loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
         
         # 역전파
         optimizer.zero_grad()
@@ -235,21 +238,13 @@ def train_error_detection(model, dataloader, criterion, optimizer, device, epoch
         # 통계 업데이트
         running_loss += loss.item()
         
-        # 정확도 계산
-        _, predicted = torch.max(error_probs_masked, 1)
-        total_correct += (predicted == error_labels_masked).sum().item()
-        total_samples += error_labels_masked.size(0)
-        
         # 진행 상황 표시줄 업데이트
         progress_bar.set_postfix({
-            '손실': running_loss / (batch_idx + 1),
-            '정확도': 100. * total_correct / total_samples if total_samples > 0 else 0
+            '손실': running_loss / (batch_idx + 1)
         })
     
     epoch_loss = running_loss / len(dataloader)
-    epoch_acc = 100. * total_correct / total_samples if total_samples > 0 else 0
-    
-    return epoch_loss, epoch_acc
+    return epoch_loss
 
 # 오류 탐지 검증 함수
 def validate_error_detection(model, dataloader, criterion, device):
@@ -347,6 +342,47 @@ def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, e
     epoch_loss = running_loss / len(dataloader)
     
     return epoch_loss
+
+def validate_error_detection_ctc(model, dataloader, criterion, device):
+    model.eval()
+    running_loss = 0.0
+    
+    with torch.no_grad():
+        progress_bar = tqdm(dataloader, desc='검증 [오류 탐지]')
+        
+        for batch_idx, (waveforms, error_labels, audio_lengths, label_lengths, _) in enumerate(progress_bar):
+            waveforms = waveforms.to(device)
+            error_labels = error_labels.to(device)
+            audio_lengths = audio_lengths.to(device)
+            label_lengths = label_lengths.to(device)
+            
+            # 어텐션 마스크 생성
+            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
+            attention_mask = (attention_mask < audio_lengths.unsqueeze(1).to(device)).float()
+            
+            # 순전파
+            phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
+            
+            # CTC 손실 계산을 위해 log_softmax 적용
+            log_probs = torch.log_softmax(error_logits, dim=-1)
+            
+            # 모델 출력 시퀀스 길이 계산
+            input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
+                                      dtype=torch.long).to(device)
+            
+            # CTC 손실 계산
+            loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
+            
+            # 통계 업데이트
+            running_loss += loss.item()
+            
+            # 진행 상황 표시줄 업데이트
+            progress_bar.set_postfix({
+                '검증_손실': running_loss / (batch_idx + 1)
+            })
+    
+    val_loss = running_loss / len(dataloader)
+    return val_loss
 
 # 음소 인식 검증 함수
 def validate_phoneme_recognition(model, dataloader, criterion, device):
@@ -495,58 +531,56 @@ def main():
         train_dataset = ErrorLabelDataset(args.error_train_data, max_length=args.max_audio_length)
         val_dataset = ErrorLabelDataset(args.error_val_data, max_length=args.max_audio_length)
         
+        # 기존 collate_fn 대신 CTC용 collate_fn 사용
         train_dataloader = DataLoader(
             train_dataset, 
             batch_size=args.batch_size, 
             shuffle=True, 
-            collate_fn=error_collate_fn
+            collate_fn=error_ctc_collate_fn  # CTC용 콜레이트 함수
         )
         
         val_dataloader = DataLoader(
             val_dataset, 
             batch_size=args.batch_size, 
             shuffle=False, 
-            collate_fn=error_collate_fn
+            collate_fn=error_ctc_collate_fn  # CTC용 콜레이트 함수
         )
         
-        # 손실 함수와 옵티마이저 설정
-        criterion = FocalLoss(alpha=0.25, gamma=2.0)
+        # FocalLoss 대신 CTCLoss 사용
+        criterion = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
         optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
         
         # 학습 루프
-        best_val_acc = 0.0
+        best_val_loss = float('inf')  # 정확도 대신 손실로 최고 모델 판단
         
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"에폭 {epoch}/{args.num_epochs} 시작")
             
-            # 학습
-            train_loss, train_acc = train_error_detection(
+            # CTC 학습 함수 사용
+            train_loss = train_error_detection_ctc(
                 model, train_dataloader, criterion, optimizer, args.device, epoch
             )
             
-            # 검증
-            val_loss, val_acc = validate_error_detection(
+            # CTC 검증 함수 사용
+            val_loss = validate_error_detection_ctc(
                 model, val_dataloader, criterion, args.device
             )
             
-            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 학습 정확도: {train_acc:.2f}%, "
-                       f"검증 손실: {val_loss:.4f}, 검증 정확도: {val_acc:.2f}%")
+            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}")
             
-            # 결과 저장
+            # 결과 저장 - 정확도 없이 손실만 저장
             with open(os.path.join(args.result_dir, f'error_detection_epoch{epoch}.json'), 'w') as f:
                 json.dump({
                     'epoch': epoch,
                     'train_loss': train_loss,
-                    'train_acc': train_acc,
-                    'val_loss': val_loss,
-                    'val_acc': val_acc
+                    'val_loss': val_loss
                 }, f, indent=4)
             
-            # 최고 모델 저장
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            # 최고 모델 저장 - 정확도 대신 손실 기준
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
                 torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_error_detection.pth'))
-                logger.info(f"검증 정확도 {val_acc:.2f}%로 새로운 최고 모델 저장")
+                logger.info(f"검증 손실 {val_loss:.4f}로 새로운 최고 모델 저장")
             
             # 마지막 모델 저장
             torch.save(model.state_dict(), os.path.join(args.output_dir, f'last_error_detection.pth'))

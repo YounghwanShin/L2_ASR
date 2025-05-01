@@ -187,17 +187,13 @@ class ErrorDetectionHead(nn.Module):
         self.td_linear2 = TimeDistributed(nn.Linear(hidden_dim, num_error_types))
         
     def forward(self, x):
-        # x: [batch_size, time_steps, input_dim]
         x = self.td_linear1(x)
         x = self.td_bn(x)
         x = F.relu(x)
         x = self.td_dropout(x)
-        x = self.td_linear2(x)
         
-        # 오류 유형 확률로 변환 (순서: deletion, substitution, add, correct)
-        error_probs = F.softmax(x, dim=-1)
-        
-        return error_probs
+        # 오류 유형 logits 출력
+        return self.td_linear2(x)
 
 class PhonemeRecognitionHead(nn.Module):
     def __init__(self, input_dim, hidden_dim=256, num_phonemes=42, dropout_rate=0.1):
