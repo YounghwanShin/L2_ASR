@@ -347,13 +347,13 @@ class ErrorAwarePhonemeDecoder(nn.Module):
         
         # 오류 영향 적용
         
-        # Deletion 오류: 원래 있어야 할 음소가 발음되지 않은 경우 - blank 토큰의 확률 증가
+        # Deletion 오류: 원래 있어야 할 음소가 발음되지 않은 경우 - sil 토큰의 확률 증가
         deletion_effect = phoneme_probs.clone()
         blank_mask = torch.zeros_like(phoneme_probs)
         blank_mask[:, :, self.blank_index] = 1.0
         deletion_effect = deletion_effect * (1.0 - 0.6 * (1.0 - blank_mask)) + 0.6 * blank_mask
         deletion_effect = deletion_effect / deletion_effect.sum(dim=-1, keepdim=True)
-        
+
         # Substitution 오류: 다른 음소로 대체된 경우 - 상위 3개 음소 확률을 더 균등하게 분배
         top3_values, top3_indices = torch.topk(phoneme_probs, k=min(3, num_phonemes), dim=-1)
         boost_mask = torch.zeros_like(phoneme_probs).scatter_(-1, top3_indices, 1.0)
