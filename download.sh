@@ -1,6 +1,6 @@
 #!/bin/bash
 
-FOLDER_ID="your_google_drive_folder_id"
+FOLDER_ID="1fV1QU16-XvhP7RUP0sZzCk5T4Q1c0Atx"
 DEST_DIR="/dataset"
 
 mkdir -p "$DEST_DIR"

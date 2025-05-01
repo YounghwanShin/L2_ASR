@@ -1,2 +1,6 @@
 /Sample
 /preprocess
+/data
+/__pycache__
+/src/data
+.env

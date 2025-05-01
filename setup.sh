@@ -2,16 +2,12 @@
 
 set -e
 
-if command -v conda &> /dev/null; then
-    echo "Conda detected. Setting up a Conda environment..."
-    conda create --prefix ./env python=3.12
-    source activate env
-elif command -v python3 &> /dev/null; then
-    echo "Conda not found. Using venv to set up a virtual environment..."
-    python3 -m venv venv
-    source venv/bin/activate
+if command -v python3 &> /dev/null; then
+    echo "Set up a virtual environment..."
+    python3 -m venv .env
+    source .env/bin/activate
 else
-    echo "Neither Conda nor Python3 is installed. Please install one of them first."
+    echo "Python3 is not installed. Please install it first."
     exit 1
 fi
 
