@@ -357,16 +357,20 @@ class ErrorAwarePhonemeDecoder(nn.Module):
         sub_effect = phoneme_probs.clone()
         sub_effect = sub_effect * (1 - 0.3 * boost_mask) + 0.3 * boost_mask * torch.mean(top3_values, dim=-1, keepdim=True)
         
-        # Add 오류: 원래 없어야 할 음소가 추가된 경우 - 전체 분포 평탄화
+        # Add (insertion) 오류: 원래 없어야 할 음소가 추가된 경우 - 전체 분포 평탄화
         flat_dist = torch.ones_like(phoneme_probs) / num_phonemes
         add_effect = 0.7 * phoneme_probs + 0.3 * flat_dist
         
-        # Correct 오류: 정확하게 발음된 경우 - 최대 확률 음소의 확률을 증가
+        # Correct: 정확하게 발음된 경우 - 최대 확률 음소의 확률을 증가
         correct_effect = phoneme_probs.clone()
         boost_mask = torch.zeros_like(phoneme_probs).scatter_(-1, max_indices, 1.0)
         correct_effect = correct_effect * (1.0 + 0.3 * boost_mask)
         correct_effect = correct_effect / correct_effect.sum(dim=-1, keepdim=True)
-        
+        # 오류를 왜 이용하는지 합당한 이유 -> reference 필요, 근거 필요
+
+
+
+
         # 모든 오류 효과를 오류 확률에 따라 가중 합산
         adjusted_probs = (
             deletion_probs * deletion_effect +
