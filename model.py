@@ -187,17 +187,13 @@ class ErrorDetectionHead(nn.Module):
         self.td_linear2 = TimeDistributed(nn.Linear(hidden_dim, num_error_types))
         
     def forward(self, x):
-        # x: [batch_size, time_steps, input_dim]
         x = self.td_linear1(x)
         x = self.td_bn(x)
         x = F.relu(x)
         x = self.td_dropout(x)
-        x = self.td_linear2(x)
         
-        # 오류 유형 확률로 변환 (순서: deletion, substitution, add, correct)
-        error_probs = F.softmax(x, dim=-1)
-        
-        return error_probs
+        # 오류 유형 logits 출력
+        return self.td_linear2(x)
 
 class PhonemeRecognitionHead(nn.Module):
     def __init__(self, input_dim, hidden_dim=256, num_phonemes=42, dropout_rate=0.1):
@@ -361,16 +357,20 @@ class ErrorAwarePhonemeDecoder(nn.Module):
         sub_effect = phoneme_probs.clone()
         sub_effect = sub_effect * (1 - 0.3 * boost_mask) + 0.3 * boost_mask * torch.mean(top3_values, dim=-1, keepdim=True)
         
-        # Add 오류: 원래 없어야 할 음소가 추가된 경우 - 전체 분포 평탄화
+        # Add (insertion) 오류: 원래 없어야 할 음소가 추가된 경우 - 전체 분포 평탄화
         flat_dist = torch.ones_like(phoneme_probs) / num_phonemes
         add_effect = 0.7 * phoneme_probs + 0.3 * flat_dist
         
-        # Correct 오류: 정확하게 발음된 경우 - 최대 확률 음소의 확률을 증가
+        # Correct: 정확하게 발음된 경우 - 최대 확률 음소의 확률을 증가
         correct_effect = phoneme_probs.clone()
         boost_mask = torch.zeros_like(phoneme_probs).scatter_(-1, max_indices, 1.0)
         correct_effect = correct_effect * (1.0 + 0.3 * boost_mask)
         correct_effect = correct_effect / correct_effect.sum(dim=-1, keepdim=True)
-        
+        # 오류를 왜 이용하는지 합당한 이유 -> reference 필요, 근거 필요
+
+
+
+
         # 모든 오류 효과를 오류 확률에 따라 가중 합산
         adjusted_probs = (
             deletion_probs * deletion_effect +
