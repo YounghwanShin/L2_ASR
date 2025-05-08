@@ -17,7 +17,8 @@ from torch.nn import CTCLoss
 
 from model import DualWav2VecWithErrorAwarePhonemeRecognition, LearnableWav2Vec
 
-# 오류 탐지를 위한 Focal Loss 구현
+torch.autograd.set_detect_anomaly(True)
+
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
         super(FocalLoss, self).__init__()
@@ -38,7 +39,6 @@ class FocalLoss(nn.Module):
         else:
             return loss
 
-# 1단계 학습을 위한 오류 레이블 데이터셋
 class ErrorLabelDataset(Dataset):
     def __init__(self, json_path, max_length=None, sampling_rate=16000):
         with open(json_path, 'r', encoding='utf-8') as f:
@@ -58,7 +58,6 @@ class ErrorLabelDataset(Dataset):
         wav_file = self.wav_files[idx]
         item = self.data[wav_file]
         
-        # 오디오 로드
         waveform, sample_rate = torchaudio.load(wav_file)
         
         # 필요시 모노로 변환
@@ -79,12 +78,10 @@ class ErrorLabelDataset(Dataset):
         error_labels = [self.error_type_mapping[label] for label in error_labels.split()]
         error_labels = torch.tensor(error_labels, dtype=torch.long)
 
-        # 레이블 길이 정보 추가 반환
         label_length = torch.tensor(len(error_labels), dtype=torch.long)
         
         return waveform.squeeze(0), error_labels, label_length, wav_file
 
-# 2단계 학습을 위한 음소 인식 데이터셋
 class PhonemeRecognitionDataset(Dataset):
     def __init__(self, json_path, phoneme_to_id, max_length=None, sampling_rate=16000):
         with open(json_path, 'r', encoding='utf-8') as f:
@@ -102,7 +99,6 @@ class PhonemeRecognitionDataset(Dataset):
         wav_file = self.wav_files[idx]
         item = self.data[wav_file]
         
-        # 오디오 로드
         waveform, sample_rate = torchaudio.load(wav_file)
         
         # 필요시 모노로 변환
@@ -146,7 +142,6 @@ def error_ctc_collate_fn(batch):
         padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
         padded_waveforms.append(padded_waveform)
     
-    # 오디오 길이 저장
     audio_lengths = torch.tensor([waveform.shape[0] for waveform in waveforms])
     
     # CTC 손실을 위한 레이블 준비
@@ -159,7 +154,6 @@ def error_ctc_collate_fn(batch):
         padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)  # CTC blank 인덱스 (0)
         padded_error_labels.append(padded_labels)
     
-    # 텐서로 변환
     padded_waveforms = torch.stack(padded_waveforms)
     padded_error_labels = torch.stack(padded_error_labels)
     label_lengths = torch.tensor(label_lengths)
@@ -193,14 +187,12 @@ def phoneme_collate_fn(batch):
         padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)  # 0은 blank 인덱스
         padded_phoneme_labels.append(padded_labels)
     
-    # 텐서로 변환
     padded_waveforms = torch.stack(padded_waveforms)
     padded_phoneme_labels = torch.stack(padded_phoneme_labels)
     label_lengths = torch.tensor(label_lengths)
     
     return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
 
-# 오류 탐지 학습 함수
 def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=1.0):
     model.train()
     running_loss = 0.0
@@ -230,19 +222,15 @@ def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, e
         # CTC 손실 계산
         loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
         
-        # 역전파
         optimizer.zero_grad()
         loss.backward()
         
-        # 그라디언트 클리핑 추가 - NaN 방지
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         
         optimizer.step()
         
-        # 통계 업데이트
         running_loss += loss.item()
         
-        # 진행 상황 표시줄 업데이트
         progress_bar.set_postfix({
             '손실': running_loss / (batch_idx + 1)
         })
@@ -250,7 +238,6 @@ def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, e
     epoch_loss = running_loss / len(dataloader)
     return epoch_loss
 
-# 오류 탐지 검증 함수
 def validate_error_detection_ctc(model, dataloader, criterion, device):
     model.eval()
     running_loss = 0.0
@@ -513,7 +500,7 @@ def main():
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"에폭 {epoch}/{args.num_epochs} 시작")
             
-            # CTC 학습 함수 사용 (그라디언트 클리핑 추가)
+            # CTC 학습 함수 사용
             train_loss = train_error_detection_ctc(
                 model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=1.0
             )

@@ -174,7 +174,7 @@ class TimeDistributed(nn.Module):
         return y
 
 class ErrorDetectionHead(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256, num_error_types=4, dropout_rate=0.3):
+    def __init__(self, input_dim, hidden_dim=256, num_error_types=5, dropout_rate=0.3):
         super(ErrorDetectionHead, self).__init__()
         
         self.td_linear1 = TimeDistributed(nn.Linear(input_dim, hidden_dim))
@@ -369,7 +369,7 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
                 pretrained_model_name="facebook/wav2vec2-base-960h",
                 hidden_dim=768,
                 num_phonemes=42,  # ARPABET 음소 + sil + blank
-                num_error_types=4,  # deletion, substitution, add, correct
+                num_error_types=5,  # deletion, substitution, add, correct
                 adapter_dim_ratio=1/4,
                 unfreeze_top_percent=0.5,
                 error_influence_weight=0.2,
