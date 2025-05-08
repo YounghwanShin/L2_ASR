@@ -8,9 +8,7 @@ class BottleneckAdapter(nn.Module):
         super(BottleneckAdapter, self).__init__()
         self.layer_norm = layer_norm
         
-        # 레이어 정규화 (선택적)
-        if layer_norm:
-            self.norm = nn.LayerNorm(dim)
+        self.norm = nn.LayerNorm(dim)
             
         # 다운-업 프로젝션 레이어
         self.down_proj = nn.Linear(dim, bottleneck_dim)
@@ -28,9 +26,7 @@ class BottleneckAdapter(nn.Module):
         # x: (batch_size, seq_len, dim)
         residual = x
         
-        # 선택적 레이어 정규화
-        if self.layer_norm:
-            x = self.norm(x)
+        x = self.norm(x)
             
         # Bottleneck 변환
         x = self.down_proj(x)
@@ -178,7 +174,7 @@ class TimeDistributed(nn.Module):
         return y
 
 class ErrorDetectionHead(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256, num_error_types=4, dropout_rate=0.3):
+    def __init__(self, input_dim, hidden_dim=256, num_error_types=5, dropout_rate=0.3):
         super(ErrorDetectionHead, self).__init__()
         
         self.td_linear1 = TimeDistributed(nn.Linear(input_dim, hidden_dim))
@@ -221,8 +217,15 @@ class FrozenWav2VecWithAdapter(nn.Module):
                  dropout_rate=0.1, layer_norm=True):
         super(FrozenWav2VecWithAdapter, self).__init__()
         
-        # wav2vec2 모델 로드
-        self.wav2vec2 = Wav2Vec2Model.from_pretrained(pretrained_model_name)
+        # wav2vec2 모델 로드        
+        config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
+        config.mask_time_prob = 0.0
+        config.mask_feature_prob = 0.0
+        
+        self.wav2vec2 = Wav2Vec2Model.from_pretrained(
+            pretrained_model_name,
+            config=config
+        )
         
         # 모든 파라미터 고정
         for param in self.wav2vec2.parameters():
@@ -246,52 +249,30 @@ class FrozenWav2VecWithAdapter(nn.Module):
         with torch.no_grad():
             outputs = self.wav2vec2(x, attention_mask=attention_mask)
             hidden_states = outputs.last_hidden_state
-        
         # Bottleneck Adapter 적용
         adapted_features = self.adapter(hidden_states)
-        
+
         return adapted_features
 
-class PartiallyLearnableWav2Vec(nn.Module):
+class LearnableWav2Vec(nn.Module):
     def __init__(self, pretrained_model_name="facebook/wav2vec2-base-960h", unfreeze_top_percent=0.5, stage=1):
-        super(PartiallyLearnableWav2Vec, self).__init__()
+        super(LearnableWav2Vec, self).__init__()
+       
+        # wav2vec2 모델 로드 (마스킹 비활성화)
+        config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
+        config.mask_time_prob = 0.0
+        config.mask_feature_prob = 0.0
         
-        # wav2vec2 모델 로드
-        self.wav2vec2 = Wav2Vec2Model.from_pretrained(pretrained_model_name)
+        self.wav2vec2 = Wav2Vec2Model.from_pretrained(pretrained_model_name, config=config)
         
-        # 학습 단계 설정 (1: 상위 50% 레이어만 학습, 2: 모든 레이어 학습)
-        self.set_training_stage(stage, unfreeze_top_percent)
-        
-    def set_training_stage(self, stage, unfreeze_top_percent):
-        # 기본적으로 모든 파라미터 고정
         for param in self.wav2vec2.parameters():
-            param.requires_grad = False
-            
-        if stage == 1:
-            # 상위 N% 레이어만 학습 가능하도록 설정
-            encoder_layers = list(self.wav2vec2.encoder.layers)
-            total_layers = len(encoder_layers)
-            layers_to_unfreeze = int(total_layers * unfreeze_top_percent)
-            
-            # 상위 레이어 학습 가능하도록 설정
-            for i in range(total_layers - layers_to_unfreeze, total_layers):
-                for param in encoder_layers[i].parameters():
-                    param.requires_grad = True
-                    
-            # 출력 레이어도 학습 가능하도록 설정
-            for param in self.wav2vec2.encoder.layer_norm.parameters():
-                param.requires_grad = True
-                
-        elif stage == 2:
-            # 모든 레이어 학습 가능하도록 설정
-            for param in self.wav2vec2.parameters():
-                param.requires_grad = True
+            param.requires_grad = True
                 
     def forward(self, x, attention_mask=None):
         # wav2vec2 모델 적용 (특성 추출)
         outputs = self.wav2vec2(x, attention_mask=attention_mask)
         hidden_states = outputs.last_hidden_state
-        
+
         return hidden_states
 
 class FeatureFusion(nn.Module):
@@ -312,7 +293,6 @@ class FeatureFusion(nn.Module):
         # 선택적 선형 투영
         if self.use_projection:
             fused_features = self.projection(fused_features)
-            
         return fused_features
 
 class ErrorAwarePhonemeDecoder(nn.Module):
@@ -356,21 +336,21 @@ class ErrorAwarePhonemeDecoder(nn.Module):
         boost_mask = torch.zeros_like(phoneme_probs).scatter_(-1, top3_indices, 1.0)
         sub_effect = phoneme_probs.clone()
         sub_effect = sub_effect * (1 - 0.3 * boost_mask) + 0.3 * boost_mask * torch.mean(top3_values, dim=-1, keepdim=True)
+        # 합계가 1이 되도록 정규화
+        sub_effect = sub_effect / (sub_effect.sum(dim=-1, keepdim=True) + 1e-8)
         
         # Add (insertion) 오류: 원래 없어야 할 음소가 추가된 경우 - 전체 분포 평탄화
-        flat_dist = torch.ones_like(phoneme_probs) / num_phonemes
+        flat_dist = torch.ones_like(phoneme_probs) / (num_phonemes + 1e-8)
         add_effect = 0.7 * phoneme_probs + 0.3 * flat_dist
+        # 합계가 1이 되도록 정규화
+        add_effect = add_effect / (add_effect.sum(dim=-1, keepdim=True) + 1e-8)
         
         # Correct: 정확하게 발음된 경우 - 최대 확률 음소의 확률을 증가
         correct_effect = phoneme_probs.clone()
         boost_mask = torch.zeros_like(phoneme_probs).scatter_(-1, max_indices, 1.0)
         correct_effect = correct_effect * (1.0 + 0.3 * boost_mask)
-        correct_effect = correct_effect / correct_effect.sum(dim=-1, keepdim=True)
-        # 오류를 왜 이용하는지 합당한 이유 -> reference 필요, 근거 필요
-
-
-
-
+        correct_effect = correct_effect / (correct_effect.sum(dim=-1, keepdim=True) + 1e-8)
+        
         # 모든 오류 효과를 오류 확률에 따라 가중 합산
         adjusted_probs = (
             deletion_probs * deletion_effect +
@@ -389,7 +369,7 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
                 pretrained_model_name="facebook/wav2vec2-base-960h",
                 hidden_dim=768,
                 num_phonemes=42,  # ARPABET 음소 + sil + blank
-                num_error_types=4,  # deletion, substitution, add, correct
+                num_error_types=5,  # deletion, substitution, add, correct
                 adapter_dim_ratio=1/4,
                 unfreeze_top_percent=0.5,
                 error_influence_weight=0.2,
@@ -406,12 +386,10 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
             layer_norm=True
         )
         
-        # 두 번째 wav2vec2: 단계별 선택적 unfreezing
-        self.learnable_wav2vec = PartiallyLearnableWav2Vec(
-            pretrained_model_name=pretrained_model_name,
-            unfreeze_top_percent=unfreeze_top_percent,
-            stage=training_stage
-        )
+        # 두 번째 wav2vec2
+        self.learnable_wav2vec = LearnableWav2Vec(
+            pretrained_model_name=pretrained_model_name
+            )
         
         # 특징 융합 (단순 연결 + 선형 투영)
         config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
@@ -446,10 +424,6 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
             sil_index=sil_index  # sil_index 추가
         )
         
-    def set_training_stage(self, stage):
-        """학습 단계 변경 (1: 상위 50% 레이어만 학습, 2: 모든 레이어 학습)"""
-        self.learnable_wav2vec.set_training_stage(stage, 0.5)
-        
     def forward(self, x, attention_mask=None, return_error_probs=False):
         """
         Args:
@@ -460,7 +434,7 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
         # 첫 번째 wav2vec2 (고정 + Adapter)
         features1 = self.frozen_wav2vec(x, attention_mask)
         
-        # 두 번째 wav2vec2 (부분 학습)
+        # 두 번째 wav2vec2
         features2 = self.learnable_wav2vec(x, attention_mask)
         
         # 특징 융합
