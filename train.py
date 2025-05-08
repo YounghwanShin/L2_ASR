@@ -16,6 +16,7 @@ import torchaudio
 from torch.nn import CTCLoss
 
 from model import DualWav2VecWithErrorAwarePhonemeRecognition, LearnableWav2Vec
+import editdistance
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -89,6 +90,7 @@ class PhonemeRecognitionDataset(Dataset):
         
         self.wav_files = list(self.data.keys())
         self.phoneme_to_id = phoneme_to_id
+        self.id_to_phoneme = {v: k for k, v in phoneme_to_id.items()}
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         
@@ -193,6 +195,70 @@ def phoneme_collate_fn(batch):
     
     return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
 
+def ctc_decode(logits, lengths, blank_index=0):
+    """CTC 디코딩"""
+    batch_size, max_len, vocab_size = logits.shape
+    predictions = []
+    
+    for i in range(batch_size):
+        # 로그 확률 계산
+        log_probs = torch.log_softmax(logits[i], dim=-1).cpu().numpy()
+        seq_len = lengths[i].item()
+        
+        # Greedy 디코딩
+        best_path = np.argmax(log_probs[:seq_len], axis=-1)
+        
+        # CTC collapse
+        decoded = []
+        prev_label = None
+        for label in best_path:
+            if label != blank_index and label != prev_label:
+                decoded.append(label)
+            prev_label = label
+        
+        predictions.append(decoded)
+    
+    return predictions
+
+def calculate_error_rate(predictions, targets):
+    """오류율 계산"""
+    total_errors = 0
+    total_tokens = 0
+    
+    for pred, target in zip(predictions, targets):
+        # Edit distance 계산
+        errors = editdistance.eval(pred, target)
+        total_errors += errors
+        total_tokens += len(target)
+    
+    error_rate = total_errors / max(total_tokens, 1) * 100
+    return error_rate
+
+def calculate_per(predictions, targets, id_to_phoneme, remove_sil=True):
+    """PER (Phoneme Error Rate) 계산"""
+    total_phonemes = 0
+    total_errors = 0
+    
+    for pred, target in zip(predictions, targets):
+        # ID를 음소로 변환
+        pred_phonemes = [id_to_phoneme.get(p, '<UNK>') for p in pred]
+        target_phonemes = [id_to_phoneme.get(t, '<UNK>') for t in target]
+        
+        # 'sil' 제거 (선택적)
+        if remove_sil:
+            pred_phonemes = [p for p in pred_phonemes if p != 'sil']
+            target_phonemes = [t for t in target_phonemes if t != 'sil']
+        
+        # Edit distance 계산
+        errors = editdistance.eval(pred_phonemes, target_phonemes)
+        total_errors += errors
+        total_phonemes += len(target_phonemes)
+    
+    # 전체 PER
+    per = total_errors / max(total_phonemes, 1) * 100
+    
+    return per
+
 def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=0.5):
     model.train()
     running_loss = 0.0
@@ -242,6 +308,10 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
     model.eval()
     running_loss = 0.0
     
+    # 오류율 계산을 위한 변수
+    all_predictions = []
+    all_targets = []
+    
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='검증 [오류 탐지]')
         
@@ -271,13 +341,35 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
             # 통계 업데이트
             running_loss += loss.item()
             
+            # 오류율 계산을 위한 디코딩
+            wav2vec_output_lengths = (audio_lengths / 20).long()
+            error_preds = ctc_decode(error_logits, wav2vec_output_lengths)
+            
+            # 타겟 시퀀스 준비
+            for i in range(len(error_labels)):
+                target_len = label_lengths[i].item()
+                target_labels = error_labels[i, :target_len].cpu().numpy()
+                
+                # blank 제거하고 중복 제거
+                target_seq = []
+                prev_label = None
+                for label in target_labels:
+                    if label != 0 and label != prev_label:  # blank=0 제거
+                        target_seq.append(int(label))
+                    prev_label = label
+                
+                all_predictions.append(error_preds[i])
+                all_targets.append(target_seq)
+            
             # 진행 상황 표시줄 업데이트
             progress_bar.set_postfix({
                 '검증_손실': running_loss / (batch_idx + 1)
             })
     
     val_loss = running_loss / len(dataloader)
-    return val_loss
+    error_rate = calculate_error_rate(all_predictions, all_targets)
+    
+    return val_loss, error_rate
 
 # 음소 인식 학습 함수
 def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=1.0):
@@ -330,9 +422,13 @@ def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, e
     return epoch_loss
 
 # 음소 인식 검증 함수
-def validate_phoneme_recognition(model, dataloader, criterion, device):
+def validate_phoneme_recognition(model, dataloader, criterion, device, id_to_phoneme):
     model.eval()
     running_loss = 0.0
+    
+    # PER 계산을 위한 변수
+    all_predictions = []
+    all_targets = []
     
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='검증 [음소 인식]')
@@ -362,14 +458,25 @@ def validate_phoneme_recognition(model, dataloader, criterion, device):
             # 통계 업데이트
             running_loss += loss.item()
             
+            # PER 계산을 위한 디코딩
+            phoneme_preds = ctc_decode(phoneme_logits, audio_lengths.to(device))
+            
+            # 타겟 시퀀스 준비
+            for i in range(len(waveforms)):
+                # 음소 인식
+                all_predictions.append(phoneme_preds[i])
+                per_len = label_lengths[i].item()
+                all_targets.append(phoneme_labels[i, :per_len].cpu().numpy())
+            
             # 진행 상황 표시줄 업데이트
             progress_bar.set_postfix({
                 '검증_손실': running_loss / (batch_idx + 1)
             })
     
     val_loss = running_loss / len(dataloader)
+    per = calculate_per(all_predictions, all_targets, id_to_phoneme)
     
-    return val_loss
+    return val_loss, per
 
 def seed_everything(seed):
     """재현성을 위한 랜덤 시드 설정"""
@@ -410,6 +517,10 @@ def main():
     parser.add_argument('--max_audio_length', type=int, default=None, help='최대 오디오 길이(샘플 단위)')
     parser.add_argument('--max_grad_norm', type=float, default=0.5, help='그라디언트 클리핑을 위한 최대 노름값')
     
+    # 체크포인트 저장 기준 설정
+    parser.add_argument('--save_strategy', type=str, default='best', choices=['best', 'last', 'both'], 
+                       help='체크포인트 저장 전략 (best: 최적 모델만, last: 마지막 모델만, both: 둘 다)')
+    
     # 출력 설정
     parser.add_argument('--output_dir', type=str, default='models', help='모델 체크포인트 출력 디렉토리')
     parser.add_argument('--result_dir', type=str, default='results', help='결과 출력 디렉토리')
@@ -444,6 +555,7 @@ def main():
     if os.path.exists(args.phoneme_map):
         with open(args.phoneme_map, 'r') as f:
             phoneme_to_id = json.load(f)
+        id_to_phoneme = {v: k for k, v in phoneme_to_id.items()}
     else:
         logger.error(f"음소-ID 매핑 파일({args.phoneme_map})이 필요합니다. 이 파일을 생성한 후 다시 시도하세요.")
         sys.exit(1)
@@ -496,6 +608,7 @@ def main():
         
         # 학습 루프
         best_val_loss = float('inf') 
+        best_error_rate = float('inf')
         
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"에폭 {epoch}/{args.num_epochs} 시작")
@@ -505,29 +618,36 @@ def main():
                 model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=0.5
             )
             
-            # CTC 검증 함수 사용
-            val_loss = validate_error_detection_ctc(
+            # CTC 검증 함수 사용 (손실과 오류율 모두 반환)
+            val_loss, error_rate = validate_error_detection_ctc(
                 model, val_dataloader, criterion, args.device
             )
             
-            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}")
+            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}, 오류율: {error_rate:.2f}%")
             
-            # 결과 저장 - 손실만 저장
+            # 결과 저장 - 손실과 오류율 모두 저장
             with open(os.path.join(args.result_dir, f'error_detection_epoch{epoch}.json'), 'w') as f:
                 json.dump({
                     'epoch': epoch,
                     'train_loss': train_loss,
-                    'val_loss': val_loss
+                    'val_loss': val_loss,
+                    'error_rate': error_rate
                 }, f, indent=4)
             
-            # 최고 모델 저장 - 손실 기준
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_error_detection.pth'))
-                logger.info(f"검증 손실 {val_loss:.4f}로 새로운 최고 모델 저장")
+            # 최고 모델 저장 - 오류율과 손실 모두 고려
+            if args.save_strategy in ['best', 'both']:
+                # 오류율이 더 중요하지만, 손실도 고려
+                is_best = (error_rate < best_error_rate) or (error_rate == best_error_rate and val_loss < best_val_loss)
+                
+                if is_best:
+                    best_val_loss = val_loss
+                    best_error_rate = error_rate
+                    torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_error_detection.pth'))
+                    logger.info(f"오류율 {error_rate:.2f}%, 검증 손실 {val_loss:.4f}로 새로운 최고 모델 저장")
             
             # 마지막 모델 저장
-            torch.save(model.state_dict(), os.path.join(args.output_dir, f'last_error_detection.pth'))
+            if args.save_strategy in ['last', 'both']:
+                torch.save(model.state_dict(), os.path.join(args.output_dir, f'last_error_detection.pth'))
     
     elif args.stage == 2:
         # 2단계: 음소 인식 학습
@@ -568,6 +688,7 @@ def main():
         
         # 학습 루프
         best_val_loss = float('inf')
+        best_per = float('inf')
         
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"에폭 {epoch}/{args.num_epochs} 시작")
@@ -577,29 +698,35 @@ def main():
                 model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=1.0
             )
             
-            # 검증
-            val_loss = validate_phoneme_recognition(
-                model, val_dataloader, criterion, args.device
+            # 검증 (손실과 PER 모두 반환)
+            val_loss, per = validate_phoneme_recognition(
+                model, val_dataloader, criterion, args.device, id_to_phoneme
             )
             
-            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}")
+            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}, PER: {per:.2f}%")
             
             # 결과 저장
             with open(os.path.join(args.result_dir, f'phoneme_recognition_epoch{epoch}.json'), 'w') as f:
                 json.dump({
                     'epoch': epoch,
                     'train_loss': train_loss,
-                    'val_loss': val_loss
+                    'val_loss': val_loss,
+                    'per': per
                 }, f, indent=4)
             
-            # 최고 모델 저장
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_phoneme_recognition.pth'))
-                logger.info(f"검증 손실 {val_loss:.4f}로 새로운 최고 모델 저장")
+            # 최고 모델 저장 - PER이 더 중요하지만, 손실도 고려
+            if args.save_strategy in ['best', 'both']:
+                is_best = (per < best_per) or (per == best_per and val_loss < best_val_loss)
+                
+                if is_best:
+                    best_val_loss = val_loss
+                    best_per = per
+                    torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_phoneme_recognition.pth'))
+                    logger.info(f"PER {per:.2f}%, 검증 손실 {val_loss:.4f}로 새로운 최고 모델 저장")
             
             # 마지막 모델 저장
-            torch.save(model.state_dict(), os.path.join(args.output_dir, f'last_phoneme_recognition.pth'))
+            if args.save_strategy in ['last', 'both']:
+                torch.save(model.state_dict(), os.path.join(args.output_dir, f'last_phoneme_recognition.pth'))
     
     logger.info("학습 완료!")
 
