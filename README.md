@@ -80,13 +80,13 @@ DualWav2VecWithErrorAwarePhonemeRecognition
 ### 1단계: 오류 탐지 학습
 
 ```bash
-python train.py --stage 1 --num_epochs 50 --batch_size 16 --learning_rate 6e-6 
+python train.py --stage 1 --num_epochs 50 --batch_size 16 --learning_rate 5e-5
 ```
 
 ### 2단계: 음소 인식 학습
 
 ```bash
-python train.py --stage 2 --num_epochs 50 --batch_size 16 --learning_rate 6e-6 \
+python train.py --stage 2 --num_epochs 50 --batch_size 16 --learning_rate 5e-5 \
     --model_checkpoint models/best_error_detection.pth
 ```
 
