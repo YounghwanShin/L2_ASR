@@ -14,11 +14,105 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchaudio
 from torch.nn import CTCLoss
+import torch.nn.functional as F
 
 from model import DualWav2VecWithErrorAwarePhonemeRecognition, LearnableWav2Vec
 import editdistance
 
 torch.autograd.set_detect_anomaly(True)
+
+class ErrorRateInfluencedLoss(nn.Module):
+    def __init__(self, ctc_weight=1.0, error_rate_weight=0.5, blank=0):
+        super(ErrorRateInfluencedLoss, self).__init__()
+        self.ctc_loss = nn.CTCLoss(blank=blank, reduction='mean', zero_infinity=True)
+        self.ctc_weight = ctc_weight
+        self.error_rate_weight = error_rate_weight
+        self.blank = blank
+    
+    def ctc_decode(self, logits, lengths):
+        """간단한 CTC 디코딩"""
+        batch_size, max_len, vocab_size = logits.shape
+        predictions = []
+        
+        for i in range(batch_size):
+            log_probs = torch.log_softmax(logits[i], dim=-1).cpu().numpy()
+            seq_len = lengths[i].item()
+            
+            best_path = np.argmax(log_probs[:seq_len], axis=-1)
+            
+            decoded = []
+            prev_label = None
+            for label in best_path:
+                if label != self.blank and label != prev_label:
+                    decoded.append(label)
+                prev_label = label
+            
+            predictions.append(decoded)
+        
+        return predictions
+    
+    def calculate_batch_error_rate(self, predictions, targets, target_lengths):
+        """배치의 오류율 계산"""
+        total_errors = 0
+        total_tokens = 0
+        
+        for i, (pred, target) in enumerate(zip(predictions, targets)):
+            target_len = target_lengths[i].item()
+            target_seq = target[:target_len].cpu().numpy()
+            
+            # Target sequence에서 blank 제거
+            target_cleaned = []
+            prev_label = None
+            for label in target_seq:
+                if label != self.blank and label != prev_label:
+                    target_cleaned.append(label)
+                prev_label = label
+            
+            errors = editdistance.eval(pred, target_cleaned)
+            total_errors += errors
+            total_tokens += len(target_cleaned)
+        
+        if total_tokens == 0:
+            return 0.0
+        
+        return total_errors / total_tokens
+    
+    def forward(self, logits, targets, input_lengths, target_lengths):
+        # 1. CTC Loss 계산
+        log_probs = F.log_softmax(logits, dim=-1)
+        ctc_loss = self.ctc_loss(log_probs.transpose(0, 1), targets, input_lengths, target_lengths)
+        
+        # 2. 예측 수행 (그래디언트 전파되지 않도록)
+        with torch.no_grad():
+            predictions = self.ctc_decode(logits, input_lengths)
+        
+        # 3. Error Rate 계산
+        error_rate = self.calculate_batch_error_rate(predictions, targets, target_lengths)
+        
+        # 4. Error Rate를 보조 손실로 변환
+        # Error Rate를 미분 가능한 형태로 근사
+        # Soft error rate: 예측 분포와 타겟 분포 간의 거리 측정
+        soft_error_loss = 0.0
+        for i in range(len(predictions)):
+            pred_probs = F.softmax(logits[i, :input_lengths[i]], dim=-1)
+            target_one_hot = F.one_hot(targets[i, :target_lengths[i]], num_classes=logits.size(-1)).float()
+            
+            # KL divergence를 사용하여 분포 간 차이 측정
+            if target_one_hot.size(0) > 0:
+                # 시퀀스 길이 맞추기
+                min_len = min(pred_probs.size(0), target_one_hot.size(0))
+                pred_probs_aligned = pred_probs[:min_len]
+                target_one_hot_aligned = target_one_hot[:min_len]
+                
+                kl_loss = F.kl_div(pred_probs_aligned.log(), target_one_hot_aligned, reduction='batchmean')
+                soft_error_loss += kl_loss
+        
+        soft_error_loss /= len(predictions)
+        
+        # 5. 총 손실
+        total_loss = self.ctc_weight * ctc_loss + self.error_rate_weight * soft_error_loss
+        
+        return total_loss, ctc_loss, error_rate
 
 class WeightedCTCLoss(nn.Module):
     def __init__(self, blank=0, reduction='mean', zero_infinity=True, class_weights=None):
@@ -298,6 +392,57 @@ def calculate_per(predictions, targets, id_to_phoneme, remove_sil=True):
     
     return per
 
+def train_error_detection_with_error_rate(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=0.5):
+    model.train()
+    running_total_loss = 0.0
+    running_ctc_loss = 0.0
+    running_error_rate = 0.0
+    
+    progress_bar = tqdm(dataloader, desc=f'에폭 {epoch} [오류 탐지 + ER]')
+    
+    for batch_idx, (waveforms, error_labels, audio_lengths, label_lengths, _) in enumerate(progress_bar):
+        waveforms = waveforms.to(device)
+        error_labels = error_labels.to(device)
+        audio_lengths = audio_lengths.to(device)
+        label_lengths = label_lengths.to(device)
+        
+        # wav2vec용 어텐션 마스크 생성
+        attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
+        attention_mask = (attention_mask < audio_lengths.unsqueeze(1).to(device)).float()
+        
+        # 순전파
+        phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
+        
+        # 모델 출력 시퀀스 길이 계산
+        input_lengths = torch.full(size=(error_logits.size(0),), fill_value=error_logits.size(1), 
+                                 dtype=torch.long).to(device)
+        
+        # Error Rate 영향 손실 계산
+        total_loss, ctc_loss, error_rate = criterion(error_logits, error_labels, input_lengths, label_lengths)
+        
+        optimizer.zero_grad()
+        total_loss.backward()
+        
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        
+        optimizer.step()
+        
+        running_total_loss += total_loss.item()
+        running_ctc_loss += ctc_loss.item()
+        running_error_rate += error_rate
+        
+        progress_bar.set_postfix({
+            '총손실': running_total_loss / (batch_idx + 1),
+            'CTC손실': running_ctc_loss / (batch_idx + 1),
+            '오류율': running_error_rate / (batch_idx + 1)
+        })
+    
+    epoch_loss = running_total_loss / len(dataloader)
+    epoch_ctc_loss = running_ctc_loss / len(dataloader)
+    epoch_error_rate = running_error_rate / len(dataloader)
+    
+    return epoch_loss, epoch_ctc_loss, epoch_error_rate
+
 def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=0.5):
     model.train()
     running_loss = 0.0
@@ -345,7 +490,8 @@ def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, e
 
 def validate_error_detection_ctc(model, dataloader, criterion, device):
     model.eval()
-    running_loss = 0.0
+    running_total_loss = 0.0
+    running_ctc_loss = 0.0
     
     # 오류율 계산을 위한 변수
     all_predictions = []
@@ -367,18 +513,14 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
             # 순전파
             phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
             
-            # CTC 손실 계산을 위해 log_softmax 적용
-            log_probs = torch.log_softmax(error_logits, dim=-1)
-            
             # 모델 출력 시퀀스 길이 계산
-            input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
+            input_lengths = torch.full(size=(error_logits.size(0),), fill_value=error_logits.size(1), 
                                       dtype=torch.long).to(device)
             
-            # CTC 손실 계산
-            loss = criterion(log_probs, error_labels, input_lengths, label_lengths)
-            
-            # 통계 업데이트
-            running_loss += loss.item()
+            # ErrorRateInfluencedLoss 처리
+            total_loss, ctc_loss, error_rate = criterion(error_logits, error_labels, input_lengths, label_lengths)
+            running_total_loss += total_loss.item()
+            running_ctc_loss += ctc_loss.item()
             
             # 오류율 계산을 위한 디코딩
             wav2vec_output_lengths = (audio_lengths / 20).long()
@@ -402,13 +544,15 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
             
             # 진행 상황 표시줄 업데이트
             progress_bar.set_postfix({
-                '검증_손실': running_loss / (batch_idx + 1)
+                '총손실': running_total_loss / (batch_idx + 1),
+                'CTC손실': running_ctc_loss / (batch_idx + 1)
             })
     
-    val_loss = running_loss / len(dataloader)
+    val_total_loss = running_total_loss / len(dataloader)
+    val_ctc_loss = running_ctc_loss / len(dataloader)
     error_rate = calculate_error_rate(all_predictions, all_targets)
     
-    return val_loss, error_rate
+    return val_total_loss, error_rate
 
 # 음소 인식 학습 함수
 def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=1.0):
@@ -565,6 +709,10 @@ def main():
     parser.add_argument('--result_dir', type=str, default='results', help='결과 출력 디렉토리')
     parser.add_argument('--model_checkpoint', type=str, default=None, help='로드할 모델 체크포인트 경로')
     
+    # Error Rate Loss 관련 파라미터 추가
+    parser.add_argument('--ctc_weight', type=float, default=1.0, help='CTC loss 가중치')
+    parser.add_argument('--error_rate_weight', type=float, default=0.3, help='Error rate loss 가중치')
+    
     args = parser.parse_args()
     
     # 재현성을 위한 시드 설정
@@ -641,10 +789,12 @@ def main():
             collate_fn=error_ctc_collate_fn  # CTC용 콜레이트 함수
         )
         
-        # Weighted CTC Loss 사용
-        # 클래스 가중치: [blank, D, S, A, C]
-        class_weights = torch.tensor([1.0, 5.0, 3.0, 4.0, 1.0])  # D, S, A에 더 높은 가중치
-        criterion = WeightedCTCLoss(blank=0, reduction='mean', zero_infinity=True, class_weights=class_weights)
+        # Error Rate Influenced Loss 사용
+        criterion = ErrorRateInfluencedLoss(
+            ctc_weight=args.ctc_weight, 
+            error_rate_weight=args.error_rate_weight,
+            blank=0
+        )
         optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
         
         # 학습 루프
@@ -654,8 +804,8 @@ def main():
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"에폭 {epoch}/{args.num_epochs} 시작")
             
-            # CTC 학습 함수 사용
-            train_loss = train_error_detection_ctc(
+            # Error Rate 영향 학습 함수 사용
+            train_loss, train_ctc_loss, train_error_rate = train_error_detection_with_error_rate(
                 model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=0.5
             )
             
@@ -664,15 +814,18 @@ def main():
                 model, val_dataloader, criterion, args.device
             )
             
-            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}, 오류율: {error_rate:.2f}%")
+            logger.info(f"에폭 {epoch}: 총손실: {train_loss:.4f}, CTC손실: {train_ctc_loss:.4f}, "
+                       f"학습오류율: {train_error_rate:.2f}%, 검증총손실: {val_loss:.4f}, 검증오류율: {error_rate:.2f}%")
             
             # 결과 저장 - 손실과 오류율 모두 저장
             with open(os.path.join(args.result_dir, f'error_detection_epoch{epoch}.json'), 'w') as f:
                 json.dump({
                     'epoch': epoch,
-                    'train_loss': train_loss,
+                    'train_total_loss': train_loss,
+                    'train_ctc_loss': train_ctc_loss,
+                    'train_error_rate': train_error_rate,
                     'val_loss': val_loss,
-                    'error_rate': error_rate
+                    'val_error_rate': error_rate
                 }, f, indent=4)
             
             # 최고 모델 저장 - 오류율과 손실 모두 고려
