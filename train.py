@@ -500,7 +500,9 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='검증 [오류 탐지]')
         
-        for batch_idx, (waveforms, error_labels, audio_lengths, label_lengths, _) in enumerate(progress_bar):
+        for batch_idx, batch in enumerate(progress_bar):           
+            waveforms, error_labels, audio_lengths, label_lengths, wav_files = batch
+            
             waveforms = waveforms.to(device)
             error_labels = error_labels.to(device)
             audio_lengths = audio_lengths.to(device)
@@ -523,7 +525,8 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
             running_ctc_loss += ctc_loss.item()
             
             # 오류율 계산을 위한 디코딩
-            wav2vec_output_lengths = (audio_lengths / 20).long()
+            # wav2vec2의 출력 길이 계산 (입력 오디오 길이의 1/20 정도)
+            wav2vec_output_lengths = (audio_lengths.float() / 20).long()
             error_preds = ctc_decode(error_logits, wav2vec_output_lengths)
             
             # 타겟 시퀀스 준비
