@@ -20,6 +20,45 @@ import editdistance
 
 torch.autograd.set_detect_anomaly(True)
 
+class WeightedCTCLoss(nn.Module):
+    def __init__(self, blank=0, reduction='mean', zero_infinity=True, class_weights=None):
+        super(WeightedCTCLoss, self).__init__()
+        self.ctc_loss = nn.CTCLoss(blank=blank, reduction='none', zero_infinity=zero_infinity)
+        self.reduction = reduction
+        self.class_weights = class_weights  # [weight_for_blank, weight_for_D, weight_for_S, weight_for_A, weight_for_C]
+        
+    def forward(self, log_probs, targets, input_lengths, target_lengths):
+        losses = self.ctc_loss(log_probs.transpose(0, 1), targets, input_lengths, target_lengths)
+        
+        # 클래스 가중치 적용
+        if self.class_weights is not None:
+            weighted_losses = []
+            for i, target in enumerate(targets):
+                target_labels = target[:target_lengths[i]]
+                # 타겟의 클래스별 빈도 계산
+                weights = []
+                for label in target_labels:
+                    if label.item() < len(self.class_weights):
+                        weights.append(self.class_weights[label.item()])
+                    else:
+                        weights.append(1.0)
+                
+                if weights:
+                    avg_weight = sum(weights) / len(weights)
+                else:
+                    avg_weight = 1.0
+                
+                weighted_losses.append(losses[i] * avg_weight)
+            
+            losses = torch.stack(weighted_losses)
+        
+        if self.reduction == 'mean':
+            return losses.mean()
+        elif self.reduction == 'sum':
+            return losses.sum()
+        else:
+            return losses
+
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
         super(FocalLoss, self).__init__()
@@ -286,7 +325,7 @@ def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, e
                                  dtype=torch.long).to(device)
         
         # CTC 손실 계산
-        loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
+        loss = criterion(log_probs, error_labels, input_lengths, label_lengths)
         
         optimizer.zero_grad()
         loss.backward()
@@ -336,7 +375,7 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
                                       dtype=torch.long).to(device)
             
             # CTC 손실 계산
-            loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
+            loss = criterion(log_probs, error_labels, input_lengths, label_lengths)
             
             # 통계 업데이트
             running_loss += loss.item()
@@ -602,8 +641,10 @@ def main():
             collate_fn=error_ctc_collate_fn  # CTC용 콜레이트 함수
         )
         
-        # FocalLoss 대신 CTCLoss 사용
-        criterion = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
+        # Weighted CTC Loss 사용
+        # 클래스 가중치: [blank, D, S, A, C]
+        class_weights = torch.tensor([1.0, 5.0, 3.0, 4.0, 1.0])  # D, S, A에 더 높은 가중치
+        criterion = WeightedCTCLoss(blank=0, reduction='mean', zero_infinity=True, class_weights=class_weights)
         optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
         
         # 학습 루프
