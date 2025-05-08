@@ -80,13 +80,13 @@ DualWav2VecWithErrorAwarePhonemeRecognition
 ### 1단계: 오류 탐지 학습
 
 ```bash
-python train.py --stage 1 --num_epochs 10 --batch_size 8 --learning_rate 5e-5
+python train.py --stage 1 --num_epochs 50 --batch_size 16 --learning_rate 6e-6 
 ```
 
 ### 2단계: 음소 인식 학습
 
 ```bash
-python train.py --stage 2 --num_epochs 10 --batch_size 8 --learning_rate 5e-5 \
+python train.py --stage 2 --num_epochs 50 --batch_size 16 --learning_rate 6e-6 \
     --model_checkpoint models/best_error_detection.pth
 ```
 
@@ -117,7 +117,7 @@ python train.py --stage 2 --num_epochs 10 --batch_size 8 --learning_rate 5e-5 \
 - `--num_epochs`: 학습 에폭 수 (기본값: 10)
 - `--seed`: 랜덤 시드 (기본값: 42)
 - `--device`: 사용할 장치 (기본값: cuda 사용 가능시 cuda, 아니면 cpu)
-- `--max_grad_norm`: 그라디언트 클리핑을 위한 최대 노름값 (기본값: 1.0)
+- `--max_grad_norm`: 그라디언트 클리핑을 위한 최대 노름값 (기본값: 0.5)
 
 #### 출력 관련 인자:
 - `--output_dir`: 모델 체크포인트 저장 디렉토리 (기본값: `models/`)

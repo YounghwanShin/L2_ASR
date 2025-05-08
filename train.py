@@ -193,7 +193,7 @@ def phoneme_collate_fn(batch):
     
     return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
 
-def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=1.0):
+def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=0.5):
     model.train()
     running_loss = 0.0
     
@@ -408,7 +408,7 @@ def main():
     parser.add_argument('--learning_rate', type=float, default=5e-5, help='학습률')
     parser.add_argument('--num_epochs', type=int, default=10, help='에폭 수')
     parser.add_argument('--max_audio_length', type=int, default=None, help='최대 오디오 길이(샘플 단위)')
-    parser.add_argument('--max_grad_norm', type=float, default=1.0, help='그라디언트 클리핑을 위한 최대 노름값')
+    parser.add_argument('--max_grad_norm', type=float, default=0.5, help='그라디언트 클리핑을 위한 최대 노름값')
     
     # 출력 설정
     parser.add_argument('--output_dir', type=str, default='models', help='모델 체크포인트 출력 디렉토리')
@@ -502,7 +502,7 @@ def main():
             
             # CTC 학습 함수 사용
             train_loss = train_error_detection_ctc(
-                model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=1.0
+                model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=0.5
             )
             
             # CTC 검증 함수 사용
