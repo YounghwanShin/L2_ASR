@@ -175,12 +175,32 @@ def calculate_per(predictions, targets, id_to_phoneme, remove_sil=True):
     
     return per, per_sample_errors
 
+def calculate_error_rate(predictions, targets, labels):
+    """
+    SpeechBrain 방식의 오류률 계산
+    predictions: 디코딩된 시퀀스 리스트
+    targets: 타겟 시퀀스 리스트
+    labels: 라벨 이름 리스트
+    """
+    total_errors = 0
+    total_tokens = 0
+    
+    for pred, target in zip(predictions, targets):
+        # Edit distance 계산
+        errors = editdistance.eval(pred, target)
+        total_errors += errors
+        total_tokens += len(target)
+    
+    error_rate = total_errors / max(total_tokens, 1) * 100 if total_tokens > 0 else 100
+    
+    return error_rate
+
 def evaluate_stage1_error_detection(model, dataloader, device):
-    """1단계: 오류 탐지만 평가"""
+    """1단계: 오류 탐지만 평가 (SpeechBrain 방식)"""
     model.eval()
     
-    all_predictions = []
-    all_targets = []
+    all_predictions = []  # 디코딩된 시퀀스들
+    all_targets = []      # 타겟 시퀀스들
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Stage 1: Error Detection Only"):
@@ -196,29 +216,90 @@ def evaluate_stage1_error_detection(model, dataloader, device):
             # 오류 탐지 예측
             _, _, error_logits = model(waveforms, attention_mask, return_error_probs=True)
             
-            # 예측값 (CTC 디코딩)
-            error_preds = ctc_decode(error_logits, error_lengths)
+            # wav2vec2 출력 길이 계산
+            wav2vec_output_lengths = (audio_lengths / 20).long()
+            
+            # CTC 디코딩으로 예측값 계산
+            error_preds = ctc_decode(error_logits, wav2vec_output_lengths)
             
             # 배치별로 처리
             for i in range(len(error_labels)):
-                pred_len = len(error_preds[i])
+                # 타겟 레이블 (CTC 형식에서 일반 시퀀스로 변환)
                 target_len = error_lengths[i].item()
+                target_labels = error_labels[i, :target_len].cpu().numpy()
                 
-                all_predictions.extend(error_preds[i])
-                all_targets.extend(error_labels[i, :target_len].cpu().numpy())
+                # blank 제거하고 중복 제거
+                target_seq = []
+                prev_label = None
+                for label in target_labels:
+                    if label != 0 and label != prev_label:  # blank=0 제거
+                        target_seq.append(int(label))
+                    prev_label = label
+                
+                # 예측값과 타겟값 저장
+                all_predictions.append(error_preds[i])
+                all_targets.append(target_seq)
     
-    # 정확도 계산
-    accuracy = accuracy_score(all_targets, all_predictions)
+    # 시퀀스별 정확도 계산
+    correct = 0
+    total = len(all_predictions)
     
-    # 상세 보고서
-    error_types = ['blank', 'D', 'S', 'A', 'C']
-    report = classification_report(all_targets, all_predictions, 
-                                 target_names=error_types, output_dict=True)
+    for pred, target in zip(all_predictions, all_targets):
+        if len(pred) == len(target) and all(p == t for p, t in zip(pred, target)):
+            correct += 1
+    
+    sequence_accuracy = correct / total if total > 0 else 0
+    
+    # 오류율 계산 (SpeechBrain 방식)
+    error_types = ['D', 'S', 'A', 'C']  # blank 제외
+    error_rate = calculate_error_rate(all_predictions, all_targets, error_types)
+    
+    # 클래스별 통계 계산
+    class_stats = {}
+    for class_id, class_name in enumerate(error_types, 1):
+        class_pred_count = sum(1 for pred in all_predictions for p in pred if p == class_id)
+        class_target_count = sum(1 for target in all_targets for t in target if t == class_id)
+        
+        # F1 스코어 계산을 위한 정보
+        true_positives = 0
+        false_positives = 0
+        false_negatives = 0
+        
+        for pred, target in zip(all_predictions, all_targets):
+            # align sequences for comparison
+            pred_set = set((i, p) for i, p in enumerate(pred))
+            target_set = set((i, t) for i, t in enumerate(target))
+            
+            for i, p in enumerate(pred):
+                if p == class_id:
+                    if (i, p) in target_set:
+                        true_positives += 1
+                    else:
+                        false_positives += 1
+            
+            for i, t in enumerate(target):
+                if t == class_id and (i, t) not in pred_set:
+                    false_negatives += 1
+        
+        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        
+        class_stats[class_name] = {
+            'precision': precision,
+            'recall': recall,
+            'f1-score': f1,
+            'support': class_target_count
+        }
     
     return {
-        'accuracy': accuracy,
-        'report': report,
-        'error_types': error_types
+        'sequence_accuracy': sequence_accuracy,
+        'error_rate': error_rate,
+        'class_stats': class_stats,
+        'error_types': error_types,
+        'num_samples': total,
+        'pred_samples': all_predictions[:5],  # 디버깅용
+        'target_samples': all_targets[:5]    # 디버깅용
     }
 
 def evaluate_stage2_full_model(model, dataloader, device, id_to_phoneme):
@@ -247,18 +328,21 @@ def evaluate_stage2_full_model(model, dataloader, device, id_to_phoneme):
             # 전체 모델 예측
             phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
             
-            # 오류 탐지 예측
-            error_preds = ctc_decode(error_logits, error_lengths)
+            # 오류 탐지 예측 (프레임별)
+            frame_error_predictions = torch.argmax(error_logits, dim=-1)
             
-            # 음소 인식 예측
+            # 음소 인식 예측 (CTC 디코딩)
             phoneme_preds = ctc_decode(phoneme_logits, audio_lengths.to(device))
             
             # 결과 저장
             for i in range(len(waveforms)):
                 # 오류 탐지
-                target_len = error_lengths[i].item()
-                all_error_predictions.extend(error_preds[i])
-                all_error_targets.extend(error_labels[i, :target_len].cpu().numpy())
+                seq_len = error_lengths[i].item()
+                frame_pred = frame_error_predictions[i, :seq_len].cpu().numpy()
+                target = error_labels[i, :seq_len].cpu().numpy()
+                
+                all_error_predictions.extend(frame_pred)
+                all_error_targets.extend(target)
                 
                 # 음소 인식
                 all_phoneme_predictions.append(phoneme_preds[i])
@@ -295,8 +379,10 @@ def save_results(results, output_dir, stage):
         json_results = {
             'stage': 1,
             'error_detection': {
-                'accuracy': results['accuracy'],
-                'classification_report': results['report']
+                'sequence_accuracy': results['sequence_accuracy'],
+                'error_rate': results['error_rate'],  # SpeechBrain 방식
+                'num_samples': results['num_samples'],
+                'classification_report': results['class_stats']
             }
         }
         
@@ -305,19 +391,28 @@ def save_results(results, output_dir, stage):
         
         with open(os.path.join(output_dir, 'stage1_detailed_results.txt'), 'w') as f:
             f.write("=== Stage 1: Error Detection Results ===\n")
-            f.write(f"Overall Accuracy: {results['accuracy']:.4f}\n\n")
+            f.write(f"Total Samples: {results['num_samples']}\n")
+            f.write(f"Sequence Accuracy: {results['sequence_accuracy']:.4f}\n")
+            f.write(f"Error Rate: {results['error_rate']:.2f}%\n\n")
             f.write("Per-Class F1-scores:\n")
-            for error_type, metrics in results['report'].items():
-                if error_type not in ['accuracy', 'macro avg', 'weighted avg']:
-                    f.write(f"  {error_type}: {metrics['f1-score']:.4f}\n")
+            for error_type, metrics in results['class_stats'].items():
+                f.write(f"  {error_type}: {metrics['f1-score']:.4f} (support: {metrics['support']})\n")
+            
+            # 디버깅 정보 추가
+            f.write(f"\nDebug Info (first 5 samples):\n")
+            for i, (pred, target) in enumerate(zip(results['pred_samples'], results['target_samples'])):
+                f.write(f"Sample {i+1}:\n")
+                f.write(f"  Prediction: {pred}\n")
+                f.write(f"  Target: {target}\n")
     
     else:  # stage == 2
         # 2단계 결과 저장
         json_results = {
             'stage': 2,
             'error_detection': {
-                'accuracy': results['error_detection']['accuracy'],
-                'classification_report': results['error_detection']['report']
+                'sequence_accuracy': results['error_detection']['sequence_accuracy'],
+                'error_rate': results['error_detection']['error_rate'],
+                'classification_report': results['error_detection']['class_stats']
             },
             'phoneme_recognition': {
                 'per_perceived': results['phoneme_recognition']['per_perceived'],
@@ -333,11 +428,11 @@ def save_results(results, output_dir, stage):
         with open(os.path.join(output_dir, 'stage2_detailed_results.txt'), 'w') as f:
             f.write("=== Stage 2: Full Model Results ===\n\n")
             f.write("Error Detection Results:\n")
-            f.write(f"Overall Accuracy: {results['error_detection']['accuracy']:.4f}\n")
+            f.write(f"Sequence Accuracy: {results['error_detection']['sequence_accuracy']:.4f}\n")
+            f.write(f"Error Rate: {results['error_detection']['error_rate']:.2f}%\n")
             f.write("Per-Class F1-scores:\n")
-            for error_type, metrics in results['error_detection']['report'].items():
-                if error_type not in ['accuracy', 'macro avg', 'weighted avg']:
-                    f.write(f"  {error_type}: {metrics['f1-score']:.4f}\n")
+            for error_type, metrics in results['error_detection']['class_stats'].items():
+                f.write(f"  {error_type}: {metrics['f1-score']:.4f} (support: {metrics['support']})\n")
             
             f.write(f"\nPhoneme Recognition Results:\n")
             f.write(f"PER (vs Perceived): {results['phoneme_recognition']['per_perceived']:.2f}%\n")
@@ -400,11 +495,17 @@ def main():
         results = evaluate_stage1_error_detection(model, eval_dataloader, args.device)
         
         print(f"\n=== Stage 1 결과 ===")
-        print(f"오류 탐지 정확도: {results['accuracy']:.4f}")
+        print(f"Total Samples: {results['num_samples']}")
+        print(f"오류 탐지 시퀀스 정확도: {results['sequence_accuracy']:.4f}")
+        print(f"오류 탐지 오류율: {results['error_rate']:.2f}%")
         print("Per-Class F1-scores:")
-        for error_type, metrics in results['report'].items():
-            if error_type not in ['accuracy', 'macro avg', 'weighted avg']:
-                print(f"  {error_type}: {metrics['f1-score']:.4f}")
+        for error_type, metrics in results['class_stats'].items():
+            print(f"  {error_type}: {metrics['f1-score']:.4f} (support: {metrics['support']})")
+        
+        # 디버깅 정보 출력
+        print(f"\nDebug Info (first 5 samples):")
+        for i, (pred, target) in enumerate(zip(results['pred_samples'], results['target_samples'])):
+            print(f"Sample {i+1}: pred={pred}, target={target}")
         
         save_results(results, args.output_dir, 1)
         
@@ -413,11 +514,11 @@ def main():
         results = evaluate_stage2_full_model(model, eval_dataloader, args.device, id_to_phoneme)
         
         print(f"\n=== Stage 2 결과 ===")
-        print(f"오류 탐지 정확도: {results['error_detection']['accuracy']:.4f}")
+        print(f"오류 탐지 시퀀스 정확도: {results['error_detection']['sequence_accuracy']:.4f}")
+        print(f"오류 탐지 오류율: {results['error_detection']['error_rate']:.2f}%")
         print("Per-Class F1-scores:")
-        for error_type, metrics in results['error_detection']['report'].items():
-            if error_type not in ['accuracy', 'macro avg', 'weighted avg']:
-                print(f"  {error_type}: {metrics['f1-score']:.4f}")
+        for error_type, metrics in results['error_detection']['class_stats'].items():
+            print(f"  {error_type}: {metrics['f1-score']:.4f} (support: {metrics['support']})")
         print(f"\nL2 음소 인식 PER: {results['phoneme_recognition']['per_perceived']:.2f}%")
         
         save_results(results, args.output_dir, 2)
