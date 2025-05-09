@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-L2 발음 오류 탐지 및 음소 인식 모델 평가 스크립트
-2단계 학습에 맞춘 평가: 1단계(오류 탐지), 2단계(오류 탐지 + 음소 인식)
-"""
-
 import os
 import json
 import argparse
