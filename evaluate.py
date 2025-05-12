@@ -18,15 +18,6 @@ from train import ErrorLabelDataset, error_ctc_collate_fn
 
 # JSON 직렬화를 위한 NumPy 타입 변환 함수
 def convert_numpy_types(obj):
-    """
-    NumPy 타입을 Python 네이티브 타입으로 변환
-    
-    Args:
-        obj: 변환할 객체
-        
-    Returns:
-        변환된 객체
-    """
     if isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
@@ -37,16 +28,6 @@ def convert_numpy_types(obj):
 
 # Levenshtein 거리 계산을 위한 함수
 def levenshtein_distance(seq1, seq2):
-    """
-    두 시퀀스 사이의 Levenshtein 거리 계산
-    
-    Args:
-        seq1: 첫 번째 시퀀스
-        seq2: 두 번째 시퀀스
-        
-    Returns:
-        편집 거리, 삽입 수, 삭제 수, 대체 수
-    """
     size_x = len(seq1) + 1
     size_y = len(seq2) + 1
     
@@ -107,9 +88,6 @@ def levenshtein_distance(seq1, seq2):
     return distance, insertions, deletions, substitutions
 
 class EvaluationDataset(Dataset):
-    """
-    평가용 데이터셋 클래스
-    """
     def __init__(self, json_path, phoneme_to_id, max_length=None, sampling_rate=16000):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
@@ -261,17 +239,7 @@ def collate_fn(batch):
         wav_files
     )
 
-def decode_ctc(log_probs, blank_idx=0):
-    """
-    단순 그리디 CTC 디코딩
-    
-    Args:
-        log_probs: CTC 로그 확률 (batch_size, seq_len, num_classes)
-        blank_idx: blank 토큰의 인덱스
-        
-    Returns:
-        디코딩된 시퀀스 (배치 리스트)
-    """
+def decode_ctc(log_probs, input_lengths, blank_idx=0):
     # 각 시간 단계에서 가장 확률이 높은 클래스 얻기
     greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()  # (batch_size, seq_len)
     
@@ -282,7 +250,9 @@ def decode_ctc(log_probs, blank_idx=0):
         seq = []
         # 연속된 중복 제거 및 blank 토큰 제거
         prev = -1
-        for t in range(greedy_preds.shape[1]):
+        # 실제 길이까지만 디코딩
+        actual_length = input_lengths[b].item()
+        for t in range(min(greedy_preds.shape[1], actual_length)):  # 유효한 부분만 처리
             pred = greedy_preds[b, t]
             if pred != blank_idx and pred != prev:
                 seq.append(int(pred))  # NumPy int32를 Python int로 변환
@@ -292,18 +262,6 @@ def decode_ctc(log_probs, blank_idx=0):
     return decoded_seqs
 
 def evaluate_error_detection(model, dataloader, device, error_type_names=None):
-    """
-    오류 탐지 정확도 평가
-    
-    Args:
-        model: 평가할 모델
-        dataloader: 평가 데이터로더
-        device: 계산 장치
-        error_type_names: 오류 유형 이름 매핑
-        
-    Returns:
-        정확도 및 오류 유형별 정확도
-    """
     if error_type_names is None:
         error_type_names = {0: 'blank', 1: 'deletion', 2: 'substitution', 3: 'insertion', 4: 'correct'}
     
@@ -336,9 +294,19 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             # 모델 순전파
             _, _, error_logits = model(waveforms, attention_mask, return_error_probs=True)
             
+            # 정확한 다운샘플링 비율 계산 (추가된 부분)
+            input_seq_len = waveforms.size(1)
+            output_seq_len = error_logits.size(1)
+            
+            # 입력 길이를 기반으로 출력 길이 계산 (추가된 부분)
+            input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
+            input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
+            
             # CTC 디코딩
             log_probs = torch.log_softmax(error_logits, dim=-1)
-            batch_error_preds = decode_ctc(log_probs)
+            
+            # decode_ctc 함수 수정 (input_lengths 전달)
+            batch_error_preds = decode_ctc(log_probs, input_lengths)
             
             # 배치의 각 샘플에 대해 오류 예측 정확도 계산
             for i, (preds, true_errors, length) in enumerate(zip(batch_error_preds, error_labels, error_label_lengths)):
@@ -390,18 +358,6 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
     }
 
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
-    """
-    음소 인식 평가 (PER 계산)
-    
-    Args:
-        model: 평가할 모델
-        dataloader: 평가 데이터로더
-        device: 계산 장치
-        id_to_phoneme: 음소 ID를 음소 문자로 변환하는 매핑
-        
-    Returns:
-        PER 및 세부 오류 통계
-    """
     model.eval()
     
     total_phonemes = 0
@@ -428,9 +384,19 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
             # 모델 순전파
             phoneme_logits, adjusted_probs = model(waveforms, attention_mask)
             
+            # 정확한 다운샘플링 비율 계산 (추가된 부분)
+            input_seq_len = waveforms.size(1)
+            output_seq_len = phoneme_logits.size(1)
+            
+            # 입력 길이를 기반으로 출력 길이 계산 (추가된 부분)
+            input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
+            input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
+            
             # 음소 인식을 위한 CTC 디코딩
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            batch_phoneme_preds = decode_ctc(log_probs)
+            
+            # decode_ctc 함수 수정 (input_lengths 전달)
+            batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
             
             # 배치의 각 샘플에 대해 PER 계산
             for i, (preds, true_phonemes, length, wav_file) in enumerate(
@@ -465,7 +431,7 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
                     'true_phonemes': [id_to_phoneme.get(str(p), "UNK") for p in true_phonemes],
                     'pred_phonemes': [id_to_phoneme.get(str(p), "UNK") for p in preds]
                 })
-    
+        
     # 전체 PER 계산
     per = total_errors / total_phonemes if total_phonemes > 0 else 0
     

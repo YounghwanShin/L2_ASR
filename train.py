@@ -191,8 +191,16 @@ def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, e
         
         # CTC 손실 계산
         log_probs = torch.log_softmax(error_logits, dim=-1)
-        input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
-                               dtype=torch.long).to(device)
+        
+        # 정확한 다운샘플링 비율 계산 (입력 길이와 특성 길이 비교)
+        input_seq_len = waveforms.size(1)
+        output_seq_len = error_logits.size(1)
+        
+        # 입력 길이를 기반으로 출력 길이 계산
+        input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
+        
+        # 유효한 길이 보장
+        input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
         
         loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
         
@@ -233,8 +241,16 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
             
             # CTC 손실 계산
             log_probs = torch.log_softmax(error_logits, dim=-1)
-            input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
-                                  dtype=torch.long).to(device)
+            
+            # 정확한 다운샘플링 비율 계산 (입력 길이와 특성 길이 비교)
+            input_seq_len = waveforms.size(1)
+            output_seq_len = error_logits.size(1)
+            
+            # 입력 길이를 기반으로 출력 길이 계산
+            input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
+            
+            # 유효한 길이 보장
+            input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
             
             loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
             
@@ -268,7 +284,16 @@ def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, e
         
         # CTC 손실 계산
         log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-        input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), dtype=torch.long).to(device)
+        
+        # 정확한 다운샘플링 비율 계산 (입력 길이와 특성 길이 비교)
+        input_seq_len = waveforms.size(1)
+        output_seq_len = phoneme_logits.size(1)
+        
+        # 입력 길이를 기반으로 출력 길이 계산
+        input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
+        
+        # 유효한 길이 보장
+        input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
         
         loss = criterion(log_probs.transpose(0, 1), phoneme_labels, input_lengths, label_lengths)
         
@@ -309,7 +334,16 @@ def validate_phoneme_recognition(model, dataloader, criterion, device):
             
             # CTC 손실 계산
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), dtype=torch.long).to(device)
+            
+            # 정확한 다운샘플링 비율 계산 (입력 길이와 특성 길이 비교)
+            input_seq_len = waveforms.size(1)
+            output_seq_len = phoneme_logits.size(1)
+            
+            # 입력 길이를 기반으로 출력 길이 계산
+            input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
+            
+            # 유효한 길이 보장
+            input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
             
             loss = criterion(log_probs.transpose(0, 1), phoneme_labels, input_lengths, label_lengths)
             
@@ -415,6 +449,10 @@ def main():
         logger.info(f"{args.model_checkpoint}에서 체크포인트 로드 중")
         model.load_state_dict(torch.load(args.model_checkpoint, map_location=args.device))
     
+    if torch.cuda.device_count() > 1:
+        logger.info(f"{torch.cuda.device_count()}개의 GPU가 감지되었습니다. DataParallel 사용")
+        model = nn.DataParallel(model)
+
     model = model.to(args.device)
     
     # 학습 단계 설정
