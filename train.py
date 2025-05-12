@@ -15,29 +15,9 @@ from torch.utils.data import Dataset, DataLoader
 import torchaudio
 from torch.nn import CTCLoss
 
-from model import DualWav2VecWithErrorAwarePhonemeRecognition, LearnableWav2Vec
+from model import DualWav2VecWithErrorAwarePhonemeRecognition
 
 torch.autograd.set_detect_anomaly(True)
-
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        self.cross_entropy = nn.CrossEntropyLoss(reduction='none')
-        
-    def forward(self, inputs, targets):
-        ce_loss = self.cross_entropy(inputs, targets)
-        pt = torch.exp(-ce_loss)
-        loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
-        
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        else:
-            return loss
 
 class ErrorLabelDataset(Dataset):
     def __init__(self, json_path, max_length=None, sampling_rate=16000):
@@ -48,7 +28,7 @@ class ErrorLabelDataset(Dataset):
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         
-        # 오류 유형 매핑: C (정확함), D (삭제), A (추가/삽입), S (대체)
+        # C: 정확함(4), D: 삭제(1), A: 추가/삽입(3), S: 대체(2)
         self.error_type_mapping = {'C': 4, 'D': 1, 'A': 3, 'S': 2}
         
     def __len__(self):
@@ -60,16 +40,16 @@ class ErrorLabelDataset(Dataset):
         
         waveform, sample_rate = torchaudio.load(wav_file)
         
-        # 필요시 모노로 변환
+        # 모노로 변환
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
         
-        # 필요시 리샘플링
+        # 리샘플링
         if sample_rate != self.sampling_rate:
             resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
             waveform = resampler(waveform)
         
-        # 필요시 길이 제한
+        # 길이 제한
         if self.max_length is not None and waveform.shape[1] > self.max_length:
             waveform = waveform[:, :self.max_length]
         
@@ -101,16 +81,16 @@ class PhonemeRecognitionDataset(Dataset):
         
         waveform, sample_rate = torchaudio.load(wav_file)
         
-        # 필요시 모노로 변환
+        # 모노로 변환
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
         
-        # 필요시 리샘플링
+        # 리샘플링
         if sample_rate != self.sampling_rate:
             resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
             waveform = resampler(waveform)
         
-        # 필요시 길이 제한
+        # 길이 제한
         if self.max_length is not None and waveform.shape[1] > self.max_length:
             waveform = waveform[:, :self.max_length]
         
@@ -122,8 +102,6 @@ class PhonemeRecognitionDataset(Dataset):
                 phoneme_labels.append(self.phoneme_to_id[phoneme])
         
         phoneme_labels = torch.tensor(phoneme_labels, dtype=torch.long)
-        
-        # 음소 레이블 길이
         label_length = torch.tensor(len(phoneme_labels), dtype=torch.long)
         
         return waveform.squeeze(0), phoneme_labels, label_length, wav_file
@@ -132,7 +110,7 @@ class PhonemeRecognitionDataset(Dataset):
 def error_ctc_collate_fn(batch):
     waveforms, error_labels, label_lengths, wav_files = zip(*batch)
     
-    # 가변 길이 오디오를 위한 패딩
+    # 가변 길이 오디오 패딩
     max_audio_len = max([waveform.shape[0] for waveform in waveforms])
     padded_waveforms = []
     
@@ -151,7 +129,7 @@ def error_ctc_collate_fn(batch):
     for labels in error_labels:
         label_len = labels.shape[0]
         padding = max_label_len - label_len
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)  # CTC blank 인덱스 (0)
+        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)
         padded_error_labels.append(padded_labels)
     
     padded_waveforms = torch.stack(padded_waveforms)
@@ -164,7 +142,7 @@ def error_ctc_collate_fn(batch):
 def phoneme_collate_fn(batch):
     waveforms, phoneme_labels, label_lengths, wav_files = zip(*batch)
     
-    # 가변 길이 오디오를 위한 패딩
+    # 가변 길이 오디오 패딩
     max_audio_len = max([waveform.shape[0] for waveform in waveforms])
     padded_waveforms = []
     
@@ -174,7 +152,6 @@ def phoneme_collate_fn(batch):
         padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
         padded_waveforms.append(padded_waveform)
     
-    # 오디오 마스크 생성
     audio_lengths = torch.tensor([waveform.shape[0] for waveform in waveforms])
     
     # 음소 레이블 패딩
@@ -184,7 +161,7 @@ def phoneme_collate_fn(batch):
     for labels in phoneme_labels:
         label_len = labels.shape[0]
         padding = max_phoneme_len - label_len
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)  # 0은 blank 인덱스
+        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)
         padded_phoneme_labels.append(padded_labels)
     
     padded_waveforms = torch.stack(padded_waveforms)
@@ -212,21 +189,17 @@ def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, e
         # 순전파
         phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
         
-        # CTC 손실 계산을 위해 log_softmax 적용
-        log_probs = torch.log_softmax(error_logits, dim=-1)
-        
-        # 모델 출력 시퀀스 길이 계산
-        input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
-                                 dtype=torch.long).to(device)
-        
         # CTC 손실 계산
+        log_probs = torch.log_softmax(error_logits, dim=-1)
+        input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
+                               dtype=torch.long).to(device)
+        
         loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
         
         optimizer.zero_grad()
         loss.backward()
         
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-        
         optimizer.step()
         
         running_loss += loss.item()
@@ -258,20 +231,15 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
             # 순전파
             phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
             
-            # CTC 손실 계산을 위해 log_softmax 적용
-            log_probs = torch.log_softmax(error_logits, dim=-1)
-            
-            # 모델 출력 시퀀스 길이 계산
-            input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
-                                      dtype=torch.long).to(device)
-            
             # CTC 손실 계산
+            log_probs = torch.log_softmax(error_logits, dim=-1)
+            input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
+                                  dtype=torch.long).to(device)
+            
             loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
             
-            # 통계 업데이트
             running_loss += loss.item()
             
-            # 진행 상황 표시줄 업데이트
             progress_bar.set_postfix({
                 '검증_손실': running_loss / (batch_idx + 1)
             })
@@ -279,7 +247,6 @@ def validate_error_detection_ctc(model, dataloader, criterion, device):
     val_loss = running_loss / len(dataloader)
     return val_loss
 
-# 음소 인식 학습 함수
 def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=1.0):
     model.train()
     running_loss = 0.0
@@ -299,37 +266,27 @@ def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, e
         # 순전파
         phoneme_logits, adjusted_probs = model(waveforms, attention_mask)
         
-        # CTC 손실 준비
+        # CTC 손실 계산
         log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-        
-        # 입력 시퀀스 길이 계산
         input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), dtype=torch.long).to(device)
         
-        # CTC 손실 계산
         loss = criterion(log_probs.transpose(0, 1), phoneme_labels, input_lengths, label_lengths)
         
-        # 역전파
         optimizer.zero_grad()
         loss.backward()
         
-        # 그라디언트 클리핑 추가
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-        
         optimizer.step()
         
-        # 통계 업데이트
         running_loss += loss.item()
         
-        # 진행 상황 표시줄 업데이트
         progress_bar.set_postfix({
             '손실': running_loss / (batch_idx + 1)
         })
     
     epoch_loss = running_loss / len(dataloader)
-    
     return epoch_loss
 
-# 음소 인식 검증 함수
 def validate_phoneme_recognition(model, dataloader, criterion, device):
     model.eval()
     running_loss = 0.0
@@ -350,25 +307,19 @@ def validate_phoneme_recognition(model, dataloader, criterion, device):
             # 순전파
             phoneme_logits, adjusted_probs = model(waveforms, attention_mask)
             
-            # CTC 손실 준비
+            # CTC 손실 계산
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            
-            # 입력 시퀀스 길이 계산
             input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), dtype=torch.long).to(device)
             
-            # CTC 손실 계산
             loss = criterion(log_probs.transpose(0, 1), phoneme_labels, input_lengths, label_lengths)
             
-            # 통계 업데이트
             running_loss += loss.item()
             
-            # 진행 상황 표시줄 업데이트
             progress_bar.set_postfix({
                 '검증_손실': running_loss / (batch_idx + 1)
             })
     
     val_loss = running_loss / len(dataloader)
-    
     return val_loss
 
 def seed_everything(seed):
@@ -440,7 +391,7 @@ def main():
     with open(os.path.join(args.result_dir, f'hyperparams_stage{args.stage}.json'), 'w') as f:
         json.dump(vars(args), f, indent=4)
     
-    # 음소 매핑 로드 (필수)
+    # 음소 매핑 로드
     if os.path.exists(args.phoneme_map):
         with open(args.phoneme_map, 'r') as f:
             phoneme_to_id = json.load(f)
@@ -448,7 +399,7 @@ def main():
         logger.error(f"음소-ID 매핑 파일({args.phoneme_map})이 필요합니다. 이 파일을 생성한 후 다시 시도하세요.")
         sys.exit(1)
     
-    # 모델 초기화 - 새로운 모델 클래스 사용
+    # 모델 초기화
     model = DualWav2VecWithErrorAwarePhonemeRecognition(
         pretrained_model_name=args.pretrained_model,
         hidden_dim=args.hidden_dim,
@@ -471,48 +422,36 @@ def main():
         # 1단계: 오류 탐지 학습
         logger.info("1단계: 오류 탐지 학습")
         
-        # 데이터셋 로드
         train_dataset = ErrorLabelDataset(args.error_train_data, max_length=args.max_audio_length)
         val_dataset = ErrorLabelDataset(args.error_val_data, max_length=args.max_audio_length)
         
-        # 기존 collate_fn 대신 CTC용 collate_fn 사용
         train_dataloader = DataLoader(
-            train_dataset, 
-            batch_size=args.batch_size, 
-            shuffle=True, 
-            collate_fn=error_ctc_collate_fn  # CTC용 콜레이트 함수
+            train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=error_ctc_collate_fn
         )
         
         val_dataloader = DataLoader(
-            val_dataset, 
-            batch_size=args.batch_size, 
-            shuffle=False, 
-            collate_fn=error_ctc_collate_fn  # CTC용 콜레이트 함수
+            val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=error_ctc_collate_fn
         )
         
-        # FocalLoss 대신 CTCLoss 사용
         criterion = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
         optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
         
-        # 학습 루프
         best_val_loss = float('inf') 
         
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"에폭 {epoch}/{args.num_epochs} 시작")
             
-            # CTC 학습 함수 사용
             train_loss = train_error_detection_ctc(
                 model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=0.5
             )
             
-            # CTC 검증 함수 사용
             val_loss = validate_error_detection_ctc(
                 model, val_dataloader, criterion, args.device
             )
             
             logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}")
             
-            # 결과 저장 - 손실만 저장
+            # 결과 저장
             with open(os.path.join(args.result_dir, f'error_detection_epoch{epoch}.json'), 'w') as f:
                 json.dump({
                     'epoch': epoch,
@@ -520,7 +459,7 @@ def main():
                     'val_loss': val_loss
                 }, f, indent=4)
             
-            # 최고 모델 저장 - 손실 기준
+            # 최고 모델 저장
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_error_detection.pth'))
@@ -537,7 +476,6 @@ def main():
         for param in model.error_detection_head.parameters():
             param.requires_grad = False
         
-        # 데이터셋 로드
         train_dataset = PhonemeRecognitionDataset(
             args.phoneme_train_data, phoneme_to_id, max_length=args.max_audio_length
         )
@@ -546,38 +484,28 @@ def main():
         )
         
         train_dataloader = DataLoader(
-            train_dataset, 
-            batch_size=args.batch_size, 
-            shuffle=True, 
-            collate_fn=phoneme_collate_fn
+            train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=phoneme_collate_fn
         )
         
         val_dataloader = DataLoader(
-            val_dataset, 
-            batch_size=args.batch_size, 
-            shuffle=False, 
-            collate_fn=phoneme_collate_fn
+            val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=phoneme_collate_fn
         )
         
-        # 손실 함수와 옵티마이저 설정
         criterion = CTCLoss(blank=0, reduction='mean')
         optimizer = optim.AdamW(
             [p for p in model.parameters() if p.requires_grad], 
             lr=args.learning_rate
         )
         
-        # 학습 루프
         best_val_loss = float('inf')
         
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"에폭 {epoch}/{args.num_epochs} 시작")
             
-            # 학습
             train_loss = train_phoneme_recognition(
                 model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=1.0
             )
             
-            # 검증
             val_loss = validate_phoneme_recognition(
                 model, val_dataloader, criterion, args.device
             )
