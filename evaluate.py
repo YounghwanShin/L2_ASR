@@ -517,7 +517,18 @@ def main():
     
     # 모델 체크포인트 로드
     logger.info(f"체크포인트 로드 중: {args.model_checkpoint}")
-    model.load_state_dict(torch.load(args.model_checkpoint, map_location=args.device))
+    state_dict = torch.load(args.model_checkpoint, map_location=args.device)
+
+    # "module." 접두사 제거
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith('module.'):
+            new_key = key[7:]  # 'module.' 접두사 제거
+            new_state_dict[new_key] = value
+        else:
+            new_state_dict[key] = value
+
+    model.load_state_dict(new_state_dict)
     model = model.to(args.device)
     
     # 오류 탐지 평가

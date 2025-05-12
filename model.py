@@ -200,8 +200,7 @@ class ErrorAwarePhonemeDecoder(nn.Module):
         add_probs = error_probs[:, :, 2:3]           # add (insertion)
         correct_probs = error_probs[:, :, 3:4]       # correct
         
-        # 오류 유형별 효과 적용
-        
+        # 오류 유형별 효과 적용        
         # 1. Deletion 오류: sil 토큰의 확률 증가
         deletion_effect = phoneme_probs.clone()
         sil_mask = torch.zeros_like(phoneme_probs)
