@@ -13,21 +13,40 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchaudio
-from torch.nn import CrossEntropyLoss
+from torch.nn import CTCLoss
 
 from model import DualWav2VecWithErrorAwarePhonemeRecognition, LearnableWav2Vec
 
 torch.autograd.set_detect_anomaly(True)
 
-class ErrorLabelFrameDataset(Dataset):
-    def __init__(self, json_path, max_length=None, sampling_rate=16000, wav2vec_stride=320):
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.cross_entropy = nn.CrossEntropyLoss(reduction='none')
+        
+    def forward(self, inputs, targets):
+        ce_loss = self.cross_entropy(inputs, targets)
+        pt = torch.exp(-ce_loss)
+        loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+
+class ErrorLabelDataset(Dataset):
+    def __init__(self, json_path, max_length=None, sampling_rate=16000):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
         
         self.wav_files = list(self.data.keys())
         self.sampling_rate = sampling_rate
         self.max_length = max_length
-        self.wav2vec_stride = wav2vec_stride  # wav2vec2의 다운샘플링 비율 (320은 20ms 단위)
         
         # 오류 유형 매핑: C (정확함), D (삭제), A (추가/삽입), S (대체)
         self.error_type_mapping = {'C': 4, 'D': 1, 'A': 3, 'S': 2}
@@ -54,39 +73,11 @@ class ErrorLabelFrameDataset(Dataset):
         if self.max_length is not None and waveform.shape[1] > self.max_length:
             waveform = waveform[:, :self.max_length]
         
-        # 프레임별 오류 레이블 변환 및 wav2vec 출력 길이에 맞게 다운샘플링
-        frame_errors = item.get('frame_errors', [])
-        
-        # wav2vec2 출력 프레임 수 계산
-        wav_length = waveform.shape[-1]
-        # wav2vec2는 일반적으로 ~20ms 마다 하나의 출력을 생성 (320 샘플)
-        # 이는 대략 1/20 다운샘플링 비율
-        num_wav2vec_frames = wav_length // self.wav2vec_stride + (1 if wav_length % self.wav2vec_stride > 0 else 0)
-        
-        # 원본 프레임 수
-        num_orig_frames = len(frame_errors)
-        
-        # 레이블 다운샘플링 (wav2vec2 출력 프레임 수에 맞게)
-        if num_orig_frames > 0:
-            # 리샘플링 비율 계산
-            resample_ratio = num_orig_frames / num_wav2vec_frames
-            downsampled_labels = []
-            
-            for i in range(num_wav2vec_frames):
-                # 원본 프레임 인덱스 계산
-                orig_frame_idx = min(int(i * resample_ratio), num_orig_frames - 1)
-                error = frame_errors[orig_frame_idx]
-                
-                if error in self.error_type_mapping:
-                    downsampled_labels.append(self.error_type_mapping[error])
-                else:
-                    # 알 수 없는 오류 유형은 'C'(Correct)로 간주
-                    downsampled_labels.append(self.error_type_mapping['C'])
-        else:
-            # 프레임 정보가 없으면 모든 프레임을 'C'로 설정
-            downsampled_labels = [self.error_type_mapping['C']] * num_wav2vec_frames
-        
-        error_labels = torch.tensor(downsampled_labels, dtype=torch.long)
+        # 오류 레이블 변환
+        error_labels = item.get('error_labels', '')
+        error_labels = [self.error_type_mapping[label] for label in error_labels.split()]
+        error_labels = torch.tensor(error_labels, dtype=torch.long)
+
         label_length = torch.tensor(len(error_labels), dtype=torch.long)
         
         return waveform.squeeze(0), error_labels, label_length, wav_file
@@ -137,8 +128,8 @@ class PhonemeRecognitionDataset(Dataset):
         
         return waveform.squeeze(0), phoneme_labels, label_length, wav_file
 
-# 프레임 기반 오류 탐지를 위한 배치 콜레이션 함수
-def error_frame_collate_fn(batch):
+# 오류 탐지를 위한 배치 콜레이션 함수
+def error_ctc_collate_fn(batch):
     waveforms, error_labels, label_lengths, wav_files = zip(*batch)
     
     # 가변 길이 오디오를 위한 패딩
@@ -153,15 +144,14 @@ def error_frame_collate_fn(batch):
     
     audio_lengths = torch.tensor([waveform.shape[0] for waveform in waveforms])
     
-    # 프레임별 레이블 패딩
+    # CTC 손실을 위한 레이블 준비
     max_label_len = max([labels.shape[0] for labels in error_labels])
     padded_error_labels = []
     
     for labels in error_labels:
         label_len = labels.shape[0]
         padding = max_label_len - label_len
-        # 패딩 위치에는 무시할 값(-100)을 넣음 (CrossEntropyLoss에서 무시됨)
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=-100)
+        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)  # CTC blank 인덱스 (0)
         padded_error_labels.append(padded_labels)
     
     padded_waveforms = torch.stack(padded_waveforms)
@@ -203,11 +193,9 @@ def phoneme_collate_fn(batch):
     
     return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
 
-def train_error_detection_frame(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=0.5):
+def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=0.5):
     model.train()
     running_loss = 0.0
-    correct_predictions = 0
-    total_valid_predictions = 0  # 패딩을 제외한 예측 수
     
     progress_bar = tqdm(dataloader, desc=f'에폭 {epoch} [오류 탐지]')
     
@@ -224,53 +212,35 @@ def train_error_detection_frame(model, dataloader, criterion, optimizer, device,
         # 순전파
         phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
         
-        # error_logits는 [batch_size, seq_len, num_classes] 형태
-        # 각 프레임에 대한 예측 계산
-        error_preds = torch.argmax(error_logits, dim=-1)
+        # CTC 손실 계산을 위해 log_softmax 적용
+        log_probs = torch.log_softmax(error_logits, dim=-1)
         
-        # 손실 계산 (CrossEntropyLoss는 [B, C, L] 형태를 기대하므로 차원 변경)
-        # error_logits: [B, L, C] -> [B, C, L]로 변경
-        error_logits_transposed = error_logits.transpose(1, 2)
+        # 모델 출력 시퀀스 길이 계산
+        input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
+                                 dtype=torch.long).to(device)
         
-        # 손실 계산 (ignore_index=-100으로 패딩 무시)
-        loss = criterion(error_logits_transposed, error_labels)
+        # CTC 손실 계산
+        loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
         
-        # 역전파
         optimizer.zero_grad()
         loss.backward()
         
-        # 그래디언트 클리핑
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         
         optimizer.step()
         
-        # 통계 계산
         running_loss += loss.item()
         
-        # 정확도 계산 (패딩 제외)
-        mask = (error_labels != -100)  # 패딩 마스크
-        correct_predictions += ((error_preds == error_labels) & mask).sum().item()
-        total_valid_predictions += mask.sum().item()
-        
-        # 진행 상황 표시줄 업데이트
-        avg_loss = running_loss / (batch_idx + 1)
-        accuracy = 100.0 * correct_predictions / max(total_valid_predictions, 1)
-        
         progress_bar.set_postfix({
-            '손실': f'{avg_loss:.4f}',
-            '정확도': f'{accuracy:.2f}%'
+            '손실': running_loss / (batch_idx + 1)
         })
     
     epoch_loss = running_loss / len(dataloader)
-    epoch_accuracy = 100.0 * correct_predictions / max(total_valid_predictions, 1)
-    
-    return epoch_loss, epoch_accuracy
+    return epoch_loss
 
-def validate_error_detection_frame(model, dataloader, criterion, device):
+def validate_error_detection_ctc(model, dataloader, criterion, device):
     model.eval()
     running_loss = 0.0
-    correct_predictions = 0
-    total_valid_predictions = 0
     
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='검증 [오류 탐지]')
@@ -288,34 +258,26 @@ def validate_error_detection_frame(model, dataloader, criterion, device):
             # 순전파
             phoneme_logits, adjusted_probs, error_logits = model(waveforms, attention_mask, return_error_probs=True)
             
-            # 각 프레임에 대한 예측 계산
-            error_preds = torch.argmax(error_logits, dim=-1)
+            # CTC 손실 계산을 위해 log_softmax 적용
+            log_probs = torch.log_softmax(error_logits, dim=-1)
             
-            # 손실 계산 (CrossEntropyLoss는 [B, C, L] 형태를 기대하므로 차원 변경)
-            error_logits_transposed = error_logits.transpose(1, 2)
-            loss = criterion(error_logits_transposed, error_labels)
+            # 모델 출력 시퀀스 길이 계산
+            input_lengths = torch.full(size=(log_probs.size(0),), fill_value=log_probs.size(1), 
+                                      dtype=torch.long).to(device)
             
-            # 통계 계산
+            # CTC 손실 계산
+            loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
+            
+            # 통계 업데이트
             running_loss += loss.item()
             
-            # 정확도 계산 (패딩 제외)
-            mask = (error_labels != -100)  # 패딩 마스크
-            correct_predictions += ((error_preds == error_labels) & mask).sum().item()
-            total_valid_predictions += mask.sum().item()
-            
             # 진행 상황 표시줄 업데이트
-            avg_loss = running_loss / (batch_idx + 1)
-            accuracy = 100.0 * correct_predictions / max(total_valid_predictions, 1)
-            
             progress_bar.set_postfix({
-                '검증_손실': f'{avg_loss:.4f}',
-                '정확도': f'{accuracy:.2f}%'
+                '검증_손실': running_loss / (batch_idx + 1)
             })
     
     val_loss = running_loss / len(dataloader)
-    val_accuracy = 100.0 * correct_predictions / max(total_valid_predictions, 1)
-    
-    return val_loss, val_accuracy
+    return val_loss
 
 # 음소 인식 학습 함수
 def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=1.0):
@@ -428,9 +390,8 @@ def main():
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='사용할 장치')
     
     # 데이터 설정
-    parser.add_argument('--error_train_data', type=str, default='data/errors_train_frames.json', help='오류 탐지 학습 데이터')
-    parser.add_argument('--error_val_data', type=str, default='data/errors_val_frames.json', help='오류 탐지 검증 데이터')
-    parser.add_argument('--wav2vec_stride', type=int, default=320, help='wav2vec2 다운샘플링 스트라이드')
+    parser.add_argument('--error_train_data', type=str, default='data/errors_train.json', help='오류 탐지 학습 데이터')
+    parser.add_argument('--error_val_data', type=str, default='data/errors_val.json', help='오류 탐지 검증 데이터')
     parser.add_argument('--phoneme_train_data', type=str, default='data/perceived_train.json', help='음소 인식 학습 데이터')
     parser.add_argument('--phoneme_val_data', type=str, default='data/perceived_val.json', help='음소 인식 검증 데이터')
     parser.add_argument('--phoneme_map', type=str, default='data/phoneme_to_id.json', help='음소-ID 매핑')
@@ -508,68 +469,65 @@ def main():
     # 학습 단계 설정
     if args.stage == 1:
         # 1단계: 오류 탐지 학습
-        logger.info("1단계: 프레임별 오류 탐지 학습")
+        logger.info("1단계: 오류 탐지 학습")
         
         # 데이터셋 로드
-        train_dataset = ErrorLabelFrameDataset(args.error_train_data, max_length=args.max_audio_length, wav2vec_stride=args.wav2vec_stride)
-        val_dataset = ErrorLabelFrameDataset(args.error_val_data, max_length=args.max_audio_length, wav2vec_stride=args.wav2vec_stride)
+        train_dataset = ErrorLabelDataset(args.error_train_data, max_length=args.max_audio_length)
+        val_dataset = ErrorLabelDataset(args.error_val_data, max_length=args.max_audio_length)
         
-        # 프레임 기반 collate_fn 사용
+        # 기존 collate_fn 대신 CTC용 collate_fn 사용
         train_dataloader = DataLoader(
             train_dataset, 
             batch_size=args.batch_size, 
             shuffle=True, 
-            collate_fn=error_frame_collate_fn
+            collate_fn=error_ctc_collate_fn  # CTC용 콜레이트 함수
         )
         
         val_dataloader = DataLoader(
             val_dataset, 
             batch_size=args.batch_size, 
             shuffle=False, 
-            collate_fn=error_frame_collate_fn
+            collate_fn=error_ctc_collate_fn  # CTC용 콜레이트 함수
         )
         
-        # CrossEntropyLoss 사용 (ignore_index=-100으로 패딩 무시)
-        criterion = nn.CrossEntropyLoss(ignore_index=-100)
+        # FocalLoss 대신 CTCLoss 사용
+        criterion = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
         optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
         
         # 학습 루프
-        best_val_accuracy = 0.0
+        best_val_loss = float('inf') 
         
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"에폭 {epoch}/{args.num_epochs} 시작")
             
-            # 프레임 기반 학습 함수 사용
-            train_loss, train_accuracy = train_error_detection_frame(
-                model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=args.max_grad_norm
+            # CTC 학습 함수 사용
+            train_loss = train_error_detection_ctc(
+                model, train_dataloader, criterion, optimizer, args.device, epoch, max_grad_norm=0.5
             )
             
-            # 프레임 기반 검증 함수 사용
-            val_loss, val_accuracy = validate_error_detection_frame(
+            # CTC 검증 함수 사용
+            val_loss = validate_error_detection_ctc(
                 model, val_dataloader, criterion, args.device
             )
             
-            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 학습 정확도: {train_accuracy:.2f}%, "
-                       f"검증 손실: {val_loss:.4f}, 검증 정확도: {val_accuracy:.2f}%")
+            logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}")
             
-            # 결과 저장
-            with open(os.path.join(args.result_dir, f'error_detection_frame_epoch{epoch}.json'), 'w') as f:
+            # 결과 저장 - 손실만 저장
+            with open(os.path.join(args.result_dir, f'error_detection_epoch{epoch}.json'), 'w') as f:
                 json.dump({
                     'epoch': epoch,
                     'train_loss': train_loss,
-                    'train_accuracy': train_accuracy,
-                    'val_loss': val_loss,
-                    'val_accuracy': val_accuracy
+                    'val_loss': val_loss
                 }, f, indent=4)
             
-            # 최고 모델 저장 - 정확도 기준
-            if val_accuracy > best_val_accuracy:
-                best_val_accuracy = val_accuracy
-                torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_error_detection_frame.pth'))
-                logger.info(f"검증 정확도 {val_accuracy:.2f}%로 새로운 최고 모델 저장")
+            # 최고 모델 저장 - 손실 기준
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_error_detection.pth'))
+                logger.info(f"검증 손실 {val_loss:.4f}로 새로운 최고 모델 저장")
             
             # 마지막 모델 저장
-            torch.save(model.state_dict(), os.path.join(args.output_dir, f'last_error_detection_frame.pth'))
+            torch.save(model.state_dict(), os.path.join(args.output_dir, f'last_error_detection.pth'))
     
     elif args.stage == 2:
         # 2단계: 음소 인식 학습
@@ -602,7 +560,7 @@ def main():
         )
         
         # 손실 함수와 옵티마이저 설정
-        criterion = nn.CTCLoss(blank=0, reduction='mean')
+        criterion = CTCLoss(blank=0, reduction='mean')
         optimizer = optim.AdamW(
             [p for p in model.parameters() if p.requires_grad], 
             lr=args.learning_rate
