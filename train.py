@@ -6,7 +6,6 @@ import argparse
 import random
 import numpy as np
 from tqdm import tqdm
-from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -443,11 +442,22 @@ def main():
         blank_index=0,  # CTC 빈칸 인덱스
         sil_index=1     # sil 인덱스
     )
-    
-    # 체크포인트 로드(가능한 경우)
+        
     if args.model_checkpoint:
         logger.info(f"{args.model_checkpoint}에서 체크포인트 로드 중")
-        model.load_state_dict(torch.load(args.model_checkpoint, map_location=args.device))
+        
+        state_dict = torch.load(args.model_checkpoint, map_location=args.device)
+        
+        # "module." 접두사 제거
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith('module.'):
+                new_key = key[7:]  # 'module.' 접두사 제거
+                new_state_dict[new_key] = value
+            else:
+                new_state_dict[key] = value
+        
+        model.load_state_dict(new_state_dict)
     
     if torch.cuda.device_count() > 1:
         logger.info(f"{torch.cuda.device_count()}개의 GPU가 감지되었습니다. DataParallel 사용")
@@ -511,8 +521,12 @@ def main():
         logger.info("2단계: 음소 인식 학습")
         
         # 오류 탐지 헤드 고정
-        for param in model.error_detection_head.parameters():
-            param.requires_grad = False
+        if isinstance(model, nn.DataParallel):
+            for param in model.module.error_detection_head.parameters():
+                param.requires_grad = False
+        else:
+            for param in model.error_detection_head.parameters():
+                param.requires_grad = False
         
         train_dataset = PhonemeRecognitionDataset(
             args.phoneme_train_data, phoneme_to_id, max_length=args.max_audio_length

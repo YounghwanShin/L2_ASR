@@ -1,22 +1,16 @@
 import os
-import sys
 import json
 import argparse
 import logging
 import numpy as np
 from tqdm import tqdm
-from pathlib import Path
-from typing import Dict, List, Tuple, Union
 
 import torch
-import torch.nn as nn
 import torchaudio
 from torch.utils.data import Dataset, DataLoader
 
 from model import DualWav2VecWithErrorAwarePhonemeRecognition
-from train import ErrorLabelDataset, error_ctc_collate_fn
 
-# JSON 직렬화를 위한 NumPy 타입 변환 함수
 def convert_numpy_types(obj):
     if isinstance(obj, np.integer):
         return int(obj)
