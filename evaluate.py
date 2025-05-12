@@ -16,6 +16,25 @@ from torch.utils.data import Dataset, DataLoader
 from model import DualWav2VecWithErrorAwarePhonemeRecognition
 from train import ErrorLabelDataset, error_ctc_collate_fn
 
+# JSON 직렬화를 위한 NumPy 타입 변환 함수
+def convert_numpy_types(obj):
+    """
+    NumPy 타입을 Python 네이티브 타입으로 변환
+    
+    Args:
+        obj: 변환할 객체
+        
+    Returns:
+        변환된 객체
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
 # Levenshtein 거리 계산을 위한 함수
 def levenshtein_distance(seq1, seq2):
     """
@@ -78,8 +97,14 @@ def levenshtein_distance(seq1, seq2):
     # 총 편집 거리와 각 편집 연산의 횟수 반환
     deletions, insertions, substitutions = ops[size_x-1, size_y-1]
     
+    # NumPy 타입을 Python 네이티브 타입으로 변환
+    distance = int(matrix[size_x-1, size_y-1])
+    insertions = int(insertions)
+    deletions = int(deletions)
+    substitutions = int(substitutions)
+    
     # 편집 거리, 삽입, 삭제, 대체 반환
-    return matrix[size_x-1, size_y-1], insertions, deletions, substitutions
+    return distance, insertions, deletions, substitutions
 
 class EvaluationDataset(Dataset):
     """
@@ -260,7 +285,7 @@ def decode_ctc(log_probs, blank_idx=0):
         for t in range(greedy_preds.shape[1]):
             pred = greedy_preds[b, t]
             if pred != blank_idx and pred != prev:
-                seq.append(pred)
+                seq.append(int(pred))  # NumPy int32를 Python int로 변환
             prev = pred
         decoded_seqs.append(seq)
     
@@ -334,12 +359,12 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
                 
                 # 오류 유형별 통계 및 혼동 행렬 업데이트
                 for t, p in zip(true_errors_trimmed, preds_trimmed):
-                    error_type_stats[t]['true'] += 1
-                    error_type_stats[p]['pred'] += 1
+                    error_type_stats[int(t)]['true'] += 1
+                    error_type_stats[int(p)]['pred'] += 1
                     if t == p:
-                        error_type_stats[t]['correct'] += 1
+                        error_type_stats[int(t)]['correct'] += 1
                     
-                    confusion_matrix[t, p] += 1
+                    confusion_matrix[int(t), int(p)] += 1
     
     # 전체 정확도 계산
     accuracy = correct_errors / total_errors if total_errors > 0 else 0
@@ -352,16 +377,16 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
         
         error_type_metrics[error_type_names[error_type]] = {
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'support': stats['true']
+            'precision': float(precision),  # NumPy 값을 Python 값으로 변환
+            'recall': float(recall),
+            'f1': float(f1),
+            'support': int(stats['true'])
         }
     
     return {
-        'accuracy': accuracy,
+        'accuracy': float(accuracy),
         'error_type_metrics': error_type_metrics,
-        'confusion_matrix': confusion_matrix
+        'confusion_matrix': confusion_matrix.tolist()  # NumPy 배열을 리스트로 변환
     }
 
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
@@ -414,6 +439,9 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
                 # 패딩 제거한 참조 음소 시퀀스
                 true_phonemes = true_phonemes[:length].cpu().numpy().tolist()
                 
+                # Python 기본 타입으로 변환 (NumPy int32 -> Python int)
+                true_phonemes = [int(p) for p in true_phonemes]
+                
                 # PER 계산
                 per, insertions, deletions, substitutions = levenshtein_distance(preds, true_phonemes)
                 
@@ -430,7 +458,7 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
                 # 샘플별 결과 저장
                 per_sample_metrics.append({
                     'wav_file': wav_file,
-                    'per': per / phoneme_count if phoneme_count > 0 else 0,
+                    'per': float(per / phoneme_count) if phoneme_count > 0 else 0.0,
                     'insertions': insertions,
                     'deletions': deletions,
                     'substitutions': substitutions,
@@ -442,12 +470,12 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     per = total_errors / total_phonemes if total_phonemes > 0 else 0
     
     return {
-        'per': per,
-        'total_phonemes': total_phonemes,
-        'total_errors': total_errors,
-        'insertions': total_insertions,
-        'deletions': total_deletions,
-        'substitutions': total_substitutions,
+        'per': float(per),
+        'total_phonemes': int(total_phonemes),
+        'total_errors': int(total_errors),
+        'insertions': int(total_insertions),
+        'deletions': int(total_deletions),
+        'substitutions': int(total_substitutions),
         'per_sample': per_sample_metrics
     }
 
@@ -563,9 +591,9 @@ def main():
     # 상세 결과 저장
     if args.detailed:
         # 혼동 행렬 저장
-        confusion_matrix = error_detection_results['confusion_matrix']
-        confusion_matrix_path = os.path.join(args.output_dir, 'confusion_matrix.npy')
-        np.save(confusion_matrix_path, confusion_matrix)
+        confusion_matrix_path = os.path.join(args.output_dir, 'confusion_matrix.json')
+        with open(confusion_matrix_path, 'w') as f:
+            json.dump(error_detection_results['confusion_matrix'], f, indent=2)
         logger.info(f"혼동 행렬을 {confusion_matrix_path}에 저장했습니다.")
         
         # 샘플별 PER 결과 저장
