@@ -20,7 +20,7 @@ def convert_numpy_types(obj):
         return obj.tolist()
     return obj
 
-# Levenshtein 거리 계산을 위한 함수
+# Levenshtein 거리 계산
 def levenshtein_distance(seq1, seq2):
     size_x = len(seq1) + 1
     size_y = len(seq2) + 1
