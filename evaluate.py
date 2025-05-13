@@ -6,8 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 import torch
-import torchaudio
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 from model import DualWav2VecWithErrorAwarePhonemeRecognition
 from data import EvaluationDataset
@@ -21,15 +20,12 @@ def convert_numpy_types(obj):
         return obj.tolist()
     return obj
 
-# Levenshtein 거리 계산
 def levenshtein_distance(seq1, seq2):
     size_x = len(seq1) + 1
     size_y = len(seq2) + 1
     
-    # 행렬 초기화
     matrix = np.zeros((size_x, size_y), dtype=np.int32)
     
-    # 첫 행과 열 초기화
     for x in range(size_x):
         matrix[x, 0] = x
     for y in range(size_y):
@@ -81,6 +77,29 @@ def levenshtein_distance(seq1, seq2):
     
     # 편집 거리, 삽입, 삭제, 대체 반환
     return distance, insertions, deletions, substitutions
+
+def decode_ctc_for_error_detection(log_probs, input_lengths, blank_idx=0):
+    """오류 탐지에 특화된 CTC 디코딩 함수"""
+    # 각 시간 단계에서 가장 확률이 높은 클래스 얻기
+    greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()  # (batch_size, seq_len)
+    
+    batch_size = greedy_preds.shape[0]
+    decoded_seqs = []
+    
+    for b in range(batch_size):
+        seq = []
+        actual_length = input_lengths[b].item()
+        
+        # 오류 탐지를 위한 디코딩: blank만 제거하고 연속된 토큰은 유지
+        for t in range(min(greedy_preds.shape[1], actual_length)):
+            pred = greedy_preds[b, t]
+            # blank가 아닌 토큰만 추가 (연속된 동일 토큰 유지)
+            if pred != blank_idx:
+                seq.append(int(pred))
+                    
+        decoded_seqs.append(seq)
+    
+    return decoded_seqs
 
 def collate_fn(batch):
     (
@@ -213,45 +232,76 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             # 모델 순전파
             _, _, error_logits = model(waveforms, attention_mask, return_error_probs=True)
             
-            # 정확한 다운샘플링 비율 계산 (추가된 부분)
+            # 정확한 다운샘플링 비율 계산
             input_seq_len = waveforms.size(1)
             output_seq_len = error_logits.size(1)
             
-            # 입력 길이를 기반으로 출력 길이 계산 (추가된 부분)
+            # 입력 길이를 기반으로 출력 길이 계산
             input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
             input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
             
             # CTC 디코딩
             log_probs = torch.log_softmax(error_logits, dim=-1)
+            batch_error_preds = decode_ctc_for_error_detection(log_probs, input_lengths)
             
-            # decode_ctc 함수 수정 (input_lengths 전달)
-            batch_error_preds = decode_ctc(log_probs, input_lengths)
-            
-            # 배치의 각 샘플에 대해 오류 예측 정확도 계산
+            # 배치의 각 샘플에 대해 오류 예측 성능 평가
             for i, (preds, true_errors, length) in enumerate(zip(batch_error_preds, error_labels, error_label_lengths)):
-                # 패딩 제거
-                true_errors = true_errors[:length].cpu().numpy()
+                # 패딩 제거한 실제 오류 레이블
+                true_errors = true_errors[:length].cpu().numpy().tolist()
                 
-                # 최대한 맞추기 위해 더 짧은 시퀀스의 길이로 자르기 (정확한 정렬이 없는 경우)
-                min_len = min(len(preds), len(true_errors))
-                true_errors_trimmed = true_errors[:min_len]
-                preds_trimmed = preds[:min_len]
+                # 시퀀스 길이 차이 처리를 위해 레벤슈타인 거리 사용
+                edit_distance, insertions, deletions, substitutions = levenshtein_distance(preds, true_errors)
                 
-                # 전체 정확도 계산
-                correct_in_sample = (np.array(preds_trimmed) == true_errors_trimmed).sum()
-                total_in_sample = min_len
-                
+                # 전체 오류 개수
+                total_in_sample = len(true_errors)
                 total_errors += total_in_sample
-                correct_errors += correct_in_sample
                 
-                # 오류 유형별 통계 및 혼동 행렬 업데이트
-                for t, p in zip(true_errors_trimmed, preds_trimmed):
-                    error_type_stats[int(t)]['true'] += 1
-                    error_type_stats[int(p)]['pred'] += 1
-                    if t == p:
-                        error_type_stats[int(t)]['correct'] += 1
-                    
-                    confusion_matrix[int(t), int(p)] += 1
+                # 정확히 맞춘 오류 개수
+                correct_in_sample = total_in_sample - edit_distance
+                correct_errors += max(0, correct_in_sample)
+                
+                # 오류 유형별 통계 업데이트
+                for t in true_errors:
+                    if t in error_type_stats:
+                        error_type_stats[t]['true'] += 1
+                
+                for p in preds:
+                    if p in error_type_stats:
+                        error_type_stats[p]['pred'] += 1
+                
+                # 두 시퀀스 정렬을 위한 동적 프로그래밍 (간소화된 버전)
+                # 실제로는 더 정교한 시퀀스 정렬 알고리즘 사용 권장
+                i, j = 0, 0
+                while i < len(true_errors) and j < len(preds):
+                    if true_errors[i] == preds[j]:
+                        # 정확히 일치 - 해당 유형의 정확도 증가 및 혼동 행렬 업데이트
+                        error_type_stats[true_errors[i]]['correct'] += 1
+                        confusion_matrix[true_errors[i], preds[j]] += 1
+                        i += 1
+                        j += 1
+                    elif j + 1 < len(preds) and true_errors[i] == preds[j + 1]:
+                        # 예측에 추가 오류 - 혼동 행렬 업데이트
+                        confusion_matrix[0, preds[j]] += 1  # 0은 blank로 간주
+                        j += 1
+                    elif i + 1 < len(true_errors) and true_errors[i + 1] == preds[j]:
+                        # 실제에 추가 오류 - 혼동 행렬 업데이트
+                        confusion_matrix[true_errors[i], 0] += 1  # 0은 blank로 간주
+                        i += 1
+                    else:
+                        # 불일치 - 혼동 행렬 업데이트
+                        if i < len(true_errors) and j < len(preds):
+                            confusion_matrix[true_errors[i], preds[j]] += 1
+                        i += 1
+                        j += 1
+                
+                # 남은 요소 처리
+                while i < len(true_errors):
+                    confusion_matrix[true_errors[i], 0] += 1
+                    i += 1
+                
+                while j < len(preds):
+                    confusion_matrix[0, preds[j]] += 1
+                    j += 1
     
     # 전체 정확도 계산
     accuracy = correct_errors / total_errors if total_errors > 0 else 0
@@ -264,7 +314,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
         
         error_type_metrics[error_type_names[error_type]] = {
-            'precision': float(precision),  # NumPy 값을 Python 값으로 변환
+            'precision': float(precision),
             'recall': float(recall),
             'f1': float(f1),
             'support': int(stats['true'])
@@ -273,7 +323,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
     return {
         'accuracy': float(accuracy),
         'error_type_metrics': error_type_metrics,
-        'confusion_matrix': confusion_matrix.tolist()  # NumPy 배열을 리스트로 변환
+        'confusion_matrix': confusion_matrix.tolist()
     }
 
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
