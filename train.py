@@ -10,76 +10,15 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-import torchaudio
+from torch.utils.data import DataLoader
 from torch.nn import CTCLoss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from model import DualWav2VecWithErrorAwarePhonemeRecognition
-from dataset import ErrorLabelDataset, PhonemeRecognitionDataset, EvaluationDataset
+from data import ErrorLabelDataset, PhonemeRecognitionDataset, EvaluationDataset
+from evaluate import evaluate_error_detection, evaluate_phoneme_recognition, levenshtein_distance
 
 torch.autograd.set_detect_anomaly(True)
-
-# 레벤슈타인 거리 계산을 위한 함수
-def levenshtein_distance(seq1, seq2):
-    size_x = len(seq1) + 1
-    size_y = len(seq2) + 1
-    
-    # 행렬 초기화
-    matrix = np.zeros((size_x, size_y), dtype=np.int32)
-    
-    # 첫 행과 열 초기화
-    for x in range(size_x):
-        matrix[x, 0] = x
-    for y in range(size_y):
-        matrix[0, y] = y
-    
-    # 삽입, 삭제, 대체 연산 추적을 위한 행렬
-    ops = np.zeros((size_x, size_y, 3), dtype=np.int32)  # [DEL, INS, SUB]
-    
-    # 첫 행과 열의 연산 초기화
-    for x in range(1, size_x):
-        ops[x, 0, 0] = 1  # 삭제
-    for y in range(1, size_y):
-        ops[0, y, 1] = 1  # 삽입
-    
-    # 행렬 채우기
-    for x in range(1, size_x):
-        for y in range(1, size_y):
-            if seq1[x-1] == seq2[y-1]:
-                # 일치하는 경우
-                matrix[x, y] = matrix[x-1, y-1]
-                ops[x, y] = ops[x-1, y-1]
-            else:
-                # 삭제, 삽입, 대체 중 최소 비용 선택
-                delete = matrix[x-1, y] + 1
-                insert = matrix[x, y-1] + 1
-                subst = matrix[x-1, y-1] + 1
-                
-                min_val = min(delete, insert, subst)
-                matrix[x, y] = min_val
-                
-                if min_val == delete:
-                    ops[x, y] = ops[x-1, y].copy()
-                    ops[x, y, 0] += 1  # 삭제 +1
-                elif min_val == insert:
-                    ops[x, y] = ops[x, y-1].copy()
-                    ops[x, y, 1] += 1  # 삽입 +1
-                else:  # 대체
-                    ops[x, y] = ops[x-1, y-1].copy()
-                    ops[x, y, 2] += 1  # 대체 +1
-    
-    # 총 편집 거리와 각 편집 연산의 횟수 반환
-    deletions, insertions, substitutions = ops[size_x-1, size_y-1]
-    
-    # NumPy 타입을 Python 네이티브 타입으로 변환
-    distance = int(matrix[size_x-1, size_y-1])
-    insertions = int(insertions)
-    deletions = int(deletions)
-    substitutions = int(substitutions)
-    
-    # 편집 거리, 삽입, 삭제, 대체 반환
-    return distance, insertions, deletions, substitutions
 
 def evaluation_collate_fn(batch):
     (
@@ -242,190 +181,6 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
         decoded_seqs.append(seq)
     
     return decoded_seqs
-
-def evaluate_error_detection(model, dataloader, device, error_type_names=None):
-    if error_type_names is None:
-        error_type_names = {0: 'blank', 1: 'deletion', 2: 'substitution', 3: 'insertion', 4: 'correct'}
-    
-    model.eval()
-    
-    # 오류 유형별 통계
-    total_errors = 0
-    correct_errors = 0
-    
-    # 오류 유형별 통계
-    error_type_stats = {error_type: {'true': 0, 'pred': 0, 'correct': 0} for error_type in error_type_names.keys()}
-    
-    # 혼동 행렬
-    confusion_matrix = np.zeros((len(error_type_names), len(error_type_names)), dtype=np.int32)
-    
-    with torch.no_grad():
-        progress_bar = tqdm(dataloader, desc='오류 탐지 평가')
-        
-        for (waveforms, error_labels, _, _, audio_lengths, error_label_lengths, 
-             _, _, wav_files) in progress_bar:
-            
-            waveforms = waveforms.to(device)
-            error_labels = error_labels.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            # 어텐션 마스크 생성
-            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
-            
-            # 모델 순전파
-            _, _, error_logits = model(waveforms, attention_mask, return_error_probs=True)
-            
-            # 정확한 다운샘플링 비율 계산
-            input_seq_len = waveforms.size(1)
-            output_seq_len = error_logits.size(1)
-            
-            # 입력 길이를 기반으로 출력 길이 계산
-            input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
-            input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
-            
-            # CTC 디코딩
-            log_probs = torch.log_softmax(error_logits, dim=-1)
-            
-            # decode_ctc 함수 호출 (input_lengths 전달)
-            batch_error_preds = decode_ctc(log_probs, input_lengths)
-            
-            # 배치의 각 샘플에 대해 오류 예측 정확도 계산
-            for i, (preds, true_errors, length) in enumerate(zip(batch_error_preds, error_labels, error_label_lengths)):
-                # 패딩 제거
-                true_errors = true_errors[:length].cpu().numpy()
-                
-                # 최대한 맞추기 위해 더 짧은 시퀀스의 길이로 자르기 (정확한 정렬이 없는 경우)
-                min_len = min(len(preds), len(true_errors))
-                true_errors_trimmed = true_errors[:min_len]
-                preds_trimmed = preds[:min_len]
-                
-                # 전체 정확도 계산
-                correct_in_sample = (np.array(preds_trimmed) == true_errors_trimmed).sum()
-                total_in_sample = min_len
-                
-                total_errors += total_in_sample
-                correct_errors += correct_in_sample
-                
-                # 오류 유형별 통계 및 혼동 행렬 업데이트
-                for t, p in zip(true_errors_trimmed, preds_trimmed):
-                    error_type_stats[int(t)]['true'] += 1
-                    error_type_stats[int(p)]['pred'] += 1
-                    if t == p:
-                        error_type_stats[int(t)]['correct'] += 1
-                    
-                    confusion_matrix[int(t), int(p)] += 1
-    
-    # 전체 정확도 계산
-    accuracy = correct_errors / total_errors if total_errors > 0 else 0
-    
-    # 오류 유형별 정밀도, 재현율, F1 점수 계산
-    error_type_metrics = {}
-    for error_type, stats in error_type_stats.items():
-        precision = stats['correct'] / stats['pred'] if stats['pred'] > 0 else 0
-        recall = stats['correct'] / stats['true'] if stats['true'] > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        
-        error_type_metrics[error_type_names[error_type]] = {
-            'precision': float(precision),  # NumPy 값을 Python 값으로 변환
-            'recall': float(recall),
-            'f1': float(f1),
-            'support': int(stats['true'])
-        }
-    
-    return {
-        'accuracy': float(accuracy),
-        'error_type_metrics': error_type_metrics,
-        'confusion_matrix': confusion_matrix.tolist()  # NumPy 배열을 리스트로 변환
-    }
-
-def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
-    model.eval()
-    
-    total_phonemes = 0
-    total_errors = 0
-    total_insertions = 0
-    total_deletions = 0
-    total_substitutions = 0
-    
-    per_sample_metrics = []
-    
-    with torch.no_grad():
-        progress_bar = tqdm(dataloader, desc='음소 인식 평가')
-        
-        for (waveforms, _, perceived_phoneme_ids, canonical_phoneme_ids, 
-             audio_lengths, _, perceived_lengths, canonical_lengths, wav_files) in progress_bar:
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            # 어텐션 마스크 생성
-            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
-            
-            # 모델 순전파
-            phoneme_logits, adjusted_probs = model(waveforms, attention_mask)
-            
-            # 정확한 다운샘플링 비율 계산
-            input_seq_len = waveforms.size(1)
-            output_seq_len = phoneme_logits.size(1)
-            
-            # 입력 길이를 기반으로 출력 길이 계산
-            input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
-            input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
-            
-            # 음소 인식을 위한 CTC 디코딩
-            log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            
-            # decode_ctc 함수 수정 (input_lengths 전달)
-            batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
-            
-            # 배치의 각 샘플에 대해 PER 계산
-            for i, (preds, true_phonemes, length, wav_file) in enumerate(
-                zip(batch_phoneme_preds, perceived_phoneme_ids, perceived_lengths, wav_files)):
-                
-                # 패딩 제거한 참조 음소 시퀀스
-                true_phonemes = true_phonemes[:length].cpu().numpy().tolist()
-                
-                # Python 기본 타입으로 변환 (NumPy int32 -> Python int)
-                true_phonemes = [int(p) for p in true_phonemes]
-                
-                # PER 계산
-                per, insertions, deletions, substitutions = levenshtein_distance(preds, true_phonemes)
-                
-                # 총 음소 수
-                phoneme_count = len(true_phonemes)
-                
-                # 누적 통계 업데이트
-                total_phonemes += phoneme_count
-                total_errors += per
-                total_insertions += insertions
-                total_deletions += deletions
-                total_substitutions += substitutions
-                
-                # 샘플별 결과 저장
-                per_sample_metrics.append({
-                    'wav_file': wav_file,
-                    'per': float(per / phoneme_count) if phoneme_count > 0 else 0.0,
-                    'insertions': insertions,
-                    'deletions': deletions,
-                    'substitutions': substitutions,
-                    'true_phonemes': [id_to_phoneme.get(str(p), "UNK") for p in true_phonemes],
-                    'pred_phonemes': [id_to_phoneme.get(str(p), "UNK") for p in preds]
-                })
-        
-    # 전체 PER 계산
-    per = total_errors / total_phonemes if total_phonemes > 0 else 0
-    
-    return {
-        'per': float(per),
-        'total_phonemes': int(total_phonemes),
-        'total_errors': int(total_errors),
-        'insertions': int(total_insertions),
-        'deletions': int(total_deletions),
-        'substitutions': int(total_substitutions),
-        'per_sample': per_sample_metrics
-    }
 
 def train_error_detection_ctc(model, dataloader, criterion, optimizer, device, epoch, scheduler=None, max_grad_norm=0.5):
     model.train()
@@ -656,7 +411,7 @@ def main():
     parser.add_argument('--max_audio_length', type=int, default=None, help='최대 오디오 길이(샘플 단위)')
     parser.add_argument('--max_grad_norm', type=float, default=0.5, help='그라디언트 클리핑을 위한 최대 노름값')
     
-    # 학습률 스케줄러 설정 (추가)
+    # 학습률 스케줄러 설정
     parser.add_argument('--use_scheduler', action='store_true', help='학습률 스케줄러 사용 여부')
     parser.add_argument('--scheduler_patience', type=int, default=2, help='학습률 감소 전 기다릴 에폭 수')
     parser.add_argument('--scheduler_factor', type=float, default=0.5, help='학습률 감소 비율')
@@ -670,7 +425,7 @@ def main():
     parser.add_argument('--model_checkpoint', type=str, default=None, help='로드할 모델 체크포인트 경로')
     
     # 평가 관련 설정
-    parser.add_argument('--evaluate_every_epoch', action='store_true', help='각 에폭마다 평가 진행')
+    parser.add_argument('--evaluate_every_epoch', action='store_true', default=True, help='각 에폭마다 평가 진행')
     
     args = parser.parse_args()
     
