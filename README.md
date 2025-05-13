@@ -41,13 +41,13 @@ python download.py
 ### 1단계: 오류 탐지 학습
 
 ```bash
-python train.py --stage 1 --num_epochs 10 --batch_size 8 --learning_rate 5e-5
+python train.py --stage 1 --num_epochs 100 --batch_size 32 --learning_rate 4e-4 --use_scheduler
 ```
 
 ### 2단계: 음소 인식 학습
 
 ```bash
-python train.py --stage 2 --num_epochs 10 --batch_size 8 --learning_rate 5e-5 --model_checkpoint models/best_error_detection.pth
+python train.py --stage 2 --num_epochs 100 --batch_size 32 --learning_rate 4e-4 --model_checkpoint models/best_error_detection.pth --use_scheduler
 ```
 
 ### 학습 인자 설명
@@ -76,11 +76,21 @@ python train.py --stage 2 --num_epochs 10 --batch_size 8 --learning_rate 5e-5 --
 - `--num_epochs`: 학습 에폭 수 (기본값: 10)
 - `--seed`: 랜덤 시드 (기본값: 42)
 - `--device`: 사용할 장치 (기본값: cuda 사용 가능시 cuda, 아니면 cpu)
+- `--max_grad_norm`: 그라디언트 클리핑을 위한 최대 노름값 (기본값: 0.5)
+
+#### 학습률 스케줄러 관련 인자:
+- `--use_scheduler`: 학습률 스케줄러(ReduceLROnPlateau) 사용 여부 (플래그)
+- `--scheduler_patience`: 학습률 감소 전 기다릴 에폭 수 (기본값: 2)
+- `--scheduler_factor`: 학습률 감소 비율 (기본값: 0.5, 즉 50% 감소)
+- `--scheduler_threshold`: 개선으로 간주할 최소 변화량 (기본값: 0.001)
+- `--scheduler_cooldown`: 감소 후 감시 재개 전 대기 에폭 수 (기본값: 1)
+- `--scheduler_min_lr`: 최소 학습률 (기본값: 1e-6)
 
 #### 출력 관련 인자:
 - `--output_dir`: 모델 체크포인트 저장 디렉토리 (기본값: models/)
 - `--result_dir`: 결과 로그 저장 디렉토리 (기본값: results/)
 - `--model_checkpoint`: 로드할 사전 학습된 모델 체크포인트 경로 (기본값: None)
+- `--evaluate_every_epoch`: 각 에폭마다 평가 진행 (플래그)
 
 ## 모델 평가
 
