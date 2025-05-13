@@ -42,12 +42,14 @@ python download.py
 
 ```bash
 python train.py --stage 1 --num_epochs 100 --batch_size 32 --learning_rate 4e-4 --use_scheduler
+python train.py --stage 1 --num_epochs 100 --batch_size 32 --learning_rate 5e-5
 ```
 
 ### 2단계: 음소 인식 학습
 
 ```bash
 python train.py --stage 2 --num_epochs 100 --batch_size 32 --learning_rate 4e-4 --model_checkpoint models/best_error_detection.pth --use_scheduler
+python train.py --stage 2 --num_epochs 100 --batch_size 32 --learning_rate 5e-5 --model_checkpoint models/best_error_detection.pth
 ```
 
 ### 학습 인자 설명

@@ -119,17 +119,11 @@ def error_ctc_collate_fn(batch):
     for labels in error_labels:
         label_len = labels.shape[0]
         padding = max_label_len - label_len
-        # 패딩 토큰으로 -100 사용 (손실 계산에서 무시되는 값)
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=-100)
+        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)
         padded_error_labels.append(padded_labels)
     
     padded_waveforms = torch.stack(padded_waveforms)
     padded_error_labels = torch.stack(padded_error_labels)
-    
-    # 손실 계산 직전에 -100을 0으로 변환
-    mask = padded_error_labels == -100
-    padded_error_labels[mask] = 0  # blank로 설정
-    
     label_lengths = torch.tensor(label_lengths)
     
     return padded_waveforms, padded_error_labels, audio_lengths, label_lengths, wav_files
