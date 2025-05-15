@@ -1,0 +1,147 @@
+import os
+import json
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torch.nn import CTCLoss
+from wav2vec import NaiveWav2Vec2PhonemeModel
+from data import PhonemeRecognitionDataset
+
+# 경로 설정
+train_json_path = "/home/ellt/Workspace/L2_ASR/wav2vec 2.0/wav2vec2/train.json"
+val_json_path = "/home/ellt/Workspace/L2_ASR/wav2vec 2.0/wav2vec2/val.json"
+phoneme_map_path = "/home/ellt/Workspace/L2_ASR/data/phoneme_to_id.json"
+output_dir = "/home/ellt/Workspace/L2_ASR/wav2vec 2.0/wav2vec2/checkpoints"
+
+
+# 하이퍼파라미터
+epochs = 10
+batch_size = 8
+learning_rate = 5e-5
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# 서로 다른 라벨 및 오디오 묶는 방법
+def collate_fn(batch):
+    waveforms, labels, _, _ = zip(*batch)
+
+    # 라벨 길이 계산
+    label_lengths = [x.shape[0] for x in labels]
+    input_lengths = [x.shape[0] for x in waveforms]
+
+    # 오디오 padding
+    max_audio_len = max(input_lengths)
+    padded_waveforms = torch.stack([
+        torch.nn.functional.pad(x, (0, max_audio_len - x.shape[0])) for x in waveforms
+    ])
+
+    # 라벨 padding
+    max_label_len = max(label_lengths)
+    padded_labels = torch.stack([
+        torch.nn.functional.pad(x, (0, max_label_len - x.shape[0]), value=0) for x in labels
+    ])
+
+    return (
+        padded_waveforms,
+        padded_labels,
+        torch.tensor(input_lengths, dtype=torch.long),
+        torch.tensor(label_lengths, dtype=torch.long)
+    )
+
+# 학습 함수
+def train():
+    batch_size = 8
+    with open(phoneme_map_path, 'r') as f:
+        phoneme_to_id = json.load(f)
+    num_phonemes = len(phoneme_to_id)
+
+    print(f"Using device: {device}")
+
+    model = NaiveWav2Vec2PhonemeModel(num_phonemes=num_phonemes).to(device)
+
+    train_dataset = PhonemeRecognitionDataset(train_json_path, phoneme_to_id)
+    val_dataset = PhonemeRecognitionDataset(val_json_path, phoneme_to_id)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+
+    criterion = CTCLoss(blank=0, zero_infinity=True)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+
+    os.makedirs(output_dir, exist_ok=True)
+    best_val_loss = float("inf")
+
+    for epoch in range(1, epochs + 1):
+        model.train()
+        total_train_loss = 0.0
+        for waveforms, labels, input_lengths, label_lengths in train_loader:
+            waveforms = waveforms.to(device)
+            labels = labels.to(device)
+            input_lengths = input_lengths.to(device)
+            label_lengths = label_lengths.to(device)
+
+            optimizer.zero_grad()
+            logits = model(waveforms)                           # (B, T, C)
+            log_probs = torch.log_softmax(logits, dim=-1)
+
+            batch_size = log_probs.size(1)                      # ✅ 실제 배치 크기
+            seq_len = log_probs.size(0)                         # ✅ 시퀀스 길이
+
+            output_lengths = torch.full(
+                size=(batch_size,),                             # ✅ 반드시 (B,) 크기
+                fill_value=seq_len,
+                dtype=torch.long
+            ).to(device)
+            print("log_probs shape:", log_probs.transpose(0, 1).shape)
+            print("labels shape:", labels.shape)
+            print("output_lengths shape:", output_lengths.shape)
+            print("label_lengths shape:", label_lengths.shape)
+            print("label_lengths:", label_lengths)
+            # log_probs.transpose(0, 1): (T, B, C) ← CTCLoss가 요구하는 형식
+            loss = criterion(log_probs, labels, output_lengths, label_lengths)
+            loss.backward()
+            optimizer.step()
+
+            total_train_loss += loss.item()
+
+        avg_train_loss = total_train_loss / len(train_loader)
+        print(f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f}")
+
+        # 검증 단계
+        model.eval()
+        total_val_loss = 0.0
+
+        with torch.no_grad():
+            for waveforms, labels, input_lengths, label_lengths in val_loader:
+              waveforms = waveforms.to(device)
+              labels = labels.to(device)
+              input_lengths = input_lengths.to(device)
+              label_lengths = label_lengths.to(device)
+
+              logits = model(waveforms)  # logits: (B, T, C)
+              log_probs = torch.log_softmax(logits, dim=-1)
+
+              current_batch_size = log_probs.size(1)
+              seq_len = log_probs.size(0)
+
+              output_lengths = torch.full(
+                  size=(log_probs.size(0),),  # ✔️ 현재 배치 크기
+                  fill_value=log_probs.size(1),  # ✔️ 시퀀스 길이
+                  dtype=torch.long
+                ).to(device)
+
+
+              loss = criterion(log_probs, labels, output_lengths, label_lengths)
+              total_val_loss += loss.item()
+
+        avg_val_loss = total_val_loss / len(val_loader)
+        print(f"Epoch {epoch} | Val Loss: {avg_val_loss:.4f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_model_path = os.path.join(output_dir, "best_model.pth")
+            torch.save(model.state_dict(), best_model_path)
+            print(f"Best model saved (epoch {epoch}, val loss: {best_val_loss:.4f})")
+
+if __name__ == "__main__":
+    train()
