@@ -4,6 +4,7 @@ import re
 from glob import glob
 import wave
 
+#textgrid 에서부터 phoneme extract
 def extract_phonemes_from_textgrid(tg_path):
     phonemes = []
     try:
@@ -35,7 +36,7 @@ def get_duration(wav_path):
         print(f"[Error] duration 추출 실패: {wav_path} - {e}")
         return 0.0
 
-
+#json 파일로 맵핑
 def make_phoneme_json(data_root, output_json_path, relative_prefix="data/l2arctic_dataset"):
     dataset = {}
 
@@ -62,14 +63,9 @@ def make_phoneme_json(data_root, output_json_path, relative_prefix="data/l2arcti
                 continue
 
             rel_wav_path = os.path.join(relative_prefix, spk_dir, "wav", f"{base}.wav")
-            duration = get_duration(wav_path)
 
             dataset[rel_wav_path] = {
                 "wav": rel_wav_path,
-                "duration": duration,
-                "spk_id": spk_dir,
-                "wrd": "",  # 필요한 경우 나중에 채워넣기
-                "perceived_aligned": phonemes,
                 "perceived_train_target": phonemes
             }
 
@@ -79,7 +75,7 @@ def make_phoneme_json(data_root, output_json_path, relative_prefix="data/l2arcti
     print(f"JSON 저장 완료: {output_json_path} (총 {len(dataset)}개)")
 
 
-# 🚀 실제 경로 적용
+# 실제 경로 적용
 make_phoneme_json(
     data_root="/home/ellt/Workspace/L2_ASR/data/train",
     output_json_path="/home/ellt/Workspace/L2_ASR/wav2vec2/train.json"

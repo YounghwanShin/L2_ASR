@@ -56,7 +56,7 @@ def train():
     num_phonemes = len(phoneme_to_id)
 
     print(f"Using device: {device}")
-
+    #모델 불러오기
     model = NaiveWav2Vec2PhonemeModel(num_phonemes=num_phonemes).to(device)
 
     train_dataset = PhonemeRecognitionDataset(train_json_path, phoneme_to_id)
@@ -92,12 +92,15 @@ def train():
                 fill_value=seq_len,
                 dtype=torch.long
             ).to(device)
+
+          
             print("log_probs shape:", log_probs.transpose(0, 1).shape)
             print("labels shape:", labels.shape)
             print("output_lengths shape:", output_lengths.shape)
             print("label_lengths shape:", label_lengths.shape)
             print("label_lengths:", label_lengths)
-            # log_probs.transpose(0, 1): (T, B, C) ← CTCLoss가 요구하는 형식
+            
+            # (T, B, C) ← CTCLoss가 요구하는 형식
             loss = criterion(log_probs, labels, output_lengths, label_lengths)
             loss.backward()
             optimizer.step()
@@ -125,8 +128,8 @@ def train():
               seq_len = log_probs.size(0)
 
               output_lengths = torch.full(
-                  size=(log_probs.size(0),),  # ✔️ 현재 배치 크기
-                  fill_value=log_probs.size(1),  # ✔️ 시퀀스 길이
+                  size=(log_probs.size(0),),  #현재 배치 크기
+                  fill_value=log_probs.size(1),  #시퀀스 길이
                   dtype=torch.long
                 ).to(device)
 

@@ -8,6 +8,7 @@ from tqdm import tqdm
 from wav2vec import NaiveWav2Vec2PhonemeModel
 from data import EvaluationDataset, phoneme_collate_fn
 
+# CTC 디코딩 함수: blank 토큰과 반복 제거
 def decode_ctc(logits, input_lengths, blank=0):
     pred = torch.argmax(logits, dim=-1).permute(1, 0)  # [B, T]
     decoded = []
@@ -22,6 +23,7 @@ def decode_ctc(logits, input_lengths, blank=0):
         decoded.append(result)
     return decoded
 
+# 레벤슈타인 거리 함수 
 def levenshtein(seq1, seq2):
     import numpy as np
     dp = np.zeros((len(seq1) + 1, len(seq2) + 1), dtype=int)
@@ -38,7 +40,7 @@ def levenshtein(seq1, seq2):
     return dp[-1][-1]
 
 # 경로
-test_json = '/home/ellt/Workspace/L2_ASR/data/test.json' #아직 안만듦
+test_json = '/home/ellt/Workspace/L2_ASR/wav2vec 2.0/wav2vec2/test.json' 
 phoneme_map_path = '/home/ellt/Workspace/L2_ASR/data/phoneme_to_id.json'
 model_path = '/home/ellt/Workspace/L2_ASR/wav2vec_2.0/best_model.pth'
 output_path = '/home/ellt/Workspace/L2_ASR/wav2vec_2.0/evaluate_results.json'
