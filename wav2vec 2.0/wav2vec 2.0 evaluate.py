@@ -40,10 +40,10 @@ def levenshtein(seq1, seq2):
     return dp[-1][-1]
 
 # 경로
-test_json = '/home/ellt/Workspace/L2_ASR/wav2vec 2.0/wav2vec2/test.json' 
-phoneme_map_path = '/home/ellt/Workspace/L2_ASR/data/phoneme_to_id.json'
-model_path = '/home/ellt/Workspace/L2_ASR/wav2vec_2.0/best_model.pth'
-output_path = '/home/ellt/Workspace/L2_ASR/wav2vec_2.0/evaluate_results.json'
+test_json = '/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/test.json' 
+phoneme_map_path = '/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/phoneme_to_id.json'
+model_path = '/home/ellt/Workspace/wav2vec/wav2vec 2.0/checkpoints/best_model.pth'
+output_path = '/home/ellt/Workspace/wav2vec/wav2vec 2.0/results/evaluate_results.json'
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
