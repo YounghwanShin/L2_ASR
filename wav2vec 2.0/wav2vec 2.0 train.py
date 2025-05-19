@@ -8,9 +8,7 @@ from torch.nn import CTCLoss
 from wav2vec import NaiveWav2Vec2PhonemeModel
 from data import PhonemeRecognitionDataset
 
-# 원래 배치 8로 하면 out of memory 문제 발생 -> 배치 자르면 에폭1 끝나고 인풋 길이랑 배치 사이즈
-# 달라서 에폭 2로 못넘어감. MAx audio length 지정해주면 마찬가지로 막판에 길이 불일치 문제.
-# 해결이 안된 상태.
+# 2차 일어난 배치 사이즈 - 길이 문제는 해결 -> 다만 배치 줄여도 학습시 계속 out of memory error 발생
 
 # 경로 설정
 train_json_path = "/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/train.json"
@@ -139,8 +137,8 @@ def train():
               seq_len = log_probs.size(0)
 
               output_lengths = torch.full(
-                  size=(log_probs.size(0),),  #현재 배치 크기
-                  fill_value=log_probs.size(1),  #시퀀스 길이
+                  size=(log_probs.size(1),),  #현재 배치 크기
+                  fill_value=log_probs.size(0),  #시퀀스 길이
                   dtype=torch.long
                 ).to(device)
 
