@@ -6,7 +6,7 @@ def split_l2arctic_speaker_folders(
     input_dir,
     output_dir,
     test_speaker_count=6,
-    val_ratio=0.1,
+    val_ratio=0.2,
     seed=42
 ):
     # 1. 화자 폴더 목록 불러오기
@@ -48,9 +48,9 @@ def split_l2arctic_speaker_folders(
 # 실행 예시
 if __name__ == "__main__":
     split_l2arctic_speaker_folders(
-        input_dir='/home/ellt/Workspace/L2_ASR/data/l2arctic_dataset',
-        output_dir='/home/ellt/Workspace/L2_ASR/data',
+        input_dir='/home/ellt/Workspace/wav2vec/wav2vec 2.0/data/l2arctic_dataset',
+        output_dir='/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data',
         test_speaker_count=6,
-        val_ratio=0.1,
+        val_ratio=0.2,
         seed=42
     )

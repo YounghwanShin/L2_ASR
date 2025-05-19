@@ -9,10 +9,10 @@ from wav2vec import NaiveWav2Vec2PhonemeModel
 from data import PhonemeRecognitionDataset
 
 # 경로 설정
-train_json_path = "/home/ellt/Workspace/L2_ASR/wav2vec 2.0/wav2vec2/train.json"
-val_json_path = "/home/ellt/Workspace/L2_ASR/wav2vec 2.0/wav2vec2/val.json"
-phoneme_map_path = "/home/ellt/Workspace/L2_ASR/data/phoneme_to_id.json"
-output_dir = "/home/ellt/Workspace/L2_ASR/wav2vec 2.0/wav2vec2/checkpoints"
+train_json_path = "/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/train.json"
+val_json_path = "/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/val.json"
+phoneme_map_path = "/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/phoneme_to_id.json"
+output_dir = "/home/ellt/Workspace/wav2vec/wav2vec 2.0/checkpoints"
 
 
 # 하이퍼파라미터
@@ -56,6 +56,7 @@ def train():
     num_phonemes = len(phoneme_to_id)
 
     print(f"Using device: {device}")
+    
     #모델 불러오기
     model = NaiveWav2Vec2PhonemeModel(num_phonemes=num_phonemes).to(device)
 

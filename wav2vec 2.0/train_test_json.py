@@ -4,7 +4,7 @@ import re
 from glob import glob
 import wave
 
-#textgrid 에서부터 phoneme extract
+# TextGrid에서 phoneme 추출
 def extract_phonemes_from_textgrid(tg_path):
     phonemes = []
     try:
@@ -36,8 +36,9 @@ def get_duration(wav_path):
         print(f"[Error] duration 추출 실패: {wav_path} - {e}")
         return 0.0
 
-#json 파일로 맵핑
-def make_phoneme_json(data_root, output_json_path, relative_prefix="data/l2arctic_dataset"):
+
+# JSON 파일 생성 (절대경로 기반)
+def make_phoneme_json(data_root, output_json_path):
     dataset = {}
 
     for spk_dir in os.listdir(data_root):
@@ -62,10 +63,10 @@ def make_phoneme_json(data_root, output_json_path, relative_prefix="data/l2arcti
             if not phonemes:
                 continue
 
-            rel_wav_path = os.path.join(relative_prefix, spk_dir, "wav", f"{base}.wav")
+            abs_wav_path = os.path.abspath(wav_path)
 
-            dataset[rel_wav_path] = {
-                "wav": rel_wav_path,
+            dataset[abs_wav_path] = {
+                "wav": abs_wav_path,
                 "perceived_train_target": phonemes
             }
 
@@ -77,16 +78,16 @@ def make_phoneme_json(data_root, output_json_path, relative_prefix="data/l2arcti
 
 # 실제 경로 적용
 make_phoneme_json(
-    data_root="/home/ellt/Workspace/L2_ASR/data/train",
-    output_json_path="/home/ellt/Workspace/L2_ASR/wav2vec2/train.json"
+    data_root="/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/train",
+    output_json_path="/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/train.json"
 )
 
 make_phoneme_json(
-    data_root="/home/ellt/Workspace/L2_ASR/data/test",
-    output_json_path="/home/ellt/Workspace/L2_ASR/wav2vec2/test.json"
+    data_root="/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/test",
+    output_json_path="/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/test.json"
 )
 
 make_phoneme_json(
-    data_root="/home/ellt/Workspace/L2_ASR/data/val",
-    output_json_path="/home/ellt/Workspace/L2_ASR/wav2vec2/val.json"
+    data_root="/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/val",
+    output_json_path="/home/ellt/Workspace/wav2vec/wav2vec 2.0/split_data/val.json"
 )
