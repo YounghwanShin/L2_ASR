@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from model import PhonemeRecognitionModel
-from data import PhonemeEvaluationDataset
+from data import PhonemeEvaluationDataset, phoneme_evaluation_collate_fn
 
 def levenshtein_distance(seq1, seq2):
     """
@@ -99,69 +99,6 @@ def decode_ctc(log_probs, blank_idx=0):
     
     return decoded_seqs
 
-def phoneme_evaluation_collate_fn(batch):
-    """
-    음소 인식 평가용 콜레이션 함수
-    """
-    (
-        waveforms, 
-        perceived_phoneme_ids, 
-        canonical_phoneme_ids,
-        audio_lengths,
-        perceived_lengths,
-        canonical_lengths,
-        wav_files
-    ) = zip(*batch)
-    
-    # 가변 길이 오디오 패딩
-    max_audio_len = max([waveform.shape[0] for waveform in waveforms])
-    padded_waveforms = []
-    
-    for waveform in waveforms:
-        audio_len = waveform.shape[0]
-        padding = max_audio_len - audio_len
-        padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
-        padded_waveforms.append(padded_waveform)
-    
-    # 인식된 음소 레이블 패딩
-    max_perceived_len = max([ids.shape[0] for ids in perceived_phoneme_ids])
-    padded_perceived_ids = []
-    
-    for ids in perceived_phoneme_ids:
-        ids_len = ids.shape[0]
-        padding = max_perceived_len - ids_len
-        padded_ids = torch.nn.functional.pad(ids, (0, padding), value=0)
-        padded_perceived_ids.append(padded_ids)
-    
-    # 정규 발음 음소 레이블 패딩
-    max_canonical_len = max([ids.shape[0] for ids in canonical_phoneme_ids])
-    padded_canonical_ids = []
-    
-    for ids in canonical_phoneme_ids:
-        ids_len = ids.shape[0]
-        padding = max_canonical_len - ids_len
-        padded_ids = torch.nn.functional.pad(ids, (0, padding), value=0)
-        padded_canonical_ids.append(padded_ids)
-    
-    # 텐서로 변환
-    padded_waveforms = torch.stack(padded_waveforms)
-    padded_perceived_ids = torch.stack(padded_perceived_ids)
-    padded_canonical_ids = torch.stack(padded_canonical_ids)
-    
-    audio_lengths = torch.tensor(audio_lengths)
-    perceived_lengths = torch.tensor(perceived_lengths)
-    canonical_lengths = torch.tensor(canonical_lengths)
-    
-    return (
-        padded_waveforms, 
-        padded_perceived_ids, 
-        padded_canonical_ids,
-        audio_lengths,
-        perceived_lengths,
-        canonical_lengths,
-        wav_files
-    )
-
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     """
     음소 인식 모델 평가
@@ -179,18 +116,25 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='음소 인식 평가')
         
-        for (waveforms, perceived_phoneme_ids, canonical_phoneme_ids, 
+        for (waveforms, input_ids, attention_masks, perceived_phoneme_ids, canonical_phoneme_ids, 
              audio_lengths, perceived_lengths, canonical_lengths, wav_files) in progress_bar:
             
             waveforms = waveforms.to(device)
+            input_ids = input_ids.to(device)
+            attention_masks = attention_masks.to(device)
             audio_lengths = audio_lengths.to(device)
             
             # wav2vec용 어텐션 마스크 생성
             batch_size, audio_len = waveforms.shape
-            attention_mask = torch.ones((batch_size, audio_len), device=device)
+            audio_attention_mask = torch.ones((batch_size, audio_len), device=device)
             
             # 순전파
-            phoneme_logits = model(waveforms, attention_mask)
+            phoneme_logits = model(
+                waveforms, 
+                input_ids, 
+                audio_attention_mask=audio_attention_mask,
+                text_attention_mask=attention_masks
+            )
             
             # CTC 디코딩
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
@@ -256,15 +200,19 @@ def main():
     
     # 모델 설정
     parser.add_argument('--model_checkpoint', type=str, required=True, help='모델 체크포인트 경로')
-    parser.add_argument('--pretrained_model', type=str, default='facebook/wav2vec2-base-960h', 
+    parser.add_argument('--pretrained_audio_model', type=str, default='facebook/wav2vec2-base-960h', 
                         help='사전학습된 wav2vec2 모델')
+    parser.add_argument('--pretrained_text_model', type=str, default='bert-base-uncased', 
+                        help='사전학습된 BERT 모델')
     parser.add_argument('--hidden_dim', type=int, default=768, help='은닉층 차원')
     parser.add_argument('--num_phonemes', type=int, default=42, help='음소 수')
-    parser.add_argument('--adapter_dim_ratio', type=float, default=0.25, help='어댑터 차원 비율')
+    parser.add_argument('--num_attention_heads', type=int, default=8, help='어텐션 헤드 수')
+    parser.add_argument('--dropout', type=float, default=0.1, help='드롭아웃 비율')
     
     # 평가 설정
     parser.add_argument('--batch_size', type=int, default=8, help='배치 크기')
     parser.add_argument('--max_audio_length', type=int, default=None, help='최대 오디오 길이(샘플 단위)')
+    parser.add_argument('--max_text_length', type=int, default=128, help='최대 텍스트 길이(토큰 단위)')
     
     # 출력 설정
     parser.add_argument('--output_dir', type=str, default='evaluation_results', help='평가 결과 출력 디렉토리')
@@ -298,7 +246,11 @@ def main():
     # 평가 데이터셋 생성
     logger.info(f"평가 데이터셋 로드 중: {args.eval_data}")
     eval_dataset = PhonemeEvaluationDataset(
-        args.eval_data, phoneme_to_id, max_length=args.max_audio_length
+        args.eval_data, 
+        phoneme_to_id, 
+        text_model_name=args.pretrained_text_model,
+        max_length=args.max_audio_length,
+        max_text_length=args.max_text_length
     )
     
     eval_dataloader = DataLoader(
@@ -309,10 +261,12 @@ def main():
     # 모델 초기화
     logger.info("모델 초기화 중")
     model = PhonemeRecognitionModel(
-        pretrained_model_name=args.pretrained_model,
+        pretrained_audio_model=args.pretrained_audio_model,
+        pretrained_text_model=args.pretrained_text_model,
         hidden_dim=args.hidden_dim,
         num_phonemes=args.num_phonemes,
-        adapter_dim_ratio=args.adapter_dim_ratio
+        num_attention_heads=args.num_attention_heads,
+        dropout=args.dropout
     )
     
     # 모델 체크포인트 로드

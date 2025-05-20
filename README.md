@@ -1,7 +1,7 @@
 # L2 음소 인식 시스템
 
-L2(제2언어) 학습자의 음소 인식을 수행하는 Wav2Vec 2.0 기반 모델입니다. 
-이 시스템은 이중 Wav2Vec 모델(고정된 모델과 학습 가능한 모델)을 활용하여 음소 인식 성능을 향상시킵니다.
+L2(제2언어) 학습자의 음소 인식을 수행하는 딥러닝 기반 모델입니다. 
+이 시스템은 음성 및 텍스트 데이터를 활용하여 L2 화자의 발음을 분석하고 음소 인식 성능을 향상시킵니다.
 
 ## 설치 방법
 
@@ -44,11 +44,14 @@ python train.py \
   --val_data data/perceived_val.json \
   --eval_data data/eval.json \
   --phoneme_map data/phoneme_to_id.json \
-  --num_epochs 100 \
+  --num_epochs 50 \
   --batch_size 32 \
-  --learning_rate 4e-4 \
+  --learning_rate 3e-4 \
   --use_scheduler \
-  --end_factor 0.05
+  --warmup_steps 2000 \
+  --end_factor 0.05 \
+  --dropout 0.2 \
+  --save_steps 1000
 ```
 
 ### 학습 인자 설명
@@ -61,12 +64,14 @@ python train.py \
 - `--eval_data`: 평가 데이터 JSON 파일 경로 (제공하면 매 에폭마다 평가 수행)
 - `--phoneme_map`: 음소-ID 매핑 파일 경로 (기본값: data/phoneme_to_id.json)
 - `--max_audio_length`: 최대 오디오 길이(샘플 단위) 제한 (기본값: None)
+- `--max_text_length`: 최대 텍스트 길이(토큰 단위) 제한 (기본값: 128)
 
 #### 모델 관련 인자:
-- `--pretrained_model`: 사전학습된 wav2vec2 모델 이름 (기본값: facebook/wav2vec2-base-960h)
+- `--pretrained_audio_model`: 사전학습된 wav2vec2 모델 이름 (기본값: facebook/wav2vec2-base-960h)
+- `--pretrained_text_model`: 사전학습된 텍스트 모델 이름 (기본값: bert-base-uncased)
 - `--hidden_dim`: 은닉층 차원 크기 (기본값: 768)
 - `--num_phonemes`: 음소 수 (기본값: 42)
-- `--adapter_dim_ratio`: 어댑터 차원 비율 (기본값: 0.25)
+- `--num_attention_heads`: 어텐션 헤드 수 (기본값: 8)
 
 #### 학습 관련 인자:
 - `--batch_size`: 배치 크기 (기본값: 8)
@@ -103,6 +108,10 @@ python evaluate.py \
 - `--eval_data`: 평가 데이터 JSON 파일 경로 (필수)
 - `--phoneme_map`: 음소-ID 매핑 JSON 파일 경로 (필수)
 - `--model_checkpoint`: 평가할 모델 체크포인트 경로 (필수)
+- `--pretrained_audio_model`: 사전학습된 wav2vec2 모델 이름
+- `--pretrained_text_model`: 사전학습된 텍스트 모델 이름
+- `--hidden_dim`: 은닉층 차원 크기
+- `--num_phonemes`: 음소 수
 - `--output_dir`: 평가 결과 저장 디렉토리 (기본값: evaluation_results)
 - `--detailed`: 상세 결과 출력 (샘플별 결과 등)
 - `--batch_size`: 배치 크기 (기본값: 8)
@@ -118,15 +127,17 @@ python evaluate.py \
 
 ## 모델 구조
 
-### 이중 Wav2Vec 2.0
-- **고정 Wav2Vec + 어댑터**: 기본 특징 추출 및 효율적인 파라미터 학습
-- **학습 가능 Wav2Vec**: 맥락별 특징 추출 및 도메인 적응
+### 오디오 인코더
+- 사전학습된 음성 특징 추출 모델을 활용하여 오디오 데이터에서 표현 추출
+
+### 텍스트 인코더
+- 사전학습된 언어 모델을 사용하여 텍스트 데이터에서 표현 추출
 
 ### 특징 융합 모듈
-- 두 Wav2Vec 모델의 특징을 결합하여 강화된 표현을 생성
+- 다양한 모달리티(오디오, 텍스트)의 특징을 결합하여 강화된 표현 생성
 
 ### 음소 인식 헤드
-- 음소 시퀀스 인식
+- 통합된 특징으로부터 음소 시퀀스 인식
 
 ## 데이터 형식
 
@@ -149,6 +160,7 @@ python evaluate.py \
 - `canonical_aligned`: 정규 발음 음소 시퀀스
 - `perceived_aligned`: 실제 인식된 음소 시퀀스
 - `perceived_train_target`: 학습에 사용할 인식된 음소 시퀀스
+- `wrd`: 원문 텍스트
 
 ## 모델 저장 형식
 
@@ -157,3 +169,16 @@ python evaluate.py \
 - `best_val_phoneme_recognition.pth`: 검증 손실이 가장 낮은 모델
 - `best_per_phoneme_recognition.pth`: 음소 오류율(PER)이 가장 낮은 모델 (평가 데이터 제공 시)
 - `last_phoneme_recognition.pth`: 마지막 에폭의 모델
+
+## 요구사항
+
+- Python 3.7+
+- PyTorch 1.10+
+- Transformers 4.15+
+- Torchaudio 0.10+
+- NumPy
+- tqdm
+
+## 라이센스
+
+이 프로젝트는 MIT 라이센스 하에 제공됩니다.
