@@ -11,10 +11,11 @@ from data import EvaluationDataset, phoneme_collate_fn
 
 # CTC 디코딩 함수: blank 토큰과 반복 제거
 # output 형태 -> 배치마다 처리를 해줘야 하는데 
-def decode_ctc(logits,blank=0): #input_length 차원
+def decode_ctc(logits,input_lengths,blank=0): #input_length 차원
     #pred = torch.argmax(logits, dim=-1).permute(1, 0)  # [B, T]
     # 각 데이터마다 인풋 시퀀스 길이 (음소로 나옴) -> 클래스가 C (정답)
-    pred = torch.argmax(logits, dim=-1) # B, T 각 C 에 대한 argmax -> 1 
+    #pred = torch.argmax(logits, dim=-1) # B, T 각 C 에 대한 argmax -> 1 
+    pred = torch.argmax(logits, dim=-1).transpose(0, 1) # B, T
     decoded = []
     for i, seq in enumerate(pred):
         prev = blank
@@ -26,6 +27,57 @@ def decode_ctc(logits,blank=0): #input_length 차원
             prev = token
         decoded.append(result)
     return decoded
+'''
+이해를 위한 실험
+import numpy as np 
+
+T = 50      # Input sequence length
+C = 20      # Number of classes (including blank)
+N = 16      # Batch size
+S = 30      # Target sequence length of longest target in batch (padding length)
+S_min = 10  # Minimum target length, for demonstration purposes
+# Initialize random batch of input vectors, for *size = (T,N,C)
+
+input = torch.randn(T, N, C).log_softmax(2).detach().requires_grad_() 
+ # B, T(input) C 선택 
+pred = torch.argmax(input.transpose(1, 0), dim=-1) # B, T
+dim = {
+    "<blank>": 0,
+    "sil": 1,
+    "aa": 2,
+    "ae": 3,
+    "ah": 4,
+    "ao": 5,
+    "aw": 6,
+    "ay": 7,
+    "b": 8,
+    "ch": 9,
+    "d": 10,
+    "dh": 11,
+    "eh": 12,
+    "er": 13,
+    "ey": 14,
+    "f": 15,
+    "g": 16,
+    "hh": 17,
+    "ih": 18,
+    "iy": 19,
+    "jh": 20}
+
+labels = [k for k, v in sorted(dim.items(), key=lambda item: item[1])]
+print(labels)
+
+total_result = list()
+
+for n in range(N):
+    seq = pred[n, :].tolist()  # 해당 배치의 예측 시퀀스 #len : [50]
+    result = []
+
+    for idx in seq:
+      result.append(labels[idx])
+    
+    total_result.append(result)
+'''
 
 # 레벤슈타인 거리 함수 
 def levenshtein(seq1, seq2):
