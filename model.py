@@ -297,13 +297,14 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
             blank_index=blank_index,
             sil_index=sil_index
         )
-        
-    def forward(self, x, attention_mask=None, return_error_probs=False):
+            
+    def forward(self, x, attention_mask=None, return_error_probs=False, use_error_detection=True):
         """
         Args:
             x: 입력 오디오 [batch_size, sequence_length]
             attention_mask: 어텐션 마스크
             return_error_probs: 오류 확률 반환 여부
+            use_error_detection: 오류 탐지 기능 사용 여부 (2단계에서는 False로 설정)
         """
         # 두 wav2vec 모델로부터 특징 추출
         features1 = self.frozen_wav2vec(x, attention_mask)
@@ -312,17 +313,29 @@ class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
         # 특징 융합
         fused_features = self.feature_fusion(features1, features2)
         
-        # 오류 탐지
-        error_logits = self.error_detection_head(fused_features)
-        error_probs = F.softmax(error_logits, dim=-1)
-        
         # 음소 인식
         phoneme_logits = self.phoneme_recognition_head(fused_features)
         
-        # 오류 인식 결합 디코딩
-        adjusted_probs = self.error_aware_decoder(phoneme_logits, error_probs)
-        
-        if return_error_probs:
-            return phoneme_logits, adjusted_probs, error_logits
+        if use_error_detection:
+            # 오류 탐지 (1단계에서만 사용)
+            error_logits = self.error_detection_head(fused_features)
+            error_probs = F.softmax(error_logits, dim=-1)
+            
+            # 오류 인식 결합 디코딩
+            adjusted_probs = self.error_aware_decoder(phoneme_logits, error_probs)
+            
+            if return_error_probs:
+                return phoneme_logits, adjusted_probs, error_logits
+            else:
+                return phoneme_logits, adjusted_probs
         else:
-            return phoneme_logits, adjusted_probs
+            # 2단계에서는 오류 탐지를 사용하지 않고 직접 softmax 적용
+            adjusted_probs = F.softmax(phoneme_logits, dim=-1)
+            
+            if return_error_probs:
+                # 호환성을 위해 더미 error_logits 반환 (실제로 사용되지 않음)
+                batch_size, seq_len, _ = phoneme_logits.shape
+                dummy_error_logits = torch.zeros(batch_size, seq_len, 5, device=phoneme_logits.device)
+                return phoneme_logits, adjusted_probs, dummy_error_logits
+            else:
+                return phoneme_logits, adjusted_probs

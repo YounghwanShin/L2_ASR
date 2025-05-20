@@ -291,8 +291,8 @@ def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, e
         attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
         attention_mask = (attention_mask < audio_lengths.unsqueeze(1).to(device)).float()
         
-        # 순전파
-        phoneme_logits, adjusted_probs = model(waveforms, attention_mask)
+        # 순전파 (오류 탐지 사용 안함)
+        phoneme_logits, adjusted_probs = model(waveforms, attention_mask, use_error_detection=False)
         
         # CTC 손실 계산
         log_probs = torch.log_softmax(phoneme_logits, dim=-1)
@@ -341,8 +341,8 @@ def validate_phoneme_recognition(model, dataloader, criterion, device):
             attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
             attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
             
-            # 순전파
-            phoneme_logits, adjusted_probs = model(waveforms, attention_mask)
+            # 순전파 (오류 탐지 사용 안함)
+            phoneme_logits, adjusted_probs = model(waveforms, attention_mask, use_error_detection=False)
             
             # CTC 손실 계산
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
