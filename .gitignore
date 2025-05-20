@@ -4,3 +4,4 @@ checkpoints/
 *.pth
 __pycache__/
 results/
+models/
