@@ -10,9 +10,11 @@ from data import EvaluationDataset, phoneme_collate_fn
 
 
 # CTC 디코딩 함수: blank 토큰과 반복 제거
-def decode_ctc(logits, input_lengths, blank=0):
+# output 형태 -> 배치마다 처리를 해줘야 하는데 
+def decode_ctc(logits,blank=0): #input_length 차원
     #pred = torch.argmax(logits, dim=-1).permute(1, 0)  # [B, T]
-    pred = torch.argmax(logits, dim=-1)
+    # 각 데이터마다 인풋 시퀀스 길이 (음소로 나옴) -> 클래스가 C (정답)
+    pred = torch.argmax(logits, dim=-1) # B, T 각 C 에 대한 argmax -> 1 
     decoded = []
     for i, seq in enumerate(pred):
         prev = blank
