@@ -92,7 +92,7 @@ class PhonemeRecognitionHead(nn.Module):
 
 class FrozenWav2VecWithAdapter(nn.Module):
     """고정된 wav2vec 모델과 어댑터"""
-    def __init__(self, pretrained_model_name="facebook/wav2vec2-base-960h", adapter_dim_ratio=1/4, 
+    def __init__(self, pretrained_model_name="facebook/wav2vec2-large-xlsr-53", adapter_dim_ratio=1/4, 
                  dropout_rate=0.1, layer_norm=True):
         super(FrozenWav2VecWithAdapter, self).__init__()
         
@@ -133,7 +133,7 @@ class FrozenWav2VecWithAdapter(nn.Module):
 
 class LearnableWav2Vec(nn.Module):
     """학습 가능한 wav2vec 모델"""
-    def __init__(self, pretrained_model_name="facebook/wav2vec2-base-960h"):
+    def __init__(self, pretrained_model_name="facebook/wav2vec2-large-xlsr-53"):
         super(LearnableWav2Vec, self).__init__()
        
         # wav2vec2 모델 로드 (마스킹 비활성화)
@@ -242,8 +242,8 @@ class ErrorAwarePhonemeDecoder(nn.Module):
 class DualWav2VecWithErrorAwarePhonemeRecognition(nn.Module):
     """오류 인식 기반 음소 인식을 위한 이중 wav2vec 모델"""
     def __init__(self, 
-                pretrained_model_name="facebook/wav2vec2-base-960h",
-                hidden_dim=768,
+                pretrained_model_name="facebook/wav2vec2-large-xlsr-53",
+                hidden_dim=1024,
                 num_phonemes=42,  # 음소 + sil + blank
                 num_error_types=5,  # blank + deletion + substitution + add + correct
                 adapter_dim_ratio=1/4,
