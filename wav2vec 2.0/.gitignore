@@ -1,0 +1,4 @@
+data/
+split_data/
+checkpoints/
+*.pth
