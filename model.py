@@ -118,70 +118,8 @@ class FeatureFusion(nn.Module):
             fused_features = self.projection(fused_features)
         return fused_features
 
-# Stage 1: 오류 탐지 모델
-class ErrorDetectionModel(nn.Module):
-    """오류 탐지를 위한 독립 모델"""
-    def __init__(self, 
-                pretrained_model_name="facebook/wav2vec2-base-960h",
-                hidden_dim=768,
-                num_error_types=5,  # blank + deletion + substitution + insertion + correct
-                adapter_dim_ratio=1/4):
-        super(ErrorDetectionModel, self).__init__()
-        
-        # 첫 번째 wav2vec: 고정 파라미터 + 어댑터
-        self.frozen_wav2vec = FrozenWav2VecWithAdapter(
-            pretrained_model_name=pretrained_model_name,
-            adapter_dim_ratio=adapter_dim_ratio,
-            dropout_rate=0.1
-        )
-        
-        # 두 번째 wav2vec: 학습 가능한 파라미터
-        self.learnable_wav2vec = LearnableWav2Vec(
-            pretrained_model_name=pretrained_model_name
-        )
-        
-        # 특징 융합
-        config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
-        wav2vec_dim = config.hidden_size
-        
-        self.feature_fusion = FeatureFusion(
-            input_dim1=wav2vec_dim,
-            input_dim2=wav2vec_dim,
-            output_dim=hidden_dim
-        )
-        
-        # 오류 탐지 헤드
-        self.error_detection_head = nn.Sequential(
-            TimeDistributed(nn.Linear(hidden_dim, hidden_dim // 2)),
-            TimeDistributed(nn.BatchNorm1d(hidden_dim // 2)),
-            TimeDistributed(nn.ReLU()),
-            TimeDistributed(nn.Dropout(0.3)),
-            TimeDistributed(nn.Linear(hidden_dim // 2, num_error_types))
-        )
-            
-    def forward(self, x, attention_mask=None):
-        """
-        Args:
-            x: 입력 오디오 [batch_size, sequence_length]
-            attention_mask: 어텐션 마스크
-        Returns:
-            error_logits: 오류 탐지 로짓 [batch_size, seq_len, num_error_types]
-        """
-        # 두 wav2vec 모델로부터 특징 추출
-        features1 = self.frozen_wav2vec(x, attention_mask)
-        features2 = self.learnable_wav2vec(x, attention_mask)
-        
-        # 특징 융합
-        fused_features = self.feature_fusion(features1, features2)
-        
-        # 오류 탐지
-        error_logits = self.error_detection_head(fused_features)
-        
-        return error_logits
-
-# Stage 2: 음소 인식 모델
 class PhonemeRecognitionModel(nn.Module):
-    """음소 인식을 위한 독립 모델"""
+    """음소 인식을 위한 모델"""
     def __init__(self, 
                 pretrained_model_name="facebook/wav2vec2-base-960h",
                 hidden_dim=768,

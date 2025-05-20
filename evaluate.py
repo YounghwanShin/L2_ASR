@@ -8,8 +8,8 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader
 
-from model import ErrorDetectionModel, PhonemeRecognitionModel
-from data import ErrorEvaluationDataset, PhonemeEvaluationDataset
+from model import PhonemeRecognitionModel
+from data import PhonemeEvaluationDataset
 
 def levenshtein_distance(seq1, seq2):
     """
@@ -99,64 +99,19 @@ def decode_ctc(log_probs, blank_idx=0):
     
     return decoded_seqs
 
-def decode_ctc_for_error_detection(log_probs, blank_idx=0):
-    """
-    오류 탐지에 특화된 CTC 디코딩 (반복 토큰 유지)
-    """
-    greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()
-    
-    batch_size = greedy_preds.shape[0]
-    decoded_seqs = []
-    
-    for b in range(batch_size):
-        seq = []
-        for t in range(greedy_preds.shape[1]):
-            pred = greedy_preds[b, t]
-            if pred != blank_idx:
-                seq.append(int(pred))
-                    
-        decoded_seqs.append(seq)
-    
-    return decoded_seqs
-
-def error_evaluation_collate_fn(batch):
-    """
-    오류 탐지 평가용 콜레이션 함수
-    """
-    waveforms, error_labels, audio_lengths, error_label_lengths, wav_files = zip(*batch)
-    
-    # 가변 길이 오디오 패딩
-    max_audio_len = max([waveform.shape[0] for waveform in waveforms])
-    padded_waveforms = []
-    
-    for waveform in waveforms:
-        audio_len = waveform.shape[0]
-        padding = max_audio_len - audio_len
-        padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
-        padded_waveforms.append(padded_waveform)
-    
-    # 오류 레이블 패딩
-    max_error_len = max([labels.shape[0] for labels in error_labels])
-    padded_error_labels = []
-    
-    for labels in error_labels:
-        label_len = labels.shape[0]
-        padding = max_error_len - label_len
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)
-        padded_error_labels.append(padded_labels)
-    
-    padded_waveforms = torch.stack(padded_waveforms)
-    padded_error_labels = torch.stack(padded_error_labels)
-    audio_lengths = torch.tensor(audio_lengths)
-    error_label_lengths = torch.tensor(error_label_lengths)
-    
-    return padded_waveforms, padded_error_labels, audio_lengths, error_label_lengths, wav_files
-
 def phoneme_evaluation_collate_fn(batch):
     """
     음소 인식 평가용 콜레이션 함수
     """
-    waveforms, phoneme_labels, audio_lengths, phoneme_lengths, wav_files = zip(*batch)
+    (
+        waveforms, 
+        perceived_phoneme_ids, 
+        canonical_phoneme_ids,
+        audio_lengths,
+        perceived_lengths,
+        canonical_lengths,
+        wav_files
+    ) = zip(*batch)
     
     # 가변 길이 오디오 패딩
     max_audio_len = max([waveform.shape[0] for waveform in waveforms])
@@ -168,141 +123,44 @@ def phoneme_evaluation_collate_fn(batch):
         padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
         padded_waveforms.append(padded_waveform)
     
-    # 음소 레이블 패딩
-    max_phoneme_len = max([labels.shape[0] for labels in phoneme_labels])
-    padded_phoneme_labels = []
+    # 인식된 음소 레이블 패딩
+    max_perceived_len = max([ids.shape[0] for ids in perceived_phoneme_ids])
+    padded_perceived_ids = []
     
-    for labels in phoneme_labels:
-        label_len = labels.shape[0]
-        padding = max_phoneme_len - label_len
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)
-        padded_phoneme_labels.append(padded_labels)
+    for ids in perceived_phoneme_ids:
+        ids_len = ids.shape[0]
+        padding = max_perceived_len - ids_len
+        padded_ids = torch.nn.functional.pad(ids, (0, padding), value=0)
+        padded_perceived_ids.append(padded_ids)
     
+    # 정규 발음 음소 레이블 패딩
+    max_canonical_len = max([ids.shape[0] for ids in canonical_phoneme_ids])
+    padded_canonical_ids = []
+    
+    for ids in canonical_phoneme_ids:
+        ids_len = ids.shape[0]
+        padding = max_canonical_len - ids_len
+        padded_ids = torch.nn.functional.pad(ids, (0, padding), value=0)
+        padded_canonical_ids.append(padded_ids)
+    
+    # 텐서로 변환
     padded_waveforms = torch.stack(padded_waveforms)
-    padded_phoneme_labels = torch.stack(padded_phoneme_labels)
+    padded_perceived_ids = torch.stack(padded_perceived_ids)
+    padded_canonical_ids = torch.stack(padded_canonical_ids)
+    
     audio_lengths = torch.tensor(audio_lengths)
-    phoneme_lengths = torch.tensor(phoneme_lengths)
+    perceived_lengths = torch.tensor(perceived_lengths)
+    canonical_lengths = torch.tensor(canonical_lengths)
     
-    return padded_waveforms, padded_phoneme_labels, audio_lengths, phoneme_lengths, wav_files
-
-def evaluate_error_detection(model, dataloader, device, error_type_names=None):
-    """
-    오류 탐지 모델 평가
-    """
-    if error_type_names is None:
-        error_type_names = {0: 'blank', 1: 'deletion', 2: 'substitution', 3: 'insertion', 4: 'correct'}
-    
-    model.eval()
-    
-    # 오류 통계
-    total_errors = 0
-    correct_errors = 0
-    
-    # 오류 유형별 통계
-    error_type_stats = {error_type: {'true': 0, 'pred': 0, 'correct': 0} for error_type in error_type_names.keys()}
-    
-    # 혼동 행렬
-    confusion_matrix = np.zeros((len(error_type_names), len(error_type_names)), dtype=np.int32)
-    
-    with torch.no_grad():
-        progress_bar = tqdm(dataloader, desc='오류 탐지 평가')
-        
-        for waveforms, error_labels, audio_lengths, error_label_lengths, wav_files in progress_bar:
-            waveforms = waveforms.to(device)
-            error_labels = error_labels.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            # wav2vec용 어텐션 마스크 생성
-            batch_size, audio_len = waveforms.shape
-            attention_mask = torch.ones((batch_size, audio_len), device=device)
-            
-            # 순전파
-            error_logits = model(waveforms, attention_mask)
-            
-            # CTC 디코딩
-            log_probs = torch.log_softmax(error_logits, dim=-1)
-            batch_error_preds = decode_ctc_for_error_detection(log_probs)
-            
-            # 배치의 각 샘플 평가
-            for i, (preds, true_errors, length) in enumerate(zip(batch_error_preds, error_labels, error_label_lengths)):
-                # 패딩 제거한 실제 오류 레이블
-                true_errors = true_errors[:length].cpu().numpy().tolist()
-                
-                # 레벤슈타인 거리 계산
-                edit_distance, insertions, deletions, substitutions = levenshtein_distance(preds, true_errors)
-                
-                # 전체 오류 개수
-                total_in_sample = len(true_errors)
-                total_errors += total_in_sample
-                
-                # 정확히 맞춘 오류 개수
-                correct_in_sample = total_in_sample - edit_distance
-                correct_errors += max(0, correct_in_sample)
-                
-                # 오류 유형별 통계 업데이트
-                for t in true_errors:
-                    if t in error_type_stats:
-                        error_type_stats[t]['true'] += 1
-                
-                for p in preds:
-                    if p in error_type_stats:
-                        error_type_stats[p]['pred'] += 1
-                
-                # 시퀀스 정렬 및 혼동 행렬 업데이트
-                i, j = 0, 0
-                while i < len(true_errors) and j < len(preds):
-                    if true_errors[i] == preds[j]:
-                        # 정확히 일치
-                        error_type_stats[true_errors[i]]['correct'] += 1
-                        confusion_matrix[true_errors[i], preds[j]] += 1
-                        i += 1
-                        j += 1
-                    elif j + 1 < len(preds) and true_errors[i] == preds[j + 1]:
-                        # 예측에 추가 오류
-                        confusion_matrix[0, preds[j]] += 1
-                        j += 1
-                    elif i + 1 < len(true_errors) and true_errors[i + 1] == preds[j]:
-                        # 실제에 추가 오류
-                        confusion_matrix[true_errors[i], 0] += 1
-                        i += 1
-                    else:
-                        # 불일치
-                        if i < len(true_errors) and j < len(preds):
-                            confusion_matrix[true_errors[i], preds[j]] += 1
-                        i += 1
-                        j += 1
-                
-                # 남은 요소 처리
-                while i < len(true_errors):
-                    confusion_matrix[true_errors[i], 0] += 1
-                    i += 1
-                
-                while j < len(preds):
-                    confusion_matrix[0, preds[j]] += 1
-                    j += 1
-    
-    # 전체 정확도 계산
-    accuracy = correct_errors / total_errors if total_errors > 0 else 0
-    
-    # 오류 유형별 정밀도, 재현율, F1 점수 계산
-    error_type_metrics = {}
-    for error_type, stats in error_type_stats.items():
-        precision = stats['correct'] / stats['pred'] if stats['pred'] > 0 else 0
-        recall = stats['correct'] / stats['true'] if stats['true'] > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        
-        error_type_metrics[error_type_names[error_type]] = {
-            'precision': float(precision),
-            'recall': float(recall),
-            'f1': float(f1),
-            'support': int(stats['true'])
-        }
-    
-    return {
-        'accuracy': float(accuracy),
-        'error_type_metrics': error_type_metrics,
-        'confusion_matrix': confusion_matrix.tolist()
-    }
+    return (
+        padded_waveforms, 
+        padded_perceived_ids, 
+        padded_canonical_ids,
+        audio_lengths,
+        perceived_lengths,
+        canonical_lengths,
+        wav_files
+    )
 
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     """
@@ -321,7 +179,9 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='음소 인식 평가')
         
-        for waveforms, phoneme_labels, audio_lengths, phoneme_lengths, wav_files in progress_bar:
+        for (waveforms, perceived_phoneme_ids, canonical_phoneme_ids, 
+             audio_lengths, perceived_lengths, canonical_lengths, wav_files) in progress_bar:
+            
             waveforms = waveforms.to(device)
             audio_lengths = audio_lengths.to(device)
             
@@ -338,7 +198,7 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
             
             # 배치의 각 샘플 평가
             for i, (preds, true_phonemes, length, wav_file) in enumerate(
-                zip(batch_phoneme_preds, phoneme_labels, phoneme_lengths, wav_files)):
+                zip(batch_phoneme_preds, perceived_phoneme_ids, perceived_lengths, wav_files)):
                 
                 # 패딩 제거한 참조 음소 시퀀스
                 true_phonemes = true_phonemes[:length].cpu().numpy().tolist()
@@ -384,25 +244,22 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     }
 
 def main():
-    parser = argparse.ArgumentParser(description='L2 발음 오류 탐지 및 음소 인식 모델 평가')
+    parser = argparse.ArgumentParser(description='L2 음소 인식 모델 평가')
     
     # 기본 설정
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', 
                         help='사용할 장치')
-    parser.add_argument('--model_type', type=str, choices=['error_detection', 'phoneme_recognition'], 
-                        required=True, help='평가할 모델 유형')
     
     # 데이터 설정
     parser.add_argument('--eval_data', type=str, required=True, help='평가 데이터 JSON 파일')
-    parser.add_argument('--phoneme_map', type=str, help='음소-ID 매핑 JSON 파일 (음소 인식에만 필요)')
+    parser.add_argument('--phoneme_map', type=str, required=True, help='음소-ID 매핑 JSON 파일')
     
     # 모델 설정
     parser.add_argument('--model_checkpoint', type=str, required=True, help='모델 체크포인트 경로')
     parser.add_argument('--pretrained_model', type=str, default='facebook/wav2vec2-base-960h', 
                         help='사전학습된 wav2vec2 모델')
     parser.add_argument('--hidden_dim', type=int, default=768, help='은닉층 차원')
-    parser.add_argument('--num_phonemes', type=int, default=42, help='음소 수 (음소 인식에만 필요)')
-    parser.add_argument('--num_error_types', type=int, default=5, help='오류 유형 수 (오류 탐지에만 필요)')
+    parser.add_argument('--num_phonemes', type=int, default=42, help='음소 수')
     parser.add_argument('--adapter_dim_ratio', type=float, default=0.25, help='어댑터 차원 비율')
     
     # 평가 설정
@@ -424,182 +281,93 @@ def main():
         datefmt='%m/%d/%Y %H:%M:%S',
         level=logging.INFO,
         handlers=[
-            logging.FileHandler(os.path.join(args.output_dir, f'evaluation_{args.model_type}.log')),
+            logging.FileHandler(os.path.join(args.output_dir, 'evaluation.log')),
             logging.StreamHandler()
         ]
     )
     logger = logging.getLogger(__name__)
     
-    # 오류 탐지 모델 평가
-    if args.model_type == 'error_detection':
-        logger.info("오류 탐지 모델 평가")
-        
-        # 오류 유형 이름 매핑
-        error_type_names = {0: 'blank', 1: 'deletion', 2: 'substitution', 3: 'insertion', 4: 'correct'}
-        
-        # 평가 데이터셋 생성
-        logger.info(f"평가 데이터셋 로드 중: {args.eval_data}")
-        eval_dataset = ErrorEvaluationDataset(
-            args.eval_data, max_length=args.max_audio_length
-        )
-        
-        eval_dataloader = DataLoader(
-            eval_dataset, batch_size=args.batch_size, shuffle=False, 
-            collate_fn=error_evaluation_collate_fn
-        )
-        
-        # 모델 초기화
-        logger.info("모델 초기화 중")
-        model = ErrorDetectionModel(
-            pretrained_model_name=args.pretrained_model,
-            hidden_dim=args.hidden_dim,
-            num_error_types=args.num_error_types,
-            adapter_dim_ratio=args.adapter_dim_ratio
-        )
-        
-        # 모델 체크포인트 로드
-        logger.info(f"체크포인트 로드 중: {args.model_checkpoint}")
-        state_dict = torch.load(args.model_checkpoint, map_location=args.device)
-
-        # "module." 접두사 제거
-        new_state_dict = {}
-        for key, value in state_dict.items():
-            if key.startswith('module.'):
-                new_key = key[7:]  # 'module.' 접두사 제거
-                new_state_dict[new_key] = value
-            else:
-                new_state_dict[key] = value
-
-        model.load_state_dict(new_state_dict)
-        model = model.to(args.device)
-        
-        # 오류 탐지 평가
-        logger.info("오류 탐지 평가 중...")
-        error_detection_results = evaluate_error_detection(model, eval_dataloader, args.device, error_type_names)
-        
-        # 결과 출력
-        logger.info("\n===== 오류 탐지 결과 =====")
-        logger.info(f"전체 정확도: {error_detection_results['accuracy']:.4f}")
-        
-        logger.info("\n오류 유형별 메트릭:")
-        for error_type, metrics in error_detection_results['error_type_metrics'].items():
-            logger.info(f"  {error_type}:")
-            logger.info(f"    정밀도: {metrics['precision']:.4f}")
-            logger.info(f"    재현율: {metrics['recall']:.4f}")
-            logger.info(f"    F1 점수: {metrics['f1']:.4f}")
-            logger.info(f"    Support: {metrics['support']}")
-        
-        # 상세 결과 저장
-        if args.detailed:
-            # 혼동 행렬 저장
-            confusion_matrix_path = os.path.join(args.output_dir, 'error_detection_confusion_matrix.json')
-            with open(confusion_matrix_path, 'w') as f:
-                json.dump(error_detection_results['confusion_matrix'], f, indent=2)
-            logger.info(f"혼동 행렬을 {confusion_matrix_path}에 저장했습니다.")
-        
-        # 전체 결과 저장
-        results = {
-            'error_detection': {
-                'accuracy': error_detection_results['accuracy'],
-                'error_type_metrics': error_detection_results['error_type_metrics']
-            }
-        }
-        
-        results_path = os.path.join(args.output_dir, 'error_detection_results.json')
-        with open(results_path, 'w') as f:
-            json.dump(results, f, indent=2)
-        logger.info(f"평가 결과를 {results_path}에 저장했습니다.")
+    # 음소 매핑 로드
+    logger.info(f"음소 매핑 파일 로드 중: {args.phoneme_map}")
+    with open(args.phoneme_map, 'r') as f:
+        phoneme_to_id = json.load(f)
     
-    # 음소 인식 모델 평가
-    elif args.model_type == 'phoneme_recognition':
-        logger.info("음소 인식 모델 평가")
-        
-        # 음소 매핑 로드
-        if not args.phoneme_map:
-            logger.error("음소 인식 평가에는 --phoneme_map 인자가 필요합니다.")
-            import sys
-            sys.exit(1)
-            
-        logger.info(f"음소 매핑 파일 로드 중: {args.phoneme_map}")
-        with open(args.phoneme_map, 'r') as f:
-            phoneme_to_id = json.load(f)
-        
-        # ID를 음소로 변환하는 역매핑 생성
-        id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
-        
-        # 평가 데이터셋 생성
-        logger.info(f"평가 데이터셋 로드 중: {args.eval_data}")
-        eval_dataset = PhonemeEvaluationDataset(
-            args.eval_data, phoneme_to_id, max_length=args.max_audio_length
-        )
-        
-        eval_dataloader = DataLoader(
-            eval_dataset, batch_size=args.batch_size, shuffle=False, 
-            collate_fn=phoneme_evaluation_collate_fn
-        )
-        
-        # 모델 초기화
-        logger.info("모델 초기화 중")
-        model = PhonemeRecognitionModel(
-            pretrained_model_name=args.pretrained_model,
-            hidden_dim=args.hidden_dim,
-            num_phonemes=args.num_phonemes,
-            adapter_dim_ratio=args.adapter_dim_ratio
-        )
-        
-        # 모델 체크포인트 로드
-        logger.info(f"체크포인트 로드 중: {args.model_checkpoint}")
-        state_dict = torch.load(args.model_checkpoint, map_location=args.device)
+    # ID를 음소로 변환하는 역매핑 생성
+    id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
+    
+    # 평가 데이터셋 생성
+    logger.info(f"평가 데이터셋 로드 중: {args.eval_data}")
+    eval_dataset = PhonemeEvaluationDataset(
+        args.eval_data, phoneme_to_id, max_length=args.max_audio_length
+    )
+    
+    eval_dataloader = DataLoader(
+        eval_dataset, batch_size=args.batch_size, shuffle=False, 
+        collate_fn=phoneme_evaluation_collate_fn
+    )
+    
+    # 모델 초기화
+    logger.info("모델 초기화 중")
+    model = PhonemeRecognitionModel(
+        pretrained_model_name=args.pretrained_model,
+        hidden_dim=args.hidden_dim,
+        num_phonemes=args.num_phonemes,
+        adapter_dim_ratio=args.adapter_dim_ratio
+    )
+    
+    # 모델 체크포인트 로드
+    logger.info(f"체크포인트 로드 중: {args.model_checkpoint}")
+    state_dict = torch.load(args.model_checkpoint, map_location=args.device)
 
-        # "module." 접두사 제거
-        new_state_dict = {}
-        for key, value in state_dict.items():
-            if key.startswith('module.'):
-                new_key = key[7:]  # 'module.' 접두사 제거
-                new_state_dict[new_key] = value
-            else:
-                new_state_dict[key] = value
+    # "module." 접두사 제거
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith('module.'):
+            new_key = key[7:]  # 'module.' 접두사 제거
+            new_state_dict[new_key] = value
+        else:
+            new_state_dict[key] = value
 
-        model.load_state_dict(new_state_dict)
-        model = model.to(args.device)
-        
-        # 음소 인식 평가
-        logger.info("음소 인식 평가 중...")
-        phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, args.device, id_to_phoneme)
-        
-        # 결과 출력
-        logger.info("\n===== 음소 인식 결과 =====")
-        logger.info(f"음소 오류율 (PER): {phoneme_recognition_results['per']:.4f}")
-        logger.info(f"총 음소 수: {phoneme_recognition_results['total_phonemes']}")
-        logger.info(f"총 오류 수: {phoneme_recognition_results['total_errors']}")
-        logger.info(f"삽입: {phoneme_recognition_results['insertions']}")
-        logger.info(f"삭제: {phoneme_recognition_results['deletions']}")
-        logger.info(f"대체: {phoneme_recognition_results['substitutions']}")
-        
-        # 상세 결과 저장
-        if args.detailed:
-            # 샘플별 PER 결과 저장
-            per_sample_results_path = os.path.join(args.output_dir, 'phoneme_recognition_per_sample.json')
-            with open(per_sample_results_path, 'w') as f:
-                json.dump(phoneme_recognition_results['per_sample'], f, indent=2)
-            logger.info(f"샘플별 PER 결과를 {per_sample_results_path}에 저장했습니다.")
-        
-        # 전체 결과 저장
-        results = {
-            'phoneme_recognition': {
-                'per': phoneme_recognition_results['per'],
-                'total_phonemes': phoneme_recognition_results['total_phonemes'],
-                'total_errors': phoneme_recognition_results['total_errors'],
-                'insertions': phoneme_recognition_results['insertions'],
-                'deletions': phoneme_recognition_results['deletions'],
-                'substitutions': phoneme_recognition_results['substitutions']
-            }
+    model.load_state_dict(new_state_dict)
+    model = model.to(args.device)
+    
+    # 음소 인식 평가
+    logger.info("음소 인식 평가 중...")
+    phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, args.device, id_to_phoneme)
+    
+    # 결과 출력
+    logger.info("\n===== 음소 인식 결과 =====")
+    logger.info(f"음소 오류율 (PER): {phoneme_recognition_results['per']:.4f}")
+    logger.info(f"총 음소 수: {phoneme_recognition_results['total_phonemes']}")
+    logger.info(f"총 오류 수: {phoneme_recognition_results['total_errors']}")
+    logger.info(f"삽입: {phoneme_recognition_results['insertions']}")
+    logger.info(f"삭제: {phoneme_recognition_results['deletions']}")
+    logger.info(f"대체: {phoneme_recognition_results['substitutions']}")
+    
+    # 상세 결과 저장
+    if args.detailed:
+        # 샘플별 PER 결과 저장
+        per_sample_results_path = os.path.join(args.output_dir, 'phoneme_recognition_per_sample.json')
+        with open(per_sample_results_path, 'w') as f:
+            json.dump(phoneme_recognition_results['per_sample'], f, indent=2)
+        logger.info(f"샘플별 PER 결과를 {per_sample_results_path}에 저장했습니다.")
+    
+    # 전체 결과 저장
+    results = {
+        'phoneme_recognition': {
+            'per': phoneme_recognition_results['per'],
+            'total_phonemes': phoneme_recognition_results['total_phonemes'],
+            'total_errors': phoneme_recognition_results['total_errors'],
+            'insertions': phoneme_recognition_results['insertions'],
+            'deletions': phoneme_recognition_results['deletions'],
+            'substitutions': phoneme_recognition_results['substitutions']
         }
-        
-        results_path = os.path.join(args.output_dir, 'phoneme_recognition_results.json')
-        with open(results_path, 'w') as f:
-            json.dump(results, f, indent=2)
-        logger.info(f"평가 결과를 {results_path}에 저장했습니다.")
+    }
+    
+    results_path = os.path.join(args.output_dir, 'phoneme_recognition_results.json')
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=2)
+    logger.info(f"평가 결과를 {results_path}에 저장했습니다.")
 
 if __name__ == "__main__":
     main()
