@@ -45,7 +45,7 @@ class BottleneckAdapter(nn.Module):
 
 class FrozenWav2VecWithAdapter(nn.Module):
     """고정된 wav2vec 모델과 어댑터"""
-    def __init__(self, pretrained_model_name="facebook/wav2vec2-base-960h", adapter_dim_ratio=1/4, 
+    def __init__(self, pretrained_model_name="facebook/wav2vec2-large-xlsr-53", adapter_dim_ratio=1/4, 
                  dropout_rate=0.1):
         super(FrozenWav2VecWithAdapter, self).__init__()
         
@@ -85,7 +85,7 @@ class FrozenWav2VecWithAdapter(nn.Module):
 
 class LearnableWav2Vec(nn.Module):
     """학습 가능한 wav2vec 모델"""
-    def __init__(self, pretrained_model_name="facebook/wav2vec2-base-960h"):
+    def __init__(self, pretrained_model_name="facebook/wav2vec2-large-xlsr-53"):
         super(LearnableWav2Vec, self).__init__()
        
         # wav2vec2 모델 로드
@@ -103,90 +103,54 @@ class LearnableWav2Vec(nn.Module):
         outputs = self.wav2vec2(x, attention_mask=attention_mask)
         return outputs.last_hidden_state
 
-class AttentionFeatureFusion(nn.Module):
-    """어텐션 기반 특징 융합 모듈"""
-    def __init__(self, feature_dim, num_heads=8, output_dim=None, dropout_rate=0.1):
-        super(AttentionFeatureFusion, self).__init__()
+class FeatureFusion(nn.Module):
+    """특징 융합 모듈 (단순 Concatenation)"""
+    def __init__(self, input_dim1, input_dim2, output_dim=None):
+        super(FeatureFusion, self).__init__()
         
-        self.feature_dim = feature_dim
-        self.num_heads = num_heads
-        self.head_dim = feature_dim // num_heads
-        assert self.head_dim * num_heads == feature_dim, "feature_dim must be divisible by num_heads"
-        
-        # 멀티헤드 어텐션 레이어
-        self.mha = nn.MultiheadAttention(
-            embed_dim=feature_dim,
-            num_heads=num_heads,
-            dropout=dropout_rate,
-            batch_first=True
-        )
-        
-        # 출력 투영 레이어 (선택적)
+        self.concat_dim = input_dim1 + input_dim2
         self.use_projection = output_dim is not None
         if self.use_projection:
-            self.projection = nn.Linear(feature_dim, output_dim)
+            self.projection = nn.Linear(self.concat_dim, output_dim)
+            
+    def forward(self, x1, x2):
+        # 두 특징을 연결
+        fused_features = torch.cat([x1, x2], dim=-1)
         
-        # 레이어 정규화
-        self.norm1 = nn.LayerNorm(feature_dim)
+        # 선형 투영
         if self.use_projection:
-            self.norm2 = nn.LayerNorm(output_dim)
-        
-    def forward(self, query_features, key_value_features):
-        """
-        Args:
-            query_features: Learnable Wav2Vec의 특징 [batch_size, seq_len, feature_dim]
-            key_value_features: Frozen Wav2Vec의 특징 [batch_size, seq_len, feature_dim]
-        Returns:
-            fused_features: 융합된 특징 [batch_size, seq_len, feature_dim or output_dim]
-        """
-        # 멀티헤드 어텐션 적용 (Q: Learnable, K/V: Frozen)
-        attn_output, _ = self.mha(
-            query=self.norm1(query_features),
-            key=key_value_features,
-            value=key_value_features
-        )
-        
-        # 잔차 연결 (residual connection)
-        fusion_output = query_features + attn_output
-        
-        # 선택적 투영
-        if self.use_projection:
-            fusion_output = self.projection(fusion_output)
-            fusion_output = self.norm2(fusion_output)
-        
-        return fusion_output
+            fused_features = self.projection(fused_features)
+        return fused_features
 
 class PhonemeRecognitionModel(nn.Module):
     """음소 인식을 위한 모델"""
     def __init__(self, 
-                pretrained_model_name="facebook/wav2vec2-base-960h",
-                hidden_dim=768,
+                pretrained_model_name="facebook/wav2vec2-large-xlsr-53",
+                hidden_dim=1024,  # XLSR-53의 hidden_dim에 맞게 조정
                 num_phonemes=42,  # 음소 + sil + blank
-                adapter_dim_ratio=1/4,
-                num_heads=8):
+                adapter_dim_ratio=1/4):
         super(PhonemeRecognitionModel, self).__init__()
         
-        # 첫 번째 wav2vec: 고정 파라미터 + 어댑터
+        # 첫 번째 wav2vec: 고정 파라미터 + 어댑터 (XLSR-53)
         self.frozen_wav2vec = FrozenWav2VecWithAdapter(
             pretrained_model_name=pretrained_model_name,
             adapter_dim_ratio=adapter_dim_ratio,
             dropout_rate=0.1
         )
         
-        # 두 번째 wav2vec: 학습 가능한 파라미터
+        # 두 번째 wav2vec: 학습 가능한 파라미터 (동일하게 XLSR-53)
         self.learnable_wav2vec = LearnableWav2Vec(
             pretrained_model_name=pretrained_model_name
         )
         
-        # 특징 융합
+        # 특징 융합 (이제 차원이 동일함)
         config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
-        wav2vec_dim = config.hidden_size
+        feature_dim = config.hidden_size  # 1024
         
-        self.feature_fusion = AttentionFeatureFusion(
-            feature_dim=wav2vec_dim,
-            num_heads=num_heads,
-            output_dim=hidden_dim,
-            dropout_rate=0.1
+        self.feature_fusion = FeatureFusion(
+            input_dim1=feature_dim,
+            input_dim2=feature_dim,
+            output_dim=hidden_dim
         )
         
         # 음소 인식 헤드
@@ -207,11 +171,11 @@ class PhonemeRecognitionModel(nn.Module):
             phoneme_logits: 음소 인식 로짓 [batch_size, seq_len, num_phonemes]
         """
         # 두 wav2vec 모델로부터 특징 추출
-        frozen_features = self.frozen_wav2vec(x, attention_mask)
-        learnable_features = self.learnable_wav2vec(x, attention_mask)
+        frozen_features = self.frozen_wav2vec(x, attention_mask)  # [B, T, 1024]
+        learnable_features = self.learnable_wav2vec(x, attention_mask)  # [B, T, 1024]
         
-        # 특징 융합 (learnable이 Query, frozen이 Key/Value)
-        fused_features = self.feature_fusion(learnable_features, frozen_features)
+        # 특징 융합 (단순 concatenation)
+        fused_features = self.feature_fusion(frozen_features, learnable_features)
         
         # 음소 인식
         phoneme_logits = self.phoneme_recognition_head(fused_features)
