@@ -3,8 +3,11 @@
 /data
 /__pycache__
 .env
+/env
 data_split_code.py
 error_labeling.py
 textgrid_processing.py
 /results
 /models
+/evaluation_results
+/preprocess_with_frames.py
