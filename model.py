@@ -27,17 +27,17 @@ class TimeDistributed(nn.Module):
 
 class ErrorDetectionHead(nn.Module):
     """오류 탐지를 위한 헤드"""
-    def __init__(self, input_dim, hidden_dim=256, num_error_types=5, dropout_rate=0.3):
+    def __init__(self, input_dim, hidden_dim=256, num_error_types=6, dropout_rate=0.3):
         super(ErrorDetectionHead, self).__init__()
         
         self.td_linear1 = TimeDistributed(nn.Linear(input_dim, hidden_dim))
-        self.td_bn = TimeDistributed(nn.BatchNorm1d(hidden_dim))
+        self.td_norm = TimeDistributed(nn.LayerNorm(hidden_dim))
         self.td_dropout = TimeDistributed(nn.Dropout(dropout_rate))
         self.td_linear2 = TimeDistributed(nn.Linear(hidden_dim, num_error_types))
         
     def forward(self, x):
         x = self.td_linear1(x)
-        x = self.td_bn(x)
+        x = self.td_norm(x)
         x = F.relu(x)
         x = self.td_dropout(x)
         
@@ -50,13 +50,13 @@ class PhonemeRecognitionHead(nn.Module):
         super(PhonemeRecognitionHead, self).__init__()
         
         self.td_linear1 = TimeDistributed(nn.Linear(input_dim, hidden_dim))
-        self.td_bn = TimeDistributed(nn.BatchNorm1d(hidden_dim))
+        self.td_norm = TimeDistributed(nn.LayerNorm(hidden_dim))
         self.td_dropout = TimeDistributed(nn.Dropout(dropout_rate))
         self.td_linear2 = TimeDistributed(nn.Linear(hidden_dim, num_phonemes))
         
     def forward(self, x):
         x = self.td_linear1(x)
-        x = self.td_bn(x)
+        x = self.td_norm(x)
         x = F.relu(x)
         x = self.td_dropout(x)
         
@@ -83,9 +83,9 @@ class LearnableWav2Vec(nn.Module):
 class ErrorDetectionModel(nn.Module):
     """오류 탐지 모델"""
     def __init__(self, 
-                pretrained_model_name="facebook/wav2vec2-base-960h",
-                hidden_dim=768,
-                num_error_types=5):
+                pretrained_model_name="facebook/wav2vec2-large-xlsr-53",
+                hidden_dim=1024,
+                num_error_types=6):
         super(ErrorDetectionModel, self).__init__()
         
         # 학습 가능한 wav2vec 인코더
@@ -143,11 +143,11 @@ class ErrorAwareAttention(nn.Module):
 class PhonemeRecognitionModel(nn.Module):
     """오류 인식 기반 음소 인식 모델"""
     def __init__(self, 
-                pretrained_model_name="facebook/wav2vec2-base-960h",
+                pretrained_model_name="facebook/wav2vec2-large-xlsr-53",
                 error_model_checkpoint=None,
-                hidden_dim=768,
+                hidden_dim=1024,
                 num_phonemes=42,
-                num_error_types=5):
+                num_error_types=6):
         super(PhonemeRecognitionModel, self).__init__()
         
         # 학습 가능한 wav2vec 인코더
