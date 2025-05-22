@@ -18,6 +18,24 @@ from model import ErrorDetectionModel, PhonemeRecognitionModel
 from data import ErrorLabelDataset, PhonemeRecognitionDataset, EvaluationDataset
 from evaluate import evaluate_error_detection, evaluate_phoneme_recognition, decode_ctc, collate_fn
 
+def get_wav2vec2_output_lengths_official(model, input_lengths):
+    """HuggingFace 공식 방법 사용 - 커스텀 모델 구조에 맞게 수정"""
+    # DataParallel 처리
+    actual_model = model.module if hasattr(model, 'module') else model
+    
+    # 모델 구조에 따라 wav2vec2에 접근
+    if hasattr(actual_model, 'encoder'):
+        # ErrorDetectionModel인 경우: model.encoder.wav2vec2
+        wav2vec_model = actual_model.encoder.wav2vec2
+    elif hasattr(actual_model, 'error_model'):
+        # PhonemeRecognitionModel인 경우: model.error_model.encoder.wav2vec2
+        wav2vec_model = actual_model.error_model.encoder.wav2vec2
+    else:
+        # 직접 wav2vec2 모델인 경우
+        wav2vec_model = actual_model
+    
+    return wav2vec_model._get_feat_extract_output_lengths(input_lengths)
+
 # 오류 탐지를 위한 배치 콜레이션 함수
 def error_ctc_collate_fn(batch):
     waveforms, error_labels, label_lengths, wav_files = zip(*batch)
@@ -104,15 +122,9 @@ def train_error_detection(model, dataloader, criterion, optimizer, device, epoch
         # CTC 손실 계산
         log_probs = torch.log_softmax(error_logits, dim=-1)
         
-        # 정확한 다운샘플링 비율 계산 (입력 길이와 특성 길이 비교)
-        input_seq_len = waveforms.size(1)
-        output_seq_len = error_logits.size(1)
-        
-        # 입력 길이를 기반으로 출력 길이 계산
-        input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
-        
-        # 유효한 길이 보장
-        input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
+        # HuggingFace 공식 방법으로 정확한 길이 계산
+        input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+        input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
         
         loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
         
@@ -154,15 +166,9 @@ def validate_error_detection(model, dataloader, criterion, device):
             # CTC 손실 계산
             log_probs = torch.log_softmax(error_logits, dim=-1)
             
-            # 정확한 다운샘플링 비율 계산 (입력 길이와 특성 길이 비교)
-            input_seq_len = waveforms.size(1)
-            output_seq_len = error_logits.size(1)
-            
-            # 입력 길이를 기반으로 출력 길이 계산
-            input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
-            
-            # 유효한 길이 보장
-            input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
+            # HuggingFace 공식 방법으로 정확한 길이 계산
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
             
             loss = criterion(log_probs.transpose(0, 1), error_labels, input_lengths, label_lengths)
             
@@ -197,15 +203,9 @@ def train_phoneme_recognition(model, dataloader, criterion, optimizer, device, e
         # CTC 손실 계산
         log_probs = torch.log_softmax(phoneme_logits, dim=-1)
         
-        # 정확한 다운샘플링 비율 계산 (입력 길이와 특성 길이 비교)
-        input_seq_len = waveforms.size(1)
-        output_seq_len = phoneme_logits.size(1)
-        
-        # 입력 길이를 기반으로 출력 길이 계산
-        input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
-        
-        # 유효한 길이 보장
-        input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
+        # HuggingFace 공식 방법으로 정확한 길이 계산
+        input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+        input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
         
         loss = criterion(log_probs.transpose(0, 1), phoneme_labels, input_lengths, label_lengths)
         
@@ -247,15 +247,9 @@ def validate_phoneme_recognition(model, dataloader, criterion, device):
             # CTC 손실 계산
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
             
-            # 정확한 다운샘플링 비율 계산 (입력 길이와 특성 길이 비교)
-            input_seq_len = waveforms.size(1)
-            output_seq_len = phoneme_logits.size(1)
-            
-            # 입력 길이를 기반으로 출력 길이 계산
-            input_lengths = torch.floor((audio_lengths.float() / input_seq_len) * output_seq_len).long()
-            
-            # 유효한 길이 보장
-            input_lengths = torch.clamp(input_lengths, min=1, max=output_seq_len)
+            # HuggingFace 공식 방법으로 정확한 길이 계산
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
             
             loss = criterion(log_probs.transpose(0, 1), phoneme_labels, input_lengths, label_lengths)
             
@@ -503,10 +497,12 @@ def main():
                     model, eval_dataloader, args.device, error_type_names
                 )
                 
-                logger.info(f"오류 탐지 정확도: {error_detection_results['accuracy']:.4f}")
+                logger.info(f"시퀀스 정확도: {error_detection_results['sequence_accuracy']:.4f}")
+                logger.info(f"토큰 정확도: {error_detection_results['token_accuracy']:.4f}")
+                logger.info(f"Weighted F1: {error_detection_results['weighted_f1']:.4f}")
                 
                 # 오류 유형별 메트릭 로깅
-                for error_type, metrics in error_detection_results['error_type_metrics'].items():
+                for error_type, metrics in error_detection_results['class_metrics'].items():
                     logger.info(f"  {error_type}:")
                     logger.info(f"    정밀도: {metrics['precision']:.4f}")
                     logger.info(f"    재현율: {metrics['recall']:.4f}")

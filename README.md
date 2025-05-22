@@ -62,3 +62,9 @@ python evaluate.py \
   --batch_size 8 \
   --output_dir evaluation_results \
   --detailed
+
+echo "=== 학습 및 평가 완료 ==="
+echo "결과 확인:"
+echo "  - 학습 로그: results/"
+echo "  - 모델 체크포인트: models/"
+echo "  - 평가 결과: evaluation_results/"
