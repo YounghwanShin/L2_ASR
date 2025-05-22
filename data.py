@@ -12,9 +12,8 @@ class ErrorLabelDataset(Dataset):
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         
-        # C: 정확함(4), D: 삭제(1), A: 추가/삽입(3), S: 대체(2), 0: blank, 5: separator
-        self.error_type_mapping = {'C': 4, 'D': 1, 'A': 3, 'S': 2}
-        self.separator_token = 5  # 구분자 토큰
+        # C: 정확함(2), I: 부정확함(1), 0: blank
+        self.error_type_mapping = {'C': 2, 'I': 1}
         
     def __len__(self):
         return len(self.wav_files)
@@ -38,21 +37,15 @@ class ErrorLabelDataset(Dataset):
         if self.max_length is not None and waveform.shape[1] > self.max_length:
             waveform = waveform[:, :self.max_length]
         
-        # 오류 라벨 변환 - 구분자 토큰을 사용하여 CTC 중복 제거 문제 해결
         error_labels_str = item.get('error_labels', '')
         error_labels_list = error_labels_str.split()
         
-        # 각 라벨 사이에 구분자 토큰 삽입
-        modified_error_labels = []
-        for i, label in enumerate(error_labels_list):
+        error_labels = []
+        for label in error_labels_list:
             error_code = self.error_type_mapping[label]
-            modified_error_labels.append(error_code)
-            
-            # 마지막 라벨이 아니면 구분자 토큰 추가
-            if i < len(error_labels_list) - 1:
-                modified_error_labels.append(self.separator_token)
+            error_labels.append(error_code)
         
-        error_labels = torch.tensor(modified_error_labels, dtype=torch.long)
+        error_labels = torch.tensor(error_labels, dtype=torch.long)
         label_length = torch.tensor(len(error_labels), dtype=torch.long)
         
         return waveform.squeeze(0), error_labels, label_length, wav_file
@@ -111,9 +104,8 @@ class EvaluationDataset(Dataset):
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         
-        # 오류 유형 매핑: C (정확함), D (삭제), A/I (추가/삽입), S (대체)
-        self.error_type_mapping = {'C': 4, 'D': 1, 'A': 3, 'I': 3, 'S': 2}
-        self.separator_token = 5  # 구분자 토큰
+        # 오류 유형 매핑: C (정확함), I (부정확함)
+        self.error_type_mapping = {'C': 2, 'I': 1}
         
     def __len__(self):
         return len(self.wav_files)
@@ -137,21 +129,15 @@ class EvaluationDataset(Dataset):
         if self.max_length is not None and waveform.shape[1] > self.max_length:
             waveform = waveform[:, :self.max_length]
         
-        # 오류 라벨 변환 - 구분자 토큰을 사용하여 CTC 중복 제거 문제 해결
         error_labels_str = item.get('error_labels', '')
         error_labels_list = error_labels_str.split()
         
-        # 각 라벨 사이에 구분자 토큰 삽입
-        modified_error_labels = []
-        for i, label in enumerate(error_labels_list):
+        error_labels = []
+        for label in error_labels_list:
             error_code = self.error_type_mapping.get(label, 0)
-            modified_error_labels.append(error_code)
-            
-            # 마지막 라벨이 아니면 구분자 토큰 추가
-            if i < len(error_labels_list) - 1:
-                modified_error_labels.append(self.separator_token)
+            error_labels.append(error_code)
         
-        error_labels = torch.tensor(modified_error_labels, dtype=torch.long)
+        error_labels = torch.tensor(error_labels, dtype=torch.long)
         
         # 인식된 음소 레이블 변환
         perceived_phonemes = item.get('perceived_train_target', '').split()

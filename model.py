@@ -154,7 +154,7 @@ class MultiScaleFeatureFusion(nn.Module):
 
 class ErrorDetectionHead(nn.Module):
     """오류 탐지를 위한 헤드"""
-    def __init__(self, input_dim, hidden_dim=256, num_error_types=6, dropout_rate=0.3):
+    def __init__(self, input_dim, hidden_dim=256, num_error_types=3, dropout_rate=0.3):
         super(ErrorDetectionHead, self).__init__()
         
         self.td_linear1 = TimeDistributed(nn.Linear(input_dim, hidden_dim))
@@ -212,7 +212,7 @@ class ErrorDetectionModel(nn.Module):
     def __init__(self, 
                 pretrained_model_name="facebook/wav2vec2-large-xlsr-53",
                 hidden_dim=1024,
-                num_error_types=6):
+                num_error_types=3):  # separator 없음: blank, incorrect, correct
         super(ErrorDetectionModel, self).__init__()
         
         # 학습 가능한 wav2vec 인코더
@@ -296,7 +296,7 @@ class PhonemeRecognitionModel(nn.Module):
                 error_model_checkpoint=None,
                 hidden_dim=1024,
                 num_phonemes=42,
-                num_error_types=6):
+                num_error_types=3):  # separator 없음: blank, incorrect, correct
         super(PhonemeRecognitionModel, self).__init__()
         
         # 학습 가능한 wav2vec 인코더

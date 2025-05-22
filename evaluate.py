@@ -99,7 +99,7 @@ def get_wav2vec2_output_lengths_official(model, input_lengths):
     return wav2vec_model._get_feat_extract_output_lengths(input_lengths)
 
 def decode_ctc(log_probs, input_lengths, blank_idx=0):
-    """CTC 디코딩 함수"""
+    """CTC 디코딩 함수 - separator 없는 버전"""
     # 각 시간 단계에서 가장 확률이 높은 클래스 얻기
     greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()  # (batch_size, seq_len)
     
@@ -121,40 +121,15 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
     
     return decoded_seqs
 
-def decode_and_remove_separators(log_probs, input_lengths, blank_idx=0, separator_idx=5):
-    """CTC 디코딩 후 구분자 제거하여 원래 오류 시퀀스 복원"""
-    # 기본 CTC 디코딩
-    greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()
-    
-    batch_size = greedy_preds.shape[0]
-    decoded_seqs = []
-    
-    for b in range(batch_size):
-        seq = []
-        prev = -1
-        actual_length = input_lengths[b].item()
-        
-        # CTC 디코딩: 연속 중복 제거, blank 제거
-        for t in range(min(greedy_preds.shape[1], actual_length)):
-            pred = greedy_preds[b, t]
-            if pred != blank_idx and pred != prev:
-                seq.append(int(pred))
-            prev = pred
-        
-        # 구분자 제거하여 원래 오류 라벨 시퀀스 복원
-        final_seq = [token for token in seq if token != separator_idx]
-        decoded_seqs.append(final_seq)
-    
-    return decoded_seqs
+# separator 없는 버전에서는 decode_and_remove_separators와 decode_ctc가 동일
+decode_and_remove_separators = decode_ctc
 
-def prepare_target_without_separators(error_labels, label_lengths, separator_idx=5):
-    """타겟에서도 구분자 제거"""
+def prepare_target_without_separators(error_labels, label_lengths):
+    """타겟 준비 - separator 없는 버전"""
     targets = []
     for labels, length in zip(error_labels, label_lengths):
         target_seq = labels[:length].cpu().numpy().tolist()
-        # 구분자 제거
-        clean_target = [token for token in target_seq if token != separator_idx]
-        targets.append(clean_target)
+        targets.append(target_seq)
     return targets
 
 def collate_fn(batch):
@@ -234,9 +209,9 @@ def collate_fn(batch):
     )
 
 def evaluate_error_detection(model, dataloader, device, error_type_names=None):
-    """오류 탐지 모델 평가 - 단순화된 버전"""
+    """오류 탐지 모델 평가 - separator 없는 버전"""
     if error_type_names is None:
-        error_type_names = {0: 'blank', 1: 'deletion', 2: 'substitution', 3: 'insertion', 4: 'correct', 5: 'separator'}
+        error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
     model.eval()
     
@@ -278,11 +253,11 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
             input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
             
-            # CTC 디코딩 (구분자 제거)
+            # CTC 디코딩
             log_probs = torch.log_softmax(error_logits, dim=-1)
-            predictions = decode_and_remove_separators(log_probs, input_lengths)
+            predictions = decode_ctc(log_probs, input_lengths)
             
-            # 타겟 준비 (구분자 제거)
+            # 타겟 준비
             targets = prepare_target_without_separators(error_labels, error_label_lengths)
             
             # 시퀀스별 평가
@@ -329,8 +304,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             class_report = classification_report(all_targets, all_predictions, output_dict=True, zero_division=0)
             
             # 오류 유형 이름으로 변환
-            eval_error_types = {k: v for k, v in error_type_names.items() if k != 5}  # separator 제외
-            for class_id, class_name in eval_error_types.items():
+            for class_id, class_name in error_type_names.items():
                 if str(class_id) in class_report:
                     class_metrics[class_name] = {
                         'precision': float(class_report[str(class_id)]['precision']),
@@ -455,7 +429,7 @@ def main():
     parser.add_argument('--pretrained_model', type=str, default='facebook/wav2vec2-large-xlsr-53', help='wav2vec2 모델 이름')
     parser.add_argument('--hidden_dim', type=int, default=1024, help='은닉층 차원')
     parser.add_argument('--num_phonemes', type=int, default=42, help='음소 수')
-    parser.add_argument('--num_error_types', type=int, default=6, help='오류 유형 수 (blank + separator 포함)')
+    parser.add_argument('--num_error_types', type=int, default=3, help='오류 유형 수 (blank 포함, separator 제외)')
     
     # 평가 설정
     parser.add_argument('--batch_size', type=int, default=8, help='배치 크기')
@@ -490,8 +464,8 @@ def main():
     # ID를 음소로 변환하는 역매핑 생성
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     
-    # 오류 유형 이름 매핑
-    error_type_names = {0: 'blank', 1: 'deletion', 2: 'substitution', 3: 'insertion', 4: 'correct', 5: 'separator'}
+    # 오류 유형 이름 매핑 (separator 제거)
+    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
     # 평가 데이터셋 생성
     logger.info(f"평가 데이터셋 로드 중: {args.eval_data}")

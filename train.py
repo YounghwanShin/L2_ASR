@@ -100,6 +100,109 @@ def phoneme_collate_fn(batch):
     
     return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
 
+def show_error_detection_samples(model, dataloader, device, error_type_names, num_samples=3):
+    """오류 탐지 모델의 샘플 예측 결과를 출력 - separator 없는 버전"""
+    model.eval()
+    
+    with torch.no_grad():
+        for batch_idx, (waveforms, error_labels, audio_lengths, label_lengths, wav_files) in enumerate(dataloader):
+            if batch_idx >= num_samples:
+                break
+                
+            waveforms = waveforms.to(device)
+            error_labels = error_labels.to(device)
+            audio_lengths = audio_lengths.to(device)
+            
+            # 어텐션 마스크 생성
+            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
+            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
+            
+            # 모델 순전파
+            error_logits = model(waveforms, attention_mask)
+            
+            # HuggingFace 공식 방법으로 정확한 길이 계산
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
+            
+            # CTC 디코딩 (separator 없는 버전)
+            log_probs = torch.log_softmax(error_logits, dim=-1)
+            predictions = decode_ctc(log_probs, input_lengths)
+            
+            # 타겟 준비 (separator 없는 버전)
+            targets = []
+            for labels, length in zip(error_labels, label_lengths):
+                target_seq = labels[:length].cpu().numpy().tolist()
+                targets.append(target_seq)
+            
+            # 첫 번째 샘플만 출력
+            pred = predictions[0]
+            target = targets[0]
+            wav_file = wav_files[0]
+            
+            print(f"\n--- 오류 탐지 샘플 {batch_idx + 1} ---")
+            print(f"파일: {wav_file}")
+            print(f"실제:  {' '.join([error_type_names.get(t, str(t)) for t in target])}")
+            print(f"예측:  {' '.join([error_type_names.get(p, str(p)) for p in pred])}")
+            print(f"일치:  {'✓' if pred == target else '✗'}")
+            
+            if len(target) > 0 and len(pred) > 0:
+                # 정확도 계산
+                correct = sum(1 for p, t in zip(pred, target) if p == t)
+                accuracy = correct / max(len(target), len(pred))
+                print(f"토큰 정확도: {accuracy:.3f}")
+    
+    model.train()
+
+def show_phoneme_recognition_samples(model, dataloader, device, id_to_phoneme, num_samples=3):
+    """음소 인식 모델의 샘플 예측 결과를 출력"""
+    model.eval()
+    
+    with torch.no_grad():
+        for batch_idx, (waveforms, phoneme_labels, audio_lengths, label_lengths, wav_files) in enumerate(dataloader):
+            if batch_idx >= num_samples:
+                break
+                
+            waveforms = waveforms.to(device)
+            audio_lengths = audio_lengths.to(device)
+            
+            # 어텐션 마스크 생성
+            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
+            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
+            
+            # 모델 순전파
+            phoneme_logits, _ = model(waveforms, attention_mask)
+            
+            # HuggingFace 공식 방법으로 정확한 길이 계산
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
+            
+            # 음소 인식을 위한 CTC 디코딩
+            log_probs = torch.log_softmax(phoneme_logits, dim=-1)
+            batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
+            
+            # 첫 번째 샘플만 출력
+            pred_phonemes = batch_phoneme_preds[0]
+            true_phonemes = phoneme_labels[0][:label_lengths[0]].cpu().numpy().tolist()
+            wav_file = wav_files[0]
+            
+            # 음소 ID를 음소 기호로 변환
+            pred_phoneme_symbols = [id_to_phoneme.get(str(p), f"UNK({p})") for p in pred_phonemes]
+            true_phoneme_symbols = [id_to_phoneme.get(str(t), f"UNK({t})") for t in true_phonemes]
+            
+            print(f"\n--- 음소 인식 샘플 {batch_idx + 1} ---")
+            print(f"파일: {wav_file}")
+            print(f"실제:  {' '.join(true_phoneme_symbols)}")
+            print(f"예측:  {' '.join(pred_phoneme_symbols)}")
+            print(f"일치:  {'✓' if pred_phonemes == true_phonemes else '✗'}")
+            
+            if len(true_phonemes) > 0 and len(pred_phonemes) > 0:
+                # 정확도 계산
+                correct = sum(1 for p, t in zip(pred_phonemes, true_phonemes) if p == t)
+                accuracy = correct / max(len(true_phonemes), len(pred_phonemes))
+                print(f"토큰 정확도: {accuracy:.3f}")
+    
+    model.train()
+
 def train_error_detection(model, dataloader, criterion, optimizer, device, epoch, scheduler=None, max_grad_norm=0.5):
     model.train()
     running_loss = 0.0
@@ -299,7 +402,7 @@ def main():
                         help='사전학습된 wav2vec2 모델')
     parser.add_argument('--hidden_dim', type=int, default=1024, help='은닉층 차원')
     parser.add_argument('--num_phonemes', type=int, default=42, help='음소 수')
-    parser.add_argument('--num_error_types', type=int, default=6, help='오류 유형 수 (blank + separator 포함)')
+    parser.add_argument('--num_error_types', type=int, default=3, help='오류 유형 수 (blank 포함, separator 제외)')
     parser.add_argument('--error_model_checkpoint', type=str, default=None, 
                         help='음소 인식 모드에서 사용할 오류 탐지 모델 체크포인트')
     
@@ -309,6 +412,8 @@ def main():
     parser.add_argument('--num_epochs', type=int, default=10, help='에폭 수')
     parser.add_argument('--max_audio_length', type=int, default=None, help='최대 오디오 길이(샘플 단위)')
     parser.add_argument('--max_grad_norm', type=float, default=0.5, help='그라디언트 클리핑을 위한 최대 노름값')
+    parser.add_argument('--show_samples', action='store_true', help='각 에포크마다 샘플 예측 결과 출력')
+    parser.add_argument('--num_sample_show', type=int, default=3, help='출력할 샘플 수')
     
     # 학습률 스케줄러 설정
     parser.add_argument('--use_scheduler', action='store_true', help='학습률 스케줄러 사용 여부')
@@ -356,8 +461,8 @@ def main():
             phoneme_to_id = json.load(f)
         id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     
-    # 오류 유형 이름 매핑
-    error_type_names = {0: 'blank', 1: 'deletion', 2: 'substitution', 3: 'insertion', 4: 'correct', 5: 'separator'}
+    # 오류 유형 이름 매핑 (separator 없는 버전)
+    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
     # 모델 초기화
     if args.mode == 'error':
@@ -483,6 +588,13 @@ def main():
             
             logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}")
             
+            # 샘플 예측 결과 출력
+            if args.show_samples:
+                logger.info(f"\n{'='*50}")
+                logger.info(f"에포크 {epoch} - 샘플 예측 결과")
+                logger.info(f"{'='*50}")
+                show_error_detection_samples(model, val_dataloader, args.device, error_type_names, args.num_sample_show)
+            
             # 각 에폭마다 평가 수행
             epoch_metrics = {
                 'epoch': epoch,
@@ -572,6 +684,13 @@ def main():
                 logger.info(f"현재 학습률: {optimizer.param_groups[0]['lr']:.2e}")
             
             logger.info(f"에폭 {epoch}: 학습 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}")
+            
+            # 샘플 예측 결과 출력
+            if args.show_samples:
+                logger.info(f"\n{'='*50}")
+                logger.info(f"에포크 {epoch} - 샘플 예측 결과")
+                logger.info(f"{'='*50}")
+                show_phoneme_recognition_samples(model, val_dataloader, args.device, id_to_phoneme, args.num_sample_show)
             
             # 각 에폭마다 평가 수행
             epoch_metrics = {

@@ -13,7 +13,7 @@ python train.py \
   --phoneme_map data/phoneme_to_id.json \
   --pretrained_model facebook/wav2vec2-large-xlsr-53 \
   --hidden_dim 1024 \
-  --num_error_types 6 \
+  --num_error_types 3 \
   --batch_size 16 \
   --eval_batch_size 16 \
   --learning_rate 3e-5 \
@@ -21,10 +21,12 @@ python train.py \
   --max_grad_norm 0.5 \
   --use_scheduler \
   --evaluate_every_epoch \
+  --show_samples \
+  --num_sample_show 5 \
   --output_dir models \
   --result_dir results
 
-# 2. 음소 인식 모델 학습 (오류 탐지 모델 체크포인트 사용)
+# 2. 음소 인식 모델 학습
 echo "=== 음소 인식 모델 학습 ==="
 python train.py \
   --mode phoneme \
@@ -36,7 +38,7 @@ python train.py \
   --error_model_checkpoint models/best_error_detection.pth \
   --hidden_dim 1024 \
   --num_phonemes 42 \
-  --num_error_types 6 \
+  --num_error_types 3 \
   --batch_size 16 \
   --eval_batch_size 16 \
   --learning_rate 3e-5 \
@@ -44,6 +46,8 @@ python train.py \
   --max_grad_norm 0.5 \
   --use_scheduler \
   --evaluate_every_epoch \
+  --show_samples \
+  --num_sample_show 5 \
   --output_dir models \
   --result_dir results
 
@@ -58,7 +62,7 @@ python evaluate.py \
   --pretrained_model facebook/wav2vec2-large-xlsr-53 \
   --hidden_dim 1024 \
   --num_phonemes 42 \
-  --num_error_types 6 \
+  --num_error_types 3 \
   --batch_size 8 \
   --output_dir evaluation_results \
   --detailed
