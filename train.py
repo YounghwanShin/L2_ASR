@@ -19,7 +19,6 @@ from data import ErrorLabelDataset, PhonemeRecognitionDataset, EvaluationDataset
 from evaluate import evaluate_error_detection, evaluate_phoneme_recognition, decode_ctc, collate_fn
 
 def get_wav2vec2_output_lengths_official(model, input_lengths):
-    """HuggingFace 공식 방법 사용 - 커스텀 모델 구조에 맞게 수정"""
     # DataParallel 처리
     actual_model = model.module if hasattr(model, 'module') else model
     
@@ -101,7 +100,7 @@ def phoneme_collate_fn(batch):
     return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
 
 def show_error_detection_samples(model, dataloader, device, error_type_names, num_samples=3):
-    """오류 탐지 모델의 샘플 예측 결과를 출력 - separator 없는 버전"""
+    """오류 탐지 모델의 샘플 예측 결과 출력"""
     model.eval()
     
     with torch.no_grad():
@@ -124,15 +123,32 @@ def show_error_detection_samples(model, dataloader, device, error_type_names, nu
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
             input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
             
-            # CTC 디코딩 (separator 없는 버전)
+            # CTC 디코딩 (삽입된 blank들이 자연스럽게 제거됨)
             log_probs = torch.log_softmax(error_logits, dim=-1)
-            predictions = decode_ctc(log_probs, input_lengths)
             
-            # 타겟 준비 (separator 없는 버전)
+            # 예측: CTC 디코딩으로 blank 자동 제거
+            greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()
+            predictions = []
+            
+            for b in range(greedy_preds.shape[0]):
+                seq = []
+                prev = -1
+                actual_length = input_lengths[b].item()
+                
+                for t in range(min(greedy_preds.shape[1], actual_length)):
+                    pred = greedy_preds[b, t]
+                    if pred != 0 and pred != prev:  # blank(0) 제거 및 중복 제거
+                        seq.append(int(pred))
+                    prev = pred
+                predictions.append(seq)
+            
+            # 삽입된 blank들 제거
             targets = []
             for labels, length in zip(error_labels, label_lengths):
                 target_seq = labels[:length].cpu().numpy().tolist()
-                targets.append(target_seq)
+                # 짝수 인덱스만 추출
+                clean_target = [target_seq[i] for i in range(0, len(target_seq), 2)]
+                targets.append(clean_target)
             
             # 첫 번째 샘플만 출력
             pred = predictions[0]
@@ -150,6 +166,9 @@ def show_error_detection_samples(model, dataloader, device, error_type_names, nu
                 correct = sum(1 for p, t in zip(pred, target) if p == t)
                 accuracy = correct / max(len(target), len(pred))
                 print(f"토큰 정확도: {accuracy:.3f}")
+                
+                # 원본 길이 vs 예측 길이 비교
+                print(f"길이 - 실제: {len(target)}, 예측: {len(pred)}")
     
     model.train()
 
@@ -402,7 +421,7 @@ def main():
                         help='사전학습된 wav2vec2 모델')
     parser.add_argument('--hidden_dim', type=int, default=1024, help='은닉층 차원')
     parser.add_argument('--num_phonemes', type=int, default=42, help='음소 수')
-    parser.add_argument('--num_error_types', type=int, default=3, help='오류 유형 수 (blank 포함, separator 제외)')
+    parser.add_argument('--num_error_types', type=int, default=3, help='오류 유형 수')
     parser.add_argument('--error_model_checkpoint', type=str, default=None, 
                         help='음소 인식 모드에서 사용할 오류 탐지 모델 체크포인트')
     
@@ -461,7 +480,7 @@ def main():
             phoneme_to_id = json.load(f)
         id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     
-    # 오류 유형 이름 매핑 (separator 없는 버전)
+    # 오류 유형 이름 매핑
     error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
     # 모델 초기화

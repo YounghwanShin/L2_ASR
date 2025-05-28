@@ -14,6 +14,7 @@ class ErrorLabelDataset(Dataset):
         
         # C: 정확함(2), I: 부정확함(1), 0: blank
         self.error_type_mapping = {'C': 2, 'I': 1}
+        self.blank_token = 0
         
     def __len__(self):
         return len(self.wav_files)
@@ -37,15 +38,21 @@ class ErrorLabelDataset(Dataset):
         if self.max_length is not None and waveform.shape[1] > self.max_length:
             waveform = waveform[:, :self.max_length]
         
+        # 오류 라벨 변환 - 각 라벨 사이에 blank 삽입
         error_labels_str = item.get('error_labels', '')
         error_labels_list = error_labels_str.split()
         
-        error_labels = []
-        for label in error_labels_list:
+        # 각 라벨 사이에 blank 토큰 삽입
+        modified_error_labels = []
+        for i, label in enumerate(error_labels_list):
             error_code = self.error_type_mapping[label]
-            error_labels.append(error_code)
+            modified_error_labels.append(error_code)
+            
+            # 마지막 라벨이 아니면 blank 토큰 추가
+            if i < len(error_labels_list) - 1:
+                modified_error_labels.append(self.blank_token)
         
-        error_labels = torch.tensor(error_labels, dtype=torch.long)
+        error_labels = torch.tensor(modified_error_labels, dtype=torch.long)
         label_length = torch.tensor(len(error_labels), dtype=torch.long)
         
         return waveform.squeeze(0), error_labels, label_length, wav_file
@@ -106,6 +113,7 @@ class EvaluationDataset(Dataset):
         
         # 오류 유형 매핑: C (정확함), I (부정확함)
         self.error_type_mapping = {'C': 2, 'I': 1}
+        self.blank_token = 0
         
     def __len__(self):
         return len(self.wav_files)
@@ -129,15 +137,21 @@ class EvaluationDataset(Dataset):
         if self.max_length is not None and waveform.shape[1] > self.max_length:
             waveform = waveform[:, :self.max_length]
         
+        # 오류 라벨 변환 - 각 라벨 사이에 blank 삽입
         error_labels_str = item.get('error_labels', '')
         error_labels_list = error_labels_str.split()
         
-        error_labels = []
-        for label in error_labels_list:
+        # 각 라벨 사이에 blank 토큰 삽입
+        modified_error_labels = []
+        for i, label in enumerate(error_labels_list):
             error_code = self.error_type_mapping.get(label, 0)
-            error_labels.append(error_code)
+            modified_error_labels.append(error_code)
+            
+            # 마지막 라벨이 아니면 blank 토큰 추가
+            if i < len(error_labels_list) - 1:
+                modified_error_labels.append(self.blank_token)
         
-        error_labels = torch.tensor(error_labels, dtype=torch.long)
+        error_labels = torch.tensor(modified_error_labels, dtype=torch.long)
         
         # 인식된 음소 레이블 변환
         perceived_phonemes = item.get('perceived_train_target', '').split()
