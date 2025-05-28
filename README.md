@@ -1,10 +1,8 @@
 #!/bin/bash
 
-# 디렉토리 생성
 mkdir -p models results evaluation_results
 
-# 1. 오류 탐지 모델 학습
-echo "=== 오류 탐지 모델 학습 ==="
+echo "=== Training Error Detection Model ==="
 python train.py \
   --mode error \
   --error_train_data data/errors_train.json \
@@ -26,8 +24,7 @@ python train.py \
   --output_dir models \
   --result_dir results
 
-# 2. 음소 인식 모델 학습
-echo "=== 음소 인식 모델 학습 ==="
+echo "=== Training Phoneme Recognition Model ==="
 python train.py \
   --mode phoneme \
   --phoneme_train_data data/perceived_train.json \
@@ -51,8 +48,7 @@ python train.py \
   --output_dir models \
   --result_dir results
 
-# 3. 통합 모델 평가
-echo "=== 최종 모델 평가 ==="
+echo "=== Final Model Evaluation ==="
 python evaluate.py \
   --mode both \
   --eval_data data/eval.json \
@@ -67,8 +63,8 @@ python evaluate.py \
   --output_dir evaluation_results \
   --detailed
 
-echo "=== 학습 및 평가 완료 ==="
-echo "결과 확인:"
-echo "  - 학습 로그: results/"
-echo "  - 모델 체크포인트: models/"
-echo "  - 평가 결과: evaluation_results/"
+echo "=== Training and Evaluation Complete ==="
+echo "Check results in:"
+echo "  - Training logs: results/"
+echo "  - Model checkpoints: models/"
+echo "  - Evaluation results: evaluation_results/"
