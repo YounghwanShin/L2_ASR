@@ -213,11 +213,10 @@ def train_model(model, dataloader, criterion, optimizer, device, epoch, mode, ma
         else:
             logits, _ = model(waveforms, attention_mask)
         
-        log_probs = torch.log_softmax(logits, dim=-1)
         input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
         input_lengths = torch.clamp(input_lengths, min=1, max=logits.size(1))
         
-        loss = criterion(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
+        loss = criterion(logits.transpose(0, 1), labels, input_lengths, label_lengths)
         
         optimizer.zero_grad()
         loss.backward()
@@ -257,11 +256,10 @@ def validate_model(model, dataloader, criterion, device, mode):
             else:
                 logits, _ = model(waveforms, attention_mask)
             
-            log_probs = torch.log_softmax(logits, dim=-1)
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
             input_lengths = torch.clamp(input_lengths, min=1, max=logits.size(1))
             
-            loss = criterion(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
+            loss = criterion(logits.transpose(0, 1), labels, input_lengths, label_lengths)
             running_loss += loss.item()
             
             progress_bar.set_postfix({'Val_Loss': running_loss / (batch_idx + 1)})
