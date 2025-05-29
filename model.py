@@ -185,24 +185,116 @@ class ErrorDetectionModel(nn.Module):
         enhanced_features = self.multi_scale_fusion(temporal_features)
         return self.error_detection_head(enhanced_features)
 
-class ErrorAwareAttention(nn.Module):
-    def __init__(self, error_dim, phoneme_dim, hidden_dim=256):
+class PhonemeAdapter(nn.Module):
+    def __init__(self, input_dim, adapter_dim=256, dropout=0.1):
         super().__init__()
-        self.error_proj = nn.Linear(error_dim, hidden_dim)
-        self.phoneme_proj = nn.Linear(phoneme_dim, hidden_dim)
-        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=8, batch_first=True)
-        self.output_proj = nn.Linear(hidden_dim, phoneme_dim)
+        self.down_proj = nn.Linear(input_dim, adapter_dim)
+        self.activation = nn.GELU()  
+        self.up_proj = nn.Linear(adapter_dim, input_dim)
+        self.layer_norm = nn.LayerNorm(input_dim)
+        self.dropout = nn.Dropout(dropout)
         
-    def forward(self, error_features, phoneme_features):
-        error_proj = self.error_proj(error_features)
-        phoneme_proj = self.phoneme_proj(phoneme_features)
-        attn_output, _ = self.attention(
-            query=phoneme_proj,
-            key=error_proj,
-            value=error_proj
+    def forward(self, x):
+        residual = x
+        x = self.layer_norm(x)
+        x = self.down_proj(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.up_proj(x)
+        return residual + x
+
+class GatedErrorAttention(nn.Module):
+    def __init__(self, error_dim, phoneme_dim, hidden_dim=512):
+        super().__init__()
+        self.error_proj = nn.Sequential(
+            nn.Linear(error_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, phoneme_dim)
         )
-        enhanced_features = self.output_proj(attn_output)
-        return enhanced_features + phoneme_features
+        
+        self.gate = nn.Sequential(
+            nn.Linear(phoneme_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, phoneme_dim),
+            nn.Sigmoid()
+        )
+        
+        self.cross_attention = nn.MultiheadAttention(
+            phoneme_dim, 
+            num_heads=8, 
+            dropout=0.1,
+            batch_first=True
+        )
+        
+        self.layer_norm = nn.LayerNorm(phoneme_dim)
+        
+    def forward(self, error_probs, phoneme_features):
+        error_features = self.error_proj(error_probs)
+        
+        attn_out, _ = self.cross_attention(
+            query=phoneme_features,
+            key=error_features,
+            value=error_features
+        )
+        
+        concat_features = torch.cat([phoneme_features, attn_out], dim=-1)
+        gate = self.gate(concat_features)
+        
+        output = gate * attn_out + (1 - gate) * phoneme_features
+        return self.layer_norm(output)
+
+class EnhancedPhonemeRecognitionHead(nn.Module):
+    def __init__(self, input_dim, hidden_dim=512, num_phonemes=42, dropout_rate=0.1):
+        super().__init__()
+        self.td_linear1 = TimeDistributed(nn.Linear(input_dim, hidden_dim))
+        self.td_norm1 = TimeDistributed(nn.LayerNorm(hidden_dim))
+        self.td_dropout1 = TimeDistributed(nn.Dropout(dropout_rate))
+        
+        self.td_linear2 = TimeDistributed(nn.Linear(hidden_dim, hidden_dim // 2))
+        self.td_norm2 = TimeDistributed(nn.LayerNorm(hidden_dim // 2))
+        self.td_dropout2 = TimeDistributed(nn.Dropout(dropout_rate))
+        
+        self.td_linear3 = TimeDistributed(nn.Linear(hidden_dim // 2, num_phonemes))
+        
+    def forward(self, x):
+        x = self.td_linear1(x)
+        x = self.td_norm1(x)
+        x = F.gelu(x)
+        x = self.td_dropout1(x)
+        
+        x = self.td_linear2(x)
+        x = self.td_norm2(x)
+        x = F.gelu(x)
+        x = self.td_dropout2(x)
+        
+        return self.td_linear3(x)
+
+class L2PhonemeTemporalModule(nn.Module):
+    def __init__(self, input_dim, hidden_dim=512, num_layers=3, dropout=0.1):
+        super().__init__()
+        self.bilstm = nn.LSTM(
+            input_size=input_dim,
+            hidden_size=hidden_dim // 2,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0
+        )
+        
+        if input_dim != hidden_dim:
+            self.residual_proj = nn.Linear(input_dim, hidden_dim)
+        else:
+            self.residual_proj = nn.Identity()
+            
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x):
+        residual = self.residual_proj(x)
+        lstm_out, _ = self.bilstm(x)
+        return self.layer_norm(residual + self.dropout(lstm_out))
 
 class PhonemeRecognitionModel(nn.Module):
     def __init__(self, 
@@ -239,14 +331,23 @@ class PhonemeRecognitionModel(nn.Module):
         config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
         wav2vec_dim = config.hidden_size
         
-        self.error_aware_attention = ErrorAwareAttention(
+        self.phoneme_adapter = PhonemeAdapter(wav2vec_dim, adapter_dim=256)
+        
+        self.l2_temporal_module = L2PhonemeTemporalModule(
+            input_dim=wav2vec_dim,
+            hidden_dim=hidden_dim,
+            num_layers=3,
+            dropout=0.1
+        )
+        
+        self.error_attention = GatedErrorAttention(
             error_dim=num_error_types,
-            phoneme_dim=wav2vec_dim,
+            phoneme_dim=hidden_dim,
             hidden_dim=hidden_dim
         )
         
-        self.phoneme_recognition_head = PhonemeRecognitionHead(
-            input_dim=wav2vec_dim,
+        self.phoneme_recognition_head = EnhancedPhonemeRecognitionHead(
+            input_dim=hidden_dim,
             hidden_dim=hidden_dim,
             num_phonemes=num_phonemes,
             dropout_rate=0.1
@@ -255,11 +356,16 @@ class PhonemeRecognitionModel(nn.Module):
     def forward(self, x, attention_mask=None):
         phoneme_features = self.encoder(x, attention_mask)
         
+        phoneme_features = self.phoneme_adapter(phoneme_features)
+        
         with torch.no_grad():
             error_logits = self.error_model(x, attention_mask)
             error_probs = F.softmax(error_logits, dim=-1)
         
-        enhanced_features = self.error_aware_attention(error_probs, phoneme_features)
+        temporal_features = self.l2_temporal_module(phoneme_features)
+        
+        enhanced_features = self.error_attention(error_probs, temporal_features)
+        
         phoneme_logits = self.phoneme_recognition_head(enhanced_features)
         
         return phoneme_logits, error_logits
