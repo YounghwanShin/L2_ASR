@@ -37,23 +37,23 @@ def compute_entropy_regularization(log_probs, targets, input_lengths, target_len
     for b in range(batch_size):
         seq_len = input_lengths[b].item()
         probs = torch.exp(log_probs[:seq_len, b, :])
-        entropy = -torch.sum(probs * log_probs[:seq_len, b, :], dim=-1)
-        total_entropy += torch.sum(entropy)
+        entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)
+        total_entropy += torch.mean(entropy)
     
     return total_entropy / batch_size
 
 class AdaptiveEntropyRegularizer(nn.Module):
-    def __init__(self, initial_beta=0.2, target_entropy_factor=1.1):
+    def __init__(self, initial_beta=0.01, target_entropy_factor=0.5):
         super().__init__()
         self.beta = nn.Parameter(torch.tensor(initial_beta, dtype=torch.float32))
         self.target_entropy_factor = target_entropy_factor
         
     def get_target_entropy(self, target_lengths):
-        return self.target_entropy_factor * target_lengths.float().mean()
+        return self.target_entropy_factor * torch.log(torch.tensor(4.0))
     
     def compute_loss(self, entropy, target_lengths):
         target_entropy = self.get_target_entropy(target_lengths)
-        return self.beta * (entropy - target_entropy)
+        return self.beta * (target_entropy - entropy)
 
 def error_ctc_collate_fn(batch):
     waveforms, error_labels, label_lengths, wav_files = zip(*batch)
@@ -143,7 +143,7 @@ def show_error_detection_samples(model, dataloader, device, error_type_names, nu
                 
                 for t in range(min(greedy_preds.shape[1], actual_length)):
                     pred = greedy_preds[b, t]
-                    if pred != 0 and pred != prev:
+                    if pred != 0 and pred != prev and pred != 3:
                         seq.append(int(pred))
                     prev = pred
                 predictions.append(seq)
@@ -151,7 +151,7 @@ def show_error_detection_samples(model, dataloader, device, error_type_names, nu
             targets = []
             for labels, length in zip(error_labels, label_lengths):
                 target_seq = labels[:length].cpu().numpy().tolist()
-                clean_target = [target_seq[i] for i in range(0, len(target_seq), 2)]
+                clean_target = [token for token in target_seq if token != 3]
                 targets.append(clean_target)
             
             pred = predictions[0]
@@ -218,6 +218,7 @@ def train_model(model, dataloader, criterion, optimizer_step_fn, optimizer_zero_
     running_loss = 0.0
     running_ctc_loss = 0.0
     running_entropy_loss = 0.0
+    running_entropy_value = 0.0
     
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch} [{mode}]')
     
@@ -248,30 +249,33 @@ def train_model(model, dataloader, criterion, optimizer_step_fn, optimizer_zero_
         
         total_loss = ctc_loss
         entropy_loss = torch.tensor(0.0)
+        entropy_value = torch.tensor(0.0)
         
         optimizer_zero_grad_fn()
         
         if entropy_regularizer is not None and mode == 'error':
-            entropy = compute_entropy_regularization(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
-            entropy_reg_loss = entropy_regularizer.compute_loss(entropy, label_lengths)
-            total_loss = ctc_loss - entropy_reg_loss
+            entropy_value = compute_entropy_regularization(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
+            entropy_reg_loss = entropy_regularizer.compute_loss(entropy_value, label_lengths)
+            total_loss = ctc_loss + 0.1 * entropy_reg_loss
             entropy_loss = entropy_reg_loss
         
         total_loss.backward()
         
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         if entropy_regularizer is not None:
-            torch.nn.utils.clip_grad_norm_(entropy_regularizer.parameters(), max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(entropy_regularizer.parameters(), 0.1)
         optimizer_step_fn()
         
         running_loss += total_loss.item()
         running_ctc_loss += ctc_loss.item()
         running_entropy_loss += entropy_loss.item()
+        running_entropy_value += entropy_value.item()
         
         progress_bar.set_postfix({
-            'Loss': running_loss / (batch_idx + 1),
-            'CTC': running_ctc_loss / (batch_idx + 1),
-            'Entropy': running_entropy_loss / (batch_idx + 1)
+            'Loss': f'{running_loss / (batch_idx + 1):.4f}',
+            'CTC': f'{running_ctc_loss / (batch_idx + 1):.4f}',
+            'Entropy': f'{running_entropy_value / (batch_idx + 1):.4f}',
+            'EntLoss': f'{running_entropy_loss / (batch_idx + 1):.4f}'
         })
     
     return running_loss / len(dataloader)
@@ -342,7 +346,7 @@ def main():
     parser.add_argument('--pretrained_model', type=str, default='facebook/wav2vec2-large-xlsr-53')
     parser.add_argument('--hidden_dim', type=int, default=1024)
     parser.add_argument('--num_phonemes', type=int, default=42)
-    parser.add_argument('--num_error_types', type=int, default=3)
+    parser.add_argument('--num_error_types', type=int, default=4)
     parser.add_argument('--error_model_checkpoint', type=str, default=None)
     
     parser.add_argument('--batch_size', type=int, default=8)
@@ -396,7 +400,7 @@ def main():
             phoneme_to_id = json.load(f)
         id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     
-    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
+    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct', 3: 'separator'}
     
     if args.mode == 'error':
         logger.info("Initializing error detection model")
@@ -453,7 +457,7 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     
     if entropy_regularizer is not None:
-        beta_optimizer = optim.AdamW(entropy_regularizer.parameters(), lr=args.learning_rate)
+        beta_optimizer = optim.AdamW(entropy_regularizer.parameters(), lr=args.learning_rate * 0.1)
         def optimizer_step():
             optimizer.step()
             beta_optimizer.step()
@@ -516,6 +520,7 @@ def main():
             
             if entropy_regularizer is not None:
                 logger.info(f"Current beta: {entropy_regularizer.beta.item():.4f}")
+                logger.info(f"Target entropy: {entropy_regularizer.get_target_entropy(torch.tensor([1.0])).item():.4f}")
             
             logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
             

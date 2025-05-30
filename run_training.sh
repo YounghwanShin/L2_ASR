@@ -11,18 +11,19 @@ python train.py \
   --phoneme_map data/phoneme_to_id.json \
   --pretrained_model facebook/wav2vec2-large-xlsr-53 \
   --hidden_dim 1024 \
-  --num_error_types 3 \
+  --num_error_types 4 \
   --batch_size 16 \
   --eval_batch_size 16 \
   --learning_rate 3e-5 \
   --num_epochs 10 \
-  --use_entropy_reg \
-  --initial_beta 0.2 \
-  --target_entropy_factor 1.1 \
+  --max_grad_norm 0.5 \
   --use_scheduler \
   --evaluate_every_epoch \
   --show_samples \
   --num_sample_show 5 \
+  --use_entropy_reg \
+  --initial_beta 0.01 \
+  --target_entropy_factor 0.5 \
   --output_dir models \
   --result_dir results
 
@@ -37,7 +38,7 @@ python train.py \
   --error_model_checkpoint models/best_error_detection.pth \
   --hidden_dim 1024 \
   --num_phonemes 42 \
-  --num_error_types 3 \
+  --num_error_types 4 \
   --batch_size 16 \
   --eval_batch_size 16 \
   --learning_rate 3e-5 \
@@ -60,7 +61,7 @@ python evaluate.py \
   --pretrained_model facebook/wav2vec2-large-xlsr-53 \
   --hidden_dim 1024 \
   --num_phonemes 42 \
-  --num_error_types 3 \
+  --num_error_types 4 \
   --batch_size 8 \
   --output_dir evaluation_results \
   --detailed

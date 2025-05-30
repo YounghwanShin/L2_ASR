@@ -107,7 +107,7 @@ class MultiScaleFeatureFusion(nn.Module):
         return self.layer_norm(residual + self.dropout(output))
 
 class ErrorDetectionHead(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256, num_error_types=3, dropout_rate=0.3):
+    def __init__(self, input_dim, hidden_dim=256, num_error_types=4, dropout_rate=0.3):
         super().__init__()
         self.td_linear1 = TimeDistributed(nn.Linear(input_dim, hidden_dim))
         self.td_norm = TimeDistributed(nn.LayerNorm(hidden_dim))
@@ -152,7 +152,7 @@ class ErrorDetectionModel(nn.Module):
     def __init__(self, 
                  pretrained_model_name="facebook/wav2vec2-large-xlsr-53",
                  hidden_dim=1024,
-                 num_error_types=3):
+                 num_error_types=4):
         super().__init__()
         
         self.encoder = LearnableWav2Vec(pretrained_model_name)

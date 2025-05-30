@@ -86,7 +86,7 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
     
     return decoded_seqs
 
-def decode_and_remove_inserted_blanks(log_probs, input_lengths, blank_idx=0):
+def decode_and_remove_separators(log_probs, input_lengths, blank_idx=0, separator_idx=3):
     greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()
     batch_size = greedy_preds.shape[0]
     decoded_seqs = []
@@ -99,20 +99,21 @@ def decode_and_remove_inserted_blanks(log_probs, input_lengths, blank_idx=0):
         for t in range(min(greedy_preds.shape[1], actual_length)):
             pred = greedy_preds[b, t]
             if pred != blank_idx and pred != prev:
-                seq.append(int(pred))
+                if pred != separator_idx:
+                    seq.append(int(pred))
             prev = pred
         
         decoded_seqs.append(seq)
     
     return decoded_seqs
 
-def prepare_target_without_inserted_blanks(error_labels, label_lengths, blank_idx=0):
+def prepare_target_without_separators(error_labels, label_lengths, separator_idx=3):
     targets = []
     for labels, length in zip(error_labels, label_lengths):
         target_seq = labels[:length].cpu().numpy().tolist()
         clean_target = []
-        for i, token in enumerate(target_seq):
-            if i % 2 == 0:
+        for token in target_seq:
+            if token != separator_idx:
                 clean_target.append(token)
         targets.append(clean_target)
     return targets
@@ -174,7 +175,7 @@ def collate_fn(batch):
 
 def evaluate_error_detection(model, dataloader, device, error_type_names=None):
     if error_type_names is None:
-        error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
+        error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct', 3: 'separator'}
     
     model.eval()
     
@@ -211,8 +212,8 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
             
             log_probs = torch.log_softmax(error_logits, dim=-1)
-            predictions = decode_and_remove_inserted_blanks(log_probs, input_lengths)
-            targets = prepare_target_without_inserted_blanks(error_labels, error_label_lengths)
+            predictions = decode_and_remove_separators(log_probs, input_lengths)
+            targets = prepare_target_without_separators(error_labels, error_label_lengths)
             
             for pred, target in zip(predictions, targets):
                 total_sequences += 1
@@ -249,7 +250,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             
             class_report = classification_report(all_targets, all_predictions, output_dict=True, zero_division=0)
             
-            eval_error_types = {k: v for k, v in error_type_names.items() if k != 0}
+            eval_error_types = {k: v for k, v in error_type_names.items() if k not in [0, 3]}
             for class_id, class_name in eval_error_types.items():
                 if str(class_id) in class_report:
                     class_metrics[class_name] = {
@@ -357,7 +358,7 @@ def main():
     parser.add_argument('--pretrained_model', type=str, default='facebook/wav2vec2-large-xlsr-53')
     parser.add_argument('--hidden_dim', type=int, default=1024)
     parser.add_argument('--num_phonemes', type=int, default=42)
-    parser.add_argument('--num_error_types', type=int, default=3)
+    parser.add_argument('--num_error_types', type=int, default=4)
     
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--max_audio_length', type=int, default=None)
@@ -385,7 +386,7 @@ def main():
         phoneme_to_id = json.load(f)
     
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
-    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
+    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct', 3: 'separator'}
     
     logger.info(f"Loading evaluation dataset: {args.eval_data}")
     eval_dataset = EvaluationDataset(args.eval_data, phoneme_to_id, max_length=args.max_audio_length)
