@@ -30,7 +30,7 @@ def get_wav2vec2_output_lengths_official(model, input_lengths):
     
     return wav2vec_model._get_feat_extract_output_lengths(input_lengths)
 
-def compute_entropy_regularization(log_probs, targets, input_lengths, target_lengths):
+def compute_entropy_regularization(log_probs, input_lengths):
     batch_size = log_probs.size(1)
     total_entropy = 0.0
     
@@ -43,16 +43,16 @@ def compute_entropy_regularization(log_probs, targets, input_lengths, target_len
     return total_entropy / batch_size
 
 class AdaptiveEntropyRegularizer(nn.Module):
-    def __init__(self, initial_beta=0.01, target_entropy_factor=0.5):
+    def __init__(self, initial_beta=0.02, target_entropy_factor=0.6):
         super().__init__()
         self.beta = nn.Parameter(torch.tensor(initial_beta, dtype=torch.float32))
         self.target_entropy_factor = target_entropy_factor
         
-    def get_target_entropy(self, target_lengths):
+    def get_target_entropy(self):
         return self.target_entropy_factor * torch.log(torch.tensor(4.0))
     
-    def compute_loss(self, entropy, target_lengths):
-        target_entropy = self.get_target_entropy(target_lengths)
+    def compute_loss(self, entropy):
+        target_entropy = self.get_target_entropy()
         return self.beta * (target_entropy - entropy)
 
 def error_ctc_collate_fn(batch):
@@ -168,7 +168,6 @@ def show_error_detection_samples(model, dataloader, device, error_type_names, nu
                 correct = sum(1 for p, t in zip(pred, target) if p == t)
                 accuracy = correct / max(len(target), len(pred))
                 print(f"Token Accuracy: {accuracy:.3f}")
-                print(f"Length - Actual: {len(target)}, Predicted: {len(pred)}")
     
     model.train()
 
@@ -205,11 +204,6 @@ def show_phoneme_recognition_samples(model, dataloader, device, id_to_phoneme, n
             print(f"Actual:  {' '.join(true_phoneme_symbols)}")
             print(f"Predicted:  {' '.join(pred_phoneme_symbols)}")
             print(f"Match:  {'✓' if pred_phonemes == true_phonemes else '✗'}")
-            
-            if len(true_phonemes) > 0 and len(pred_phonemes) > 0:
-                correct = sum(1 for p, t in zip(pred_phonemes, true_phonemes) if p == t)
-                accuracy = correct / max(len(true_phonemes), len(pred_phonemes))
-                print(f"Token Accuracy: {accuracy:.3f}")
     
     model.train()
 
@@ -217,7 +211,6 @@ def train_model(model, dataloader, criterion, optimizer_step_fn, optimizer_zero_
     model.train()
     running_loss = 0.0
     running_ctc_loss = 0.0
-    running_entropy_loss = 0.0
     running_entropy_value = 0.0
     
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch} [{mode}]')
@@ -246,36 +239,32 @@ def train_model(model, dataloader, criterion, optimizer_step_fn, optimizer_zero_
         input_lengths = torch.clamp(input_lengths, min=1, max=logits.size(1))
         
         ctc_loss = criterion(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
-        
         total_loss = ctc_loss
-        entropy_loss = torch.tensor(0.0)
-        entropy_value = torch.tensor(0.0)
         
         optimizer_zero_grad_fn()
         
+        entropy_value = torch.tensor(0.0)
         if entropy_regularizer is not None and mode == 'error':
-            entropy_value = compute_entropy_regularization(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
-            entropy_reg_loss = entropy_regularizer.compute_loss(entropy_value, label_lengths)
-            total_loss = ctc_loss + 0.1 * entropy_reg_loss
-            entropy_loss = entropy_reg_loss
+            entropy_value = compute_entropy_regularization(log_probs.transpose(0, 1), input_lengths)
+            entropy_reg_loss = entropy_regularizer.compute_loss(entropy_value)
+            total_loss = ctc_loss + entropy_reg_loss
         
         total_loss.backward()
         
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         if entropy_regularizer is not None:
             torch.nn.utils.clip_grad_norm_(entropy_regularizer.parameters(), 0.1)
+        
         optimizer_step_fn()
         
         running_loss += total_loss.item()
         running_ctc_loss += ctc_loss.item()
-        running_entropy_loss += entropy_loss.item()
         running_entropy_value += entropy_value.item()
         
         progress_bar.set_postfix({
             'Loss': f'{running_loss / (batch_idx + 1):.4f}',
             'CTC': f'{running_ctc_loss / (batch_idx + 1):.4f}',
-            'Entropy': f'{running_entropy_value / (batch_idx + 1):.4f}',
-            'EntLoss': f'{running_entropy_loss / (batch_idx + 1):.4f}'
+            'Entropy': f'{running_entropy_value / (batch_idx + 1):.3f}'
         })
     
     return running_loss / len(dataloader)
@@ -349,8 +338,8 @@ def main():
     parser.add_argument('--num_error_types', type=int, default=4)
     parser.add_argument('--error_model_checkpoint', type=str, default=None)
     
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--learning_rate', type=float, default=5e-5)
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--learning_rate', type=float, default=3e-5)
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument('--max_audio_length', type=int, default=None)
     parser.add_argument('--max_grad_norm', type=float, default=0.5)
@@ -358,15 +347,12 @@ def main():
     parser.add_argument('--num_sample_show', type=int, default=3)
     
     parser.add_argument('--use_entropy_reg', action='store_true')
-    parser.add_argument('--initial_beta', type=float, default=0.2)
-    parser.add_argument('--target_entropy_factor', type=float, default=1.1)
+    parser.add_argument('--initial_beta', type=float, default=0.02)
+    parser.add_argument('--target_entropy_factor', type=float, default=0.6)
     
     parser.add_argument('--use_scheduler', action='store_true')
-    parser.add_argument('--scheduler_patience', type=int, default=2)
+    parser.add_argument('--scheduler_patience', type=int, default=3)
     parser.add_argument('--scheduler_factor', type=float, default=0.5)
-    parser.add_argument('--scheduler_threshold', type=float, default=0.001)
-    parser.add_argument('--scheduler_cooldown', type=int, default=1)
-    parser.add_argument('--scheduler_min_lr', type=float, default=1e-6)
     
     parser.add_argument('--output_dir', type=str, default='models')
     parser.add_argument('--result_dir', type=str, default='results')
@@ -432,7 +418,7 @@ def main():
             target_entropy_factor=args.target_entropy_factor
         )
         entropy_regularizer = entropy_regularizer.to(args.device)
-        logger.info(f"Using adaptive entropy regularization with initial beta: {args.initial_beta}")
+        logger.info(f"Using adaptive entropy regularization - beta: {args.initial_beta}, target: {args.target_entropy_factor}")
     
     if args.model_checkpoint:
         logger.info(f"Loading checkpoint from {args.model_checkpoint}")
@@ -477,10 +463,10 @@ def main():
             mode='min', 
             factor=args.scheduler_factor,
             patience=args.scheduler_patience,
-            threshold=args.scheduler_threshold,
+            threshold=0.001,
             threshold_mode='rel',
-            cooldown=args.scheduler_cooldown,
-            min_lr=args.scheduler_min_lr
+            cooldown=1,
+            min_lr=1e-6
         )
         logger.info("Learning rate scheduler (ReduceLROnPlateau) initialized")
     
@@ -520,7 +506,7 @@ def main():
             
             if entropy_regularizer is not None:
                 logger.info(f"Current beta: {entropy_regularizer.beta.item():.4f}")
-                logger.info(f"Target entropy: {entropy_regularizer.get_target_entropy(torch.tensor([1.0])).item():.4f}")
+                logger.info(f"Target entropy: {entropy_regularizer.get_target_entropy().item():.3f}")
             
             logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
             
@@ -565,7 +551,6 @@ def main():
             
             model_path = os.path.join(args.output_dir, f'last_error_detection.pth')
             torch.save(model.state_dict(), model_path)
-            logger.info(f"Last model saved: {model_path}")
             
     elif args.mode == 'phoneme':
         if not args.phoneme_train_data or not args.phoneme_val_data:
@@ -616,9 +601,6 @@ def main():
                 logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
                 logger.info(f"Total Phonemes: {phoneme_recognition_results['total_phonemes']}")
                 logger.info(f"Total Errors: {phoneme_recognition_results['total_errors']}")
-                logger.info(f"Insertions: {phoneme_recognition_results['insertions']}")
-                logger.info(f"Deletions: {phoneme_recognition_results['deletions']}")
-                logger.info(f"Substitutions: {phoneme_recognition_results['substitutions']}")
                 
                 epoch_metrics['phoneme_recognition'] = {
                     'per': phoneme_recognition_results['per'],
@@ -640,7 +622,6 @@ def main():
             
             model_path = os.path.join(args.output_dir, f'last_phoneme_recognition.pth')
             torch.save(model.state_dict(), model_path)
-            logger.info(f"Last model saved: {model_path}")
     
     logger.info("Training completed!")
 

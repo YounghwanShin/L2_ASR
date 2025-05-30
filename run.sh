@@ -2,7 +2,7 @@
 
 mkdir -p models results evaluation_results
 
-echo "=== Training Error Detection Model ==="
+echo "=== Training Error Detection Model with AdaMER ==="
 python train.py \
   --mode error \
   --error_train_data data/errors_train.json \
@@ -18,12 +18,14 @@ python train.py \
   --num_epochs 10 \
   --max_grad_norm 0.5 \
   --use_scheduler \
+  --scheduler_patience 3 \
+  --scheduler_factor 0.5 \
   --evaluate_every_epoch \
   --show_samples \
-  --num_sample_show 5 \
+  --num_sample_show 3 \
   --use_entropy_reg \
-  --initial_beta 0.01 \
-  --target_entropy_factor 0.5 \
+  --initial_beta 0.02 \
+  --target_entropy_factor 0.6 \
   --output_dir models \
   --result_dir results
 
@@ -45,9 +47,11 @@ python train.py \
   --num_epochs 15 \
   --max_grad_norm 0.5 \
   --use_scheduler \
+  --scheduler_patience 3 \
+  --scheduler_factor 0.5 \
   --evaluate_every_epoch \
   --show_samples \
-  --num_sample_show 5 \
+  --num_sample_show 3 \
   --output_dir models \
   --result_dir results
 

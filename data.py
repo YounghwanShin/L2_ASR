@@ -12,7 +12,6 @@ class ErrorLabelDataset(Dataset):
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         self.error_mapping = {'C': 2, 'I': 1}
-        self.blank_token = 0
         self.separator_token = 3
         
     def __len__(self):
@@ -101,7 +100,6 @@ class EvaluationDataset(Dataset):
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         self.error_mapping = {'C': 2, 'I': 1}
-        self.blank_token = 0
         self.separator_token = 3
         
     def __len__(self):
