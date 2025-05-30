@@ -22,6 +22,7 @@ python train.py \
   --use_scheduler \
   --evaluate_every_epoch \
   --show_samples \
+  --num_sample_show 5 \
   --output_dir models \
   --result_dir results
 
