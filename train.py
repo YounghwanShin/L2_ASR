@@ -30,6 +30,30 @@ def get_wav2vec2_output_lengths_official(model, input_lengths):
     
     return wav2vec_model._get_feat_extract_output_lengths(input_lengths)
 
+def compute_entropy_regularization(log_probs, targets, input_lengths, target_lengths):
+    batch_size = log_probs.size(1)
+    total_entropy = 0.0
+    
+    for b in range(batch_size):
+        seq_len = input_lengths[b].item()
+        probs = torch.exp(log_probs[:seq_len, b, :])
+        entropy = -torch.sum(probs * log_probs[:seq_len, b, :], dim=-1)
+        total_entropy += torch.sum(entropy)
+    
+    return total_entropy / batch_size
+
+class AdaptiveEntropyRegularizer:
+    def __init__(self, initial_beta=0.2, target_entropy_factor=1.1):
+        self.beta = nn.Parameter(torch.tensor(initial_beta))
+        self.target_entropy_factor = target_entropy_factor
+        
+    def get_target_entropy(self, target_lengths):
+        return self.target_entropy_factor * target_lengths.float().mean()
+    
+    def compute_loss(self, entropy, target_lengths):
+        target_entropy = self.get_target_entropy(target_lengths)
+        return self.beta * (entropy - target_entropy)
+
 def error_ctc_collate_fn(batch):
     waveforms, error_labels, label_lengths, wav_files = zip(*batch)
     
@@ -188,9 +212,11 @@ def show_phoneme_recognition_samples(model, dataloader, device, id_to_phoneme, n
     
     model.train()
 
-def train_model(model, dataloader, criterion, optimizer, device, epoch, mode, max_grad_norm=0.5):
+def train_model(model, dataloader, criterion, optimizer, device, epoch, mode, max_grad_norm=0.5, entropy_regularizer=None):
     model.train()
     running_loss = 0.0
+    running_ctc_loss = 0.0
+    running_entropy_loss = 0.0
     
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch} [{mode}]')
     
@@ -217,17 +243,35 @@ def train_model(model, dataloader, criterion, optimizer, device, epoch, mode, ma
         input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
         input_lengths = torch.clamp(input_lengths, min=1, max=logits.size(1))
         
-        loss = criterion(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
+        ctc_loss = criterion(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
+        
+        total_loss = ctc_loss
+        entropy_loss = torch.tensor(0.0)
+        
+        if entropy_regularizer is not None and mode == 'error':
+            entropy = compute_entropy_regularization(log_probs.transpose(0, 1), labels, input_lengths, label_lengths)
+            entropy_reg_loss = entropy_regularizer.compute_loss(entropy, label_lengths)
+            total_loss = ctc_loss - entropy_reg_loss
+            entropy_loss = entropy_reg_loss
+            
+            beta_loss = entropy_regularizer.beta * (entropy - entropy_regularizer.get_target_entropy(label_lengths))
+            beta_loss.backward(retain_graph=True)
         
         optimizer.zero_grad()
-        loss.backward()
+        total_loss.backward()
         
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
         
-        running_loss += loss.item()
+        running_loss += total_loss.item()
+        running_ctc_loss += ctc_loss.item()
+        running_entropy_loss += entropy_loss.item()
         
-        progress_bar.set_postfix({'Loss': running_loss / (batch_idx + 1)})
+        progress_bar.set_postfix({
+            'Loss': running_loss / (batch_idx + 1),
+            'CTC': running_ctc_loss / (batch_idx + 1),
+            'Entropy': running_entropy_loss / (batch_idx + 1)
+        })
     
     return running_loss / len(dataloader)
 
@@ -308,6 +352,10 @@ def main():
     parser.add_argument('--show_samples', action='store_true')
     parser.add_argument('--num_sample_show', type=int, default=3)
     
+    parser.add_argument('--use_entropy_reg', action='store_true')
+    parser.add_argument('--initial_beta', type=float, default=0.2)
+    parser.add_argument('--target_entropy_factor', type=float, default=1.1)
+    
     parser.add_argument('--use_scheduler', action='store_true')
     parser.add_argument('--scheduler_patience', type=int, default=2)
     parser.add_argument('--scheduler_factor', type=float, default=0.5)
@@ -372,6 +420,15 @@ def main():
     
     criterion = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
     
+    entropy_regularizer = None
+    if args.use_entropy_reg and args.mode == 'error':
+        entropy_regularizer = AdaptiveEntropyRegularizer(
+            initial_beta=args.initial_beta,
+            target_entropy_factor=args.target_entropy_factor
+        )
+        entropy_regularizer.beta = entropy_regularizer.beta.to(args.device)
+        logger.info(f"Using adaptive entropy regularization with initial beta: {args.initial_beta}")
+    
     if args.model_checkpoint:
         logger.info(f"Loading checkpoint from {args.model_checkpoint}")
         state_dict = torch.load(args.model_checkpoint, map_location=args.device)
@@ -393,6 +450,20 @@ def main():
     model = model.to(args.device)
     
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
+    
+    if entropy_regularizer is not None:
+        beta_optimizer = optim.AdamW([entropy_regularizer.beta], lr=args.learning_rate)
+        def optimizer_step():
+            optimizer.step()
+            beta_optimizer.step()
+        def optimizer_zero_grad():
+            optimizer.zero_grad()
+            beta_optimizer.zero_grad()
+    else:
+        def optimizer_step():
+            optimizer.step()
+        def optimizer_zero_grad():
+            optimizer.zero_grad()
     
     scheduler = None
     if args.use_scheduler:
@@ -435,12 +506,15 @@ def main():
         for epoch in range(1, args.num_epochs + 1):
             logger.info(f"Epoch {epoch}/{args.num_epochs} starting")
             
-            train_loss = train_model(model, train_dataloader, criterion, optimizer, args.device, epoch, 'error', args.max_grad_norm)
+            train_loss = train_model(model, train_dataloader, criterion, optimizer, args.device, epoch, 'error', args.max_grad_norm, entropy_regularizer)
             val_loss = validate_model(model, val_dataloader, criterion, args.device, 'error')
             
             if scheduler is not None:
                 scheduler.step(val_loss)
                 logger.info(f"Current learning rate: {optimizer.param_groups[0]['lr']:.2e}")
+            
+            if entropy_regularizer is not None:
+                logger.info(f"Current beta: {entropy_regularizer.beta.item():.4f}")
             
             logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
             
@@ -454,7 +528,8 @@ def main():
                 'epoch': epoch,
                 'train_loss': train_loss,
                 'val_loss': val_loss,
-                'learning_rate': optimizer.param_groups[0]['lr']
+                'learning_rate': optimizer.param_groups[0]['lr'],
+                'beta': entropy_regularizer.beta.item() if entropy_regularizer is not None else None
             }
             
             if args.evaluate_every_epoch and eval_dataloader:

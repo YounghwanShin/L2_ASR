@@ -21,6 +21,9 @@ python train.py \
   --evaluate_every_epoch \
   --show_samples \
   --num_sample_show 5 \
+  --use_entropy_reg \
+  --initial_beta 0.2 \
+  --target_entropy_factor 1.1 \
   --output_dir models \
   --result_dir results
 
