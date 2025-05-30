@@ -16,14 +16,12 @@ python train.py \
   --eval_batch_size 16 \
   --learning_rate 3e-5 \
   --num_epochs 10 \
-  --max_grad_norm 0.5 \
-  --use_scheduler \
-  --evaluate_every_epoch \
-  --show_samples \
-  --num_sample_show 5 \
   --use_entropy_reg \
   --initial_beta 0.2 \
   --target_entropy_factor 1.1 \
+  --use_scheduler \
+  --evaluate_every_epoch \
+  --show_samples \
   --output_dir models \
   --result_dir results
 

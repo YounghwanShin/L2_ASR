@@ -43,8 +43,8 @@ def compute_entropy_regularization(log_probs, targets, input_lengths, target_len
     return total_entropy / batch_size
 
 class AdaptiveEntropyRegularizer:
-    def __init__(self, initial_beta=0.2, target_entropy_factor=1.1):
-        self.beta = nn.Parameter(torch.tensor(initial_beta))
+    def __init__(self, initial_beta=0.2, target_entropy_factor=1.1, device='cuda'):
+        self.beta = torch.tensor(initial_beta, device=device, requires_grad=True)
         self.target_entropy_factor = target_entropy_factor
         
     def get_target_entropy(self, target_lengths):
@@ -53,6 +53,10 @@ class AdaptiveEntropyRegularizer:
     def compute_loss(self, entropy, target_lengths):
         target_entropy = self.get_target_entropy(target_lengths)
         return self.beta * (entropy - target_entropy)
+    
+    def to(self, device):
+        self.beta = self.beta.to(device)
+        return self
 
 def error_ctc_collate_fn(batch):
     waveforms, error_labels, label_lengths, wav_files = zip(*batch)
@@ -253,14 +257,13 @@ def train_model(model, dataloader, criterion, optimizer, device, epoch, mode, ma
             entropy_reg_loss = entropy_regularizer.compute_loss(entropy, label_lengths)
             total_loss = ctc_loss - entropy_reg_loss
             entropy_loss = entropy_reg_loss
-            
-            beta_loss = entropy_regularizer.beta * (entropy - entropy_regularizer.get_target_entropy(label_lengths))
-            beta_loss.backward(retain_graph=True)
         
         optimizer.zero_grad()
         total_loss.backward()
         
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        if entropy_regularizer is not None:
+            torch.nn.utils.clip_grad_norm_([entropy_regularizer.beta], max_grad_norm)
         optimizer.step()
         
         running_loss += total_loss.item()
@@ -424,9 +427,9 @@ def main():
     if args.use_entropy_reg and args.mode == 'error':
         entropy_regularizer = AdaptiveEntropyRegularizer(
             initial_beta=args.initial_beta,
-            target_entropy_factor=args.target_entropy_factor
+            target_entropy_factor=args.target_entropy_factor,
+            device=args.device
         )
-        entropy_regularizer.beta = entropy_regularizer.beta.to(args.device)
         logger.info(f"Using adaptive entropy regularization with initial beta: {args.initial_beta}")
     
     if args.model_checkpoint:
@@ -449,21 +452,11 @@ def main():
     
     model = model.to(args.device)
     
-    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
-    
+    optimizer_params = list(model.parameters())
     if entropy_regularizer is not None:
-        beta_optimizer = optim.AdamW([entropy_regularizer.beta], lr=args.learning_rate)
-        def optimizer_step():
-            optimizer.step()
-            beta_optimizer.step()
-        def optimizer_zero_grad():
-            optimizer.zero_grad()
-            beta_optimizer.zero_grad()
-    else:
-        def optimizer_step():
-            optimizer.step()
-        def optimizer_zero_grad():
-            optimizer.zero_grad()
+        optimizer_params.append(entropy_regularizer.beta)
+    
+    optimizer = optim.AdamW(optimizer_params, lr=args.learning_rate)
     
     scheduler = None
     if args.use_scheduler:
