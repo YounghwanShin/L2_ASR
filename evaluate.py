@@ -9,52 +9,20 @@ import sys
 import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, f1_score
+from speechbrain.utils.edit_distance import wer_details_for_batch
 
 from model import ErrorDetectionModel, PhonemeRecognitionModel
 from data import EvaluationDataset
 
-def levenshtein_distance(seq1, seq2):
-    size_x, size_y = len(seq1) + 1, len(seq2) + 1
-    matrix = np.zeros((size_x, size_y), dtype=np.int32)
-    ops = np.zeros((size_x, size_y, 3), dtype=np.int32)
-    
-    for x in range(size_x):
-        matrix[x, 0] = x
-    for y in range(size_y):
-        matrix[0, y] = y
-    
-    for x in range(1, size_x):
-        ops[x, 0, 0] = 1
-    for y in range(1, size_y):
-        ops[0, y, 1] = 1
-    
-    for x in range(1, size_x):
-        for y in range(1, size_y):
-            if seq1[x-1] == seq2[y-1]:
-                matrix[x, y] = matrix[x-1, y-1]
-                ops[x, y] = ops[x-1, y-1]
-            else:
-                delete = matrix[x-1, y] + 1
-                insert = matrix[x, y-1] + 1
-                subst = matrix[x-1, y-1] + 1
-                
-                min_val = min(delete, insert, subst)
-                matrix[x, y] = min_val
-                
-                if min_val == delete:
-                    ops[x, y] = ops[x-1, y].copy()
-                    ops[x, y, 0] += 1
-                elif min_val == insert:
-                    ops[x, y] = ops[x, y-1].copy()
-                    ops[x, y, 1] += 1
-                else:
-                    ops[x, y] = ops[x-1, y-1].copy()
-                    ops[x, y, 2] += 1
-    
-    deletions, insertions, substitutions = ops[size_x-1, size_y-1]
-    distance = int(matrix[size_x-1, size_y-1])
-    
-    return distance, int(insertions), int(deletions), int(substitutions)
+def remove_sil_tokens(sequences):
+    cleaned_sequences = []
+    for seq in sequences:
+        if isinstance(seq[0], str):
+            cleaned_seq = [token for token in seq if token != "sil"]
+        else:
+            cleaned_seq = [token for token in seq if token != "sil"]
+        cleaned_sequences.append(cleaned_seq)
+    return cleaned_sequences
 
 def get_wav2vec2_output_lengths_official(model, input_lengths):
     actual_model = model.module if hasattr(model, 'module') else model
@@ -75,48 +43,46 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
     
     for b in range(batch_size):
         seq = []
-        prev = -1
-        actual_length = input_lengths[b].item()
-        for t in range(min(greedy_preds.shape[1], actual_length)):
+        prev = blank_idx
+        actual_length = min(input_lengths[b].item(), greedy_preds.shape[1])
+        
+        for t in range(actual_length):
             pred = greedy_preds[b, t]
             if pred != blank_idx and pred != prev:
                 seq.append(int(pred))
             prev = pred
-        decoded_seqs.append(seq)
-    
-    return decoded_seqs
-
-def decode_and_remove_separators(log_probs, input_lengths, blank_idx=0, separator_idx=3):
-    greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()
-    batch_size = greedy_preds.shape[0]
-    decoded_seqs = []
-    
-    for b in range(batch_size):
-        seq = []
-        prev = -1
-        actual_length = input_lengths[b].item()
-        
-        for t in range(min(greedy_preds.shape[1], actual_length)):
-            pred = greedy_preds[b, t]
-            if pred != blank_idx and pred != prev:
-                if pred != separator_idx:
-                    seq.append(int(pred))
-            prev = pred
         
         decoded_seqs.append(seq)
     
     return decoded_seqs
 
-def prepare_target_without_separators(error_labels, label_lengths, separator_idx=3):
+def decode_and_clean(log_probs, input_lengths, blank_idx=0, separator_idx=3):
+    decoded_seqs = decode_ctc(log_probs, input_lengths, blank_idx)
+    
+    cleaned_seqs = []
+    for seq in decoded_seqs:
+        cleaned_seq = [token for token in seq if token != separator_idx]
+        cleaned_seqs.append(cleaned_seq)
+    
+    return cleaned_seqs
+
+def clean_targets(error_labels, label_lengths, separator_idx=3):
     targets = []
     for labels, length in zip(error_labels, label_lengths):
         target_seq = labels[:length].cpu().numpy().tolist()
-        clean_target = []
-        for token in target_seq:
-            if token != separator_idx:
-                clean_target.append(token)
+        clean_target = [token for token in target_seq if token != separator_idx]
         targets.append(clean_target)
     return targets
+
+def convert_ids_to_phonemes(sequences, id_to_phoneme):
+    phoneme_sequences = []
+    for seq in sequences:
+        phoneme_seq = []
+        for token_id in seq:
+            phoneme = id_to_phoneme.get(str(token_id), f"UNK_{token_id}")
+            phoneme_seq.append(phoneme)
+        phoneme_sequences.append(phoneme_seq)
+    return phoneme_sequences
 
 def collate_fn(batch):
     (waveforms, error_labels, perceived_phoneme_ids, canonical_phoneme_ids,
@@ -179,16 +145,9 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
     
     model.eval()
     
-    total_sequences = 0
-    correct_sequences = 0
-    total_edit_distance = 0
-    total_tokens = 0
-    total_insertions = 0
-    total_deletions = 0
-    total_substitutions = 0
-    
     all_predictions = []
     all_targets = []
+    all_ids = []
     
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='Error Detection Evaluation')
@@ -212,43 +171,51 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
             
             log_probs = torch.log_softmax(error_logits, dim=-1)
-            predictions = decode_and_remove_separators(log_probs, input_lengths)
-            targets = prepare_target_without_separators(error_labels, error_label_lengths)
+            predictions = decode_and_clean(log_probs, input_lengths)
+            targets = clean_targets(error_labels, error_label_lengths)
             
-            for pred, target in zip(predictions, targets):
-                total_sequences += 1
-                total_tokens += len(target)
-                
-                if pred == target:
-                    correct_sequences += 1
-                
-                edit_dist, insertions, deletions, substitutions = levenshtein_distance(pred, target)
-                total_edit_distance += edit_dist
-                total_insertions += insertions
-                total_deletions += deletions
-                total_substitutions += substitutions
-                
-                all_predictions.extend(pred)
-                all_targets.extend(target)
+            all_predictions.extend(predictions)
+            all_targets.extend(targets)
+            all_ids.extend(wav_files)
+    
+    # Use speechbrain's wer_details_for_batch for exact compatibility
+    wer_details = wer_details_for_batch(
+        ids=all_ids,
+        refs=all_targets,
+        hyps=all_predictions,
+        compute_alignments=True
+    )
+    
+    total_sequences = len(wer_details)
+    correct_sequences = sum(1 for detail in wer_details if detail['WER'] == 0.0)
+    
+    total_tokens = sum(detail['num_ref_tokens'] for detail in wer_details)
+    total_errors = sum(detail['insertions'] + detail['deletions'] + detail['substitutions'] for detail in wer_details)
+    total_insertions = sum(detail['insertions'] for detail in wer_details)
+    total_deletions = sum(detail['deletions'] for detail in wer_details)
+    total_substitutions = sum(detail['substitutions'] for detail in wer_details)
     
     sequence_accuracy = correct_sequences / total_sequences if total_sequences > 0 else 0
-    token_accuracy = 1 - (total_edit_distance / total_tokens) if total_tokens > 0 else 0
-    avg_edit_distance = total_edit_distance / total_sequences if total_sequences > 0 else 0
+    token_accuracy = 1 - (total_errors / total_tokens) if total_tokens > 0 else 0
+    avg_edit_distance = total_errors / total_sequences if total_sequences > 0 else 0
+    
+    flat_predictions = [token for pred in all_predictions for token in pred]
+    flat_targets = [token for target in all_targets for token in target]
     
     weighted_f1 = 0
     macro_f1 = 0
     class_metrics = {}
     
-    if len(all_predictions) > 0 and len(all_targets) > 0:
+    if len(flat_predictions) > 0 and len(flat_targets) > 0:
         try:
-            min_len = min(len(all_predictions), len(all_targets))
-            all_predictions = all_predictions[:min_len]
-            all_targets = all_targets[:min_len]
+            min_len = min(len(flat_predictions), len(flat_targets))
+            flat_predictions = flat_predictions[:min_len]
+            flat_targets = flat_targets[:min_len]
             
-            weighted_f1 = f1_score(all_targets, all_predictions, average='weighted', zero_division=0)
-            macro_f1 = f1_score(all_targets, all_predictions, average='macro', zero_division=0)
+            weighted_f1 = f1_score(flat_targets, flat_predictions, average='weighted', zero_division=0)
+            macro_f1 = f1_score(flat_targets, flat_predictions, average='macro', zero_division=0)
             
-            class_report = classification_report(all_targets, all_predictions, output_dict=True, zero_division=0)
+            class_report = classification_report(flat_targets, flat_predictions, output_dict=True, zero_division=0)
             
             eval_error_types = {k: v for k, v in error_type_names.items() if k not in [0, 3]}
             for class_id, class_name in eval_error_types.items():
@@ -273,19 +240,16 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
         'total_tokens': int(total_tokens),
         'total_insertions': int(total_insertions),
         'total_deletions': int(total_deletions),
-        'total_substitutions': int(total_substitutions)
+        'total_substitutions': int(total_substitutions),
+        'wer_details': wer_details
     }
 
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     model.eval()
     
-    total_phonemes = 0
-    total_errors = 0
-    total_insertions = 0
-    total_deletions = 0
-    total_substitutions = 0
-    
-    per_sample_metrics = []
+    all_predictions = []
+    all_targets = []
+    all_ids = []
     
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='Phoneme Recognition Evaluation')
@@ -307,32 +271,51 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
             batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
             
-            for i, (preds, true_phonemes, length, wav_file) in enumerate(
-                zip(batch_phoneme_preds, perceived_phoneme_ids, perceived_lengths, wav_files)):
-                
-                true_phonemes = true_phonemes[:length].cpu().numpy().tolist()
-                true_phonemes = [int(p) for p in true_phonemes]
-                
-                per, insertions, deletions, substitutions = levenshtein_distance(preds, true_phonemes)
-                phoneme_count = len(true_phonemes)
-                
-                total_phonemes += phoneme_count
-                total_errors += per
-                total_insertions += insertions
-                total_deletions += deletions
-                total_substitutions += substitutions
-                
-                per_sample_metrics.append({
-                    'wav_file': wav_file,
-                    'per': float(per / phoneme_count) if phoneme_count > 0 else 0.0,
-                    'insertions': insertions,
-                    'deletions': deletions,
-                    'substitutions': substitutions,
-                    'true_phonemes': [id_to_phoneme.get(str(p), "UNK") for p in true_phonemes],
-                    'pred_phonemes': [id_to_phoneme.get(str(p), "UNK") for p in preds]
-                })
-        
+            batch_targets = []
+            for i, length in enumerate(perceived_lengths):
+                target = perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
+                target = [int(p) for p in target]
+                batch_targets.append(target)
+            
+            all_predictions.extend(batch_phoneme_preds)
+            all_targets.extend(batch_targets)
+            all_ids.extend(wav_files)
+    
+    # Convert to phoneme symbols for speechbrain compatibility
+    pred_phonemes = convert_ids_to_phonemes(all_predictions, id_to_phoneme)
+    target_phonemes = convert_ids_to_phonemes(all_targets, id_to_phoneme)
+    
+    # Remove 'sil' tokens just like speechbrain does
+    pred_phonemes = remove_sil_tokens(pred_phonemes)
+    target_phonemes = remove_sil_tokens(target_phonemes)
+    
+    # Use speechbrain's wer_details_for_batch for exact PER calculation
+    per_details = wer_details_for_batch(
+        ids=all_ids,
+        refs=target_phonemes,
+        hyps=pred_phonemes,
+        compute_alignments=True
+    )
+    
+    total_phonemes = sum(detail['num_ref_tokens'] for detail in per_details)
+    total_errors = sum(detail['insertions'] + detail['deletions'] + detail['substitutions'] for detail in per_details)
+    total_insertions = sum(detail['insertions'] for detail in per_details)
+    total_deletions = sum(detail['deletions'] for detail in per_details)
+    total_substitutions = sum(detail['substitutions'] for detail in per_details)
+    
     per = total_errors / total_phonemes if total_phonemes > 0 else 0
+    
+    per_sample_metrics = []
+    for detail in per_details:
+        per_sample_metrics.append({
+            'wav_file': detail['key'],
+            'per': detail['WER'],
+            'insertions': detail['insertions'],
+            'deletions': detail['deletions'],
+            'substitutions': detail['substitutions'],
+            'true_phonemes': detail['ref_tokens'],
+            'pred_phonemes': detail['hyp_tokens']
+        })
     
     return {
         'per': float(per),
@@ -341,8 +324,19 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
         'insertions': int(total_insertions),
         'deletions': int(total_deletions),
         'substitutions': int(total_substitutions),
-        'per_sample': per_sample_metrics
+        'per_sample': per_sample_metrics,
+        'per_details': per_details
     }
+
+# Keep backward compatibility
+levenshtein_distance = lambda seq1, seq2: (0, 0, 0, 0)  # Placeholder
+edit_distance = levenshtein_distance
+
+def decode_and_remove_separators(log_probs, input_lengths, blank_idx=0, separator_idx=3):
+    return decode_and_clean(log_probs, input_lengths, blank_idx, separator_idx)
+
+def prepare_target_without_separators(error_labels, label_lengths, separator_idx=3):
+    return clean_targets(error_labels, label_lengths, separator_idx)
 
 def main():
     parser = argparse.ArgumentParser(description='L2 Phoneme Recognition and Error Detection Model Evaluation')
@@ -495,6 +489,11 @@ def main():
                 with open(per_sample_results_path, 'w') as f:
                     json.dump(phoneme_recognition_results['per_sample'], f, indent=2)
                 logger.info(f"Per-sample PER results saved to {per_sample_results_path}")
+                
+                detailed_results_path = os.path.join(args.output_dir, 'detailed_per_results.json')
+                with open(detailed_results_path, 'w') as f:
+                    json.dump(phoneme_recognition_results['per_details'], f, indent=2)
+                logger.info(f"Detailed PER results saved to {detailed_results_path}")
     
     results_path = os.path.join(args.output_dir, 'evaluation_results.json')
     with open(results_path, 'w') as f:

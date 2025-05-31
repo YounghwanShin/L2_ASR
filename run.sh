@@ -15,7 +15,7 @@ python train.py \
   --batch_size 16 \
   --eval_batch_size 16 \
   --learning_rate 3e-5 \
-  --num_epochs 10 \
+  --num_epochs 20 \
   --max_grad_norm 0.5 \
   --use_scheduler \
   --scheduler_patience 3 \

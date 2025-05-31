@@ -113,7 +113,7 @@ def phoneme_collate_fn(batch):
     
     return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
 
-def show_error_detection_samples(model, dataloader, device, error_type_names, num_samples=3):
+def show_error_samples(model, dataloader, device, error_type_names, num_samples=3):
     model.eval()
     
     with torch.no_grad():
@@ -171,7 +171,7 @@ def show_error_detection_samples(model, dataloader, device, error_type_names, nu
     
     model.train()
 
-def show_phoneme_recognition_samples(model, dataloader, device, id_to_phoneme, num_samples=3):
+def show_phoneme_samples(model, dataloader, device, id_to_phoneme, num_samples=3):
     model.eval()
     
     with torch.no_grad():
@@ -514,7 +514,7 @@ def main():
                 logger.info(f"\n{'='*50}")
                 logger.info(f"Epoch {epoch} - Sample Predictions")
                 logger.info(f"{'='*50}")
-                show_error_detection_samples(model, val_dataloader, args.device, error_type_names, args.num_sample_show)
+                show_error_samples(model, val_dataloader, args.device, error_type_names, args.num_sample_show)
             
             epoch_metrics = {
                 'epoch': epoch,
@@ -585,7 +585,7 @@ def main():
                 logger.info(f"\n{'='*50}")
                 logger.info(f"Epoch {epoch} - Sample Predictions")
                 logger.info(f"{'='*50}")
-                show_phoneme_recognition_samples(model, val_dataloader, args.device, id_to_phoneme, args.num_sample_show)
+                show_phoneme_samples(model, val_dataloader, args.device, id_to_phoneme, args.num_sample_show)
             
             epoch_metrics = {
                 'epoch': epoch,
