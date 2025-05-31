@@ -15,14 +15,7 @@ from model import ErrorDetectionModel, PhonemeRecognitionModel
 from data import EvaluationDataset
 
 def remove_sil_tokens(sequences):
-    cleaned_sequences = []
-    for seq in sequences:
-        if isinstance(seq[0], str):
-            cleaned_seq = [token for token in seq if token != "sil"]
-        else:
-            cleaned_seq = [token for token in seq if token != "sil"]
-        cleaned_sequences.append(cleaned_seq)
-    return cleaned_sequences
+    return [[token for token in seq if token != "sil"] for seq in sequences]
 
 def get_wav2vec2_output_lengths_official(model, input_lengths):
     actual_model = model.module if hasattr(model, 'module') else model
@@ -56,98 +49,50 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
     
     return decoded_seqs
 
-def decode_and_clean(log_probs, input_lengths, blank_idx=0, separator_idx=3):
-    decoded_seqs = decode_ctc(log_probs, input_lengths, blank_idx)
-    
-    cleaned_seqs = []
-    for seq in decoded_seqs:
-        cleaned_seq = [token for token in seq if token != separator_idx]
-        cleaned_seqs.append(cleaned_seq)
-    
-    return cleaned_seqs
+def decode_and_clean(log_probs, input_lengths, blank_idx=0):
+    return decode_ctc(log_probs, input_lengths, blank_idx)
 
-def clean_targets(error_labels, label_lengths, separator_idx=3):
-    targets = []
-    for labels, length in zip(error_labels, label_lengths):
-        target_seq = labels[:length].cpu().numpy().tolist()
-        clean_target = [token for token in target_seq if token != separator_idx]
-        targets.append(clean_target)
-    return targets
+def clean_targets(error_labels, label_lengths):
+    return [labels[:length].cpu().numpy().tolist() for labels, length in zip(error_labels, label_lengths)]
 
 def convert_ids_to_phonemes(sequences, id_to_phoneme):
-    phoneme_sequences = []
-    for seq in sequences:
-        phoneme_seq = []
-        for token_id in seq:
-            phoneme = id_to_phoneme.get(str(token_id), f"UNK_{token_id}")
-            phoneme_seq.append(phoneme)
-        phoneme_sequences.append(phoneme_seq)
-    return phoneme_sequences
+    return [[id_to_phoneme.get(str(token_id), f"UNK_{token_id}") for token_id in seq] for seq in sequences]
 
 def collate_fn(batch):
     (waveforms, error_labels, perceived_phoneme_ids, canonical_phoneme_ids,
      audio_lengths, error_label_lengths, perceived_lengths, canonical_lengths, wav_files) = zip(*batch)
     
-    max_audio_len = max([waveform.shape[0] for waveform in waveforms])
-    padded_waveforms = []
+    def pad_tensors(tensors, pad_value=0):
+        max_len = max(tensor.shape[0] for tensor in tensors)
+        return torch.stack([
+            torch.nn.functional.pad(tensor, (0, max_len - tensor.shape[0]), value=pad_value)
+            for tensor in tensors
+        ])
     
-    for waveform in waveforms:
-        audio_len = waveform.shape[0]
-        padding = max_audio_len - audio_len
-        padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
-        padded_waveforms.append(padded_waveform)
-    
-    max_error_len = max([labels.shape[0] for labels in error_labels])
-    padded_error_labels = []
-    
-    for labels in error_labels:
-        label_len = labels.shape[0]
-        padding = max_error_len - label_len
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)
-        padded_error_labels.append(padded_labels)
-    
-    max_perceived_len = max([ids.shape[0] for ids in perceived_phoneme_ids])
-    padded_perceived_ids = []
-    
-    for ids in perceived_phoneme_ids:
-        ids_len = ids.shape[0]
-        padding = max_perceived_len - ids_len
-        padded_ids = torch.nn.functional.pad(ids, (0, padding), value=0)
-        padded_perceived_ids.append(padded_ids)
-    
-    max_canonical_len = max([ids.shape[0] for ids in canonical_phoneme_ids])
-    padded_canonical_ids = []
-    
-    for ids in canonical_phoneme_ids:
-        ids_len = ids.shape[0]
-        padding = max_canonical_len - ids_len
-        padded_ids = torch.nn.functional.pad(ids, (0, padding), value=0)
-        padded_canonical_ids.append(padded_ids)
-    
-    padded_waveforms = torch.stack(padded_waveforms)
-    padded_error_labels = torch.stack(padded_error_labels)
-    padded_perceived_ids = torch.stack(padded_perceived_ids)
-    padded_canonical_ids = torch.stack(padded_canonical_ids)
-    
-    audio_lengths = torch.tensor(audio_lengths)
-    error_label_lengths = torch.tensor(error_label_lengths)
-    perceived_lengths = torch.tensor(perceived_lengths)
-    canonical_lengths = torch.tensor(canonical_lengths)
+    max_audio_len = max(waveform.shape[0] for waveform in waveforms)
+    padded_waveforms = torch.stack([
+        torch.nn.functional.pad(waveform, (0, max_audio_len - waveform.shape[0]))
+        for waveform in waveforms
+    ])
     
     return (
-        padded_waveforms, padded_error_labels, padded_perceived_ids, padded_canonical_ids,
-        audio_lengths, error_label_lengths, perceived_lengths, canonical_lengths, wav_files
+        padded_waveforms,
+        pad_tensors(error_labels),
+        pad_tensors(perceived_phoneme_ids),
+        pad_tensors(canonical_phoneme_ids),
+        torch.tensor(audio_lengths),
+        torch.tensor(error_label_lengths),
+        torch.tensor(perceived_lengths),
+        torch.tensor(canonical_lengths),
+        wav_files
     )
 
 def evaluate_error_detection(model, dataloader, device, error_type_names=None):
     if error_type_names is None:
-        error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct', 3: 'separator'}
+        error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
     model.eval()
-    
-    all_predictions = []
-    all_targets = []
-    all_ids = []
+    all_predictions, all_targets, all_ids = [], [], []
     
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='Error Detection Evaluation')
@@ -178,7 +123,6 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             all_targets.extend(targets)
             all_ids.extend(wav_files)
     
-    # Use speechbrain's wer_details_for_batch for exact compatibility
     wer_details = wer_details_for_batch(
         ids=all_ids,
         refs=all_targets,
@@ -202,8 +146,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
     flat_predictions = [token for pred in all_predictions for token in pred]
     flat_targets = [token for target in all_targets for token in target]
     
-    weighted_f1 = 0
-    macro_f1 = 0
+    weighted_f1 = macro_f1 = 0
     class_metrics = {}
     
     if len(flat_predictions) > 0 and len(flat_targets) > 0:
@@ -217,7 +160,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             
             class_report = classification_report(flat_targets, flat_predictions, output_dict=True, zero_division=0)
             
-            eval_error_types = {k: v for k, v in error_type_names.items() if k not in [0, 3]}
+            eval_error_types = {k: v for k, v in error_type_names.items() if k != 0}
             for class_id, class_name in eval_error_types.items():
                 if str(class_id) in class_report:
                     class_metrics[class_name] = {
@@ -246,10 +189,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
 
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     model.eval()
-    
-    all_predictions = []
-    all_targets = []
-    all_ids = []
+    all_predictions, all_targets, all_ids = [], [], []
     
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='Phoneme Recognition Evaluation')
@@ -271,25 +211,21 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
             batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
             
-            batch_targets = []
-            for i, length in enumerate(perceived_lengths):
-                target = perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
-                target = [int(p) for p in target]
-                batch_targets.append(target)
+            batch_targets = [
+                perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
+                for i, length in enumerate(perceived_lengths)
+            ]
             
             all_predictions.extend(batch_phoneme_preds)
             all_targets.extend(batch_targets)
             all_ids.extend(wav_files)
     
-    # Convert to phoneme symbols for speechbrain compatibility
     pred_phonemes = convert_ids_to_phonemes(all_predictions, id_to_phoneme)
     target_phonemes = convert_ids_to_phonemes(all_targets, id_to_phoneme)
     
-    # Remove 'sil' tokens just like speechbrain does
     pred_phonemes = remove_sil_tokens(pred_phonemes)
     target_phonemes = remove_sil_tokens(target_phonemes)
     
-    # Use speechbrain's wer_details_for_batch for exact PER calculation
     per_details = wer_details_for_batch(
         ids=all_ids,
         refs=target_phonemes,
@@ -305,9 +241,8 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     
     per = total_errors / total_phonemes if total_phonemes > 0 else 0
     
-    per_sample_metrics = []
-    for detail in per_details:
-        per_sample_metrics.append({
+    per_sample_metrics = [
+        {
             'wav_file': detail['key'],
             'per': detail['WER'],
             'insertions': detail['insertions'],
@@ -315,7 +250,9 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
             'substitutions': detail['substitutions'],
             'true_phonemes': detail['ref_tokens'],
             'pred_phonemes': detail['hyp_tokens']
-        })
+        }
+        for detail in per_details
+    ]
     
     return {
         'per': float(per),
@@ -328,15 +265,20 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
         'per_details': per_details
     }
 
-# Keep backward compatibility
-levenshtein_distance = lambda seq1, seq2: (0, 0, 0, 0)  # Placeholder
-edit_distance = levenshtein_distance
-
-def decode_and_remove_separators(log_probs, input_lengths, blank_idx=0, separator_idx=3):
-    return decode_and_clean(log_probs, input_lengths, blank_idx, separator_idx)
-
-def prepare_target_without_separators(error_labels, label_lengths, separator_idx=3):
-    return clean_targets(error_labels, label_lengths, separator_idx)
+def load_model_checkpoint(checkpoint_path, device):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+    
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = key[7:] if key.startswith('module.') else key
+        new_state_dict[new_key] = value
+    
+    return new_state_dict
 
 def main():
     parser = argparse.ArgumentParser(description='L2 Phoneme Recognition and Error Detection Model Evaluation')
@@ -380,7 +322,7 @@ def main():
         phoneme_to_id = json.load(f)
     
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
-    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct', 3: 'separator'}
+    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
     logger.info(f"Loading evaluation dataset: {args.eval_data}")
     eval_dataset = EvaluationDataset(args.eval_data, phoneme_to_id, max_length=args.max_audio_length)
@@ -402,16 +344,7 @@ def main():
             )
             
             logger.info(f"Loading error detection model checkpoint: {args.error_model_checkpoint}")
-            state_dict = torch.load(args.error_model_checkpoint, map_location=args.device)
-            
-            new_state_dict = {}
-            for key, value in state_dict.items():
-                if key.startswith('module.'):
-                    new_key = key[7:]
-                    new_state_dict[new_key] = value
-                else:
-                    new_state_dict[key] = value
-            
+            new_state_dict = load_model_checkpoint(args.error_model_checkpoint, args.device)
             error_model.load_state_dict(new_state_dict)
             error_model = error_model.to(args.device)
             
@@ -451,16 +384,7 @@ def main():
             )
             
             logger.info(f"Loading phoneme recognition model checkpoint: {args.phoneme_model_checkpoint}")
-            state_dict = torch.load(args.phoneme_model_checkpoint, map_location=args.device)
-            
-            new_state_dict = {}
-            for key, value in state_dict.items():
-                if key.startswith('module.'):
-                    new_key = key[7:]
-                    new_state_dict[new_key] = value
-                else:
-                    new_state_dict[key] = value
-            
+            new_state_dict = load_model_checkpoint(args.phoneme_model_checkpoint, args.device)
             phoneme_model.load_state_dict(new_state_dict)
             phoneme_model = phoneme_model.to(args.device)
             

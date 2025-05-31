@@ -53,15 +53,14 @@ class MultiScaleFeatureFusion(nn.Module):
     def __init__(self, input_dim, hidden_dim=256):
         super().__init__()
         
-        self.conv_1 = nn.Conv1d(input_dim, hidden_dim // 4, kernel_size=1, padding=0)
-        self.conv_3 = nn.Conv1d(input_dim, hidden_dim // 4, kernel_size=3, padding=1)
-        self.conv_5 = nn.Conv1d(input_dim, hidden_dim // 4, kernel_size=5, padding=2)
-        self.conv_7 = nn.Conv1d(input_dim, hidden_dim // 4, kernel_size=7, padding=3)
+        self.conv_layers = nn.ModuleList([
+            nn.Conv1d(input_dim, hidden_dim // 4, kernel_size=k, padding=k//2)
+            for k in [1, 3, 5, 7]
+        ])
         
-        self.bn_1 = nn.BatchNorm1d(hidden_dim // 4)
-        self.bn_3 = nn.BatchNorm1d(hidden_dim // 4)
-        self.bn_5 = nn.BatchNorm1d(hidden_dim // 4)
-        self.bn_7 = nn.BatchNorm1d(hidden_dim // 4)
+        self.bn_layers = nn.ModuleList([
+            nn.BatchNorm1d(hidden_dim // 4) for _ in range(4)
+        ])
         
         self.scale_attention = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 4),
@@ -83,13 +82,12 @@ class MultiScaleFeatureFusion(nn.Module):
         residual = self.residual_proj(x)
         x_conv = x.transpose(1, 2)
         
-        feat_1 = F.relu(self.bn_1(self.conv_1(x_conv)))
-        feat_3 = F.relu(self.bn_3(self.conv_3(x_conv)))
-        feat_5 = F.relu(self.bn_5(self.conv_5(x_conv)))
-        feat_7 = F.relu(self.bn_7(self.conv_7(x_conv)))
+        features = []
+        for conv, bn in zip(self.conv_layers, self.bn_layers):
+            feat = F.relu(bn(conv(x_conv)))
+            features.append(feat)
         
-        multi_scale_features = torch.cat([feat_1, feat_3, feat_5, feat_7], dim=1)
-        multi_scale_features = multi_scale_features.transpose(1, 2)
+        multi_scale_features = torch.cat(features, dim=1).transpose(1, 2)
         
         global_features = torch.mean(multi_scale_features, dim=1)
         scale_weights = self.scale_attention(global_features)
@@ -314,14 +312,17 @@ class PhonemeRecognitionModel(nn.Module):
         )
         
         if error_model_checkpoint:
-            state_dict = torch.load(error_model_checkpoint, map_location='cpu')
+            checkpoint = torch.load(error_model_checkpoint, map_location='cpu')
+            
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            else:
+                state_dict = checkpoint
+                
             new_state_dict = {}
             for key, value in state_dict.items():
-                if key.startswith('module.'):
-                    new_key = key[7:]
-                    new_state_dict[new_key] = value
-                else:
-                    new_state_dict[key] = value
+                new_key = key[7:] if key.startswith('module.') else key
+                new_state_dict[new_key] = value
             
             self.error_model.load_state_dict(new_state_dict)
             

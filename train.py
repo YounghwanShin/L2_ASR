@@ -55,113 +55,87 @@ class AdaptiveEntropyRegularizer(nn.Module):
         target_entropy = self.get_target_entropy()
         return self.beta * (target_entropy - entropy)
 
-def error_ctc_collate_fn(batch):
-    waveforms, error_labels, label_lengths, wav_files = zip(*batch)
+def generic_collate_fn(batch):
+    if len(batch[0]) == 4:
+        waveforms, labels, label_lengths, wav_files = zip(*batch)
+    else:
+        waveforms, labels, label_lengths, wav_files = zip(*batch)
     
-    max_audio_len = max([waveform.shape[0] for waveform in waveforms])
-    padded_waveforms = []
+    max_audio_len = max(waveform.shape[0] for waveform in waveforms)
+    padded_waveforms = torch.stack([
+        torch.nn.functional.pad(waveform, (0, max_audio_len - waveform.shape[0]))
+        for waveform in waveforms
+    ])
     
-    for waveform in waveforms:
-        audio_len = waveform.shape[0]
-        padding = max_audio_len - audio_len
-        padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
-        padded_waveforms.append(padded_waveform)
+    max_label_len = max(labels_tensor.shape[0] for labels_tensor in labels)
+    padded_labels = torch.stack([
+        torch.nn.functional.pad(labels_tensor, (0, max_label_len - labels_tensor.shape[0]), value=0)
+        for labels_tensor in labels
+    ])
     
-    audio_lengths = torch.tensor([waveform.shape[0] for waveform in waveforms])
-    
-    max_label_len = max([labels.shape[0] for labels in error_labels])
-    padded_error_labels = []
-    
-    for labels in error_labels:
-        label_len = labels.shape[0]
-        padding = max_label_len - label_len
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)
-        padded_error_labels.append(padded_labels)
-    
-    padded_waveforms = torch.stack(padded_waveforms)
-    padded_error_labels = torch.stack(padded_error_labels)
-    label_lengths = torch.tensor(label_lengths)
-    
-    return padded_waveforms, padded_error_labels, audio_lengths, label_lengths, wav_files
+    return padded_waveforms, padded_labels, torch.tensor([waveform.shape[0] for waveform in waveforms]), torch.tensor(label_lengths), wav_files
 
-def phoneme_collate_fn(batch):
-    waveforms, phoneme_labels, label_lengths, wav_files = zip(*batch)
-    
-    max_audio_len = max([waveform.shape[0] for waveform in waveforms])
-    padded_waveforms = []
-    
-    for waveform in waveforms:
-        audio_len = waveform.shape[0]
-        padding = max_audio_len - audio_len
-        padded_waveform = torch.nn.functional.pad(waveform, (0, padding))
-        padded_waveforms.append(padded_waveform)
-    
-    audio_lengths = torch.tensor([waveform.shape[0] for waveform in waveforms])
-    
-    max_phoneme_len = max([labels.shape[0] for labels in phoneme_labels])
-    padded_phoneme_labels = []
-    
-    for labels in phoneme_labels:
-        label_len = labels.shape[0]
-        padding = max_phoneme_len - label_len
-        padded_labels = torch.nn.functional.pad(labels, (0, padding), value=0)
-        padded_phoneme_labels.append(padded_labels)
-    
-    padded_waveforms = torch.stack(padded_waveforms)
-    padded_phoneme_labels = torch.stack(padded_phoneme_labels)
-    label_lengths = torch.tensor(label_lengths)
-    
-    return padded_waveforms, padded_phoneme_labels, audio_lengths, label_lengths, wav_files
-
-def show_error_samples(model, dataloader, device, error_type_names, num_samples=3):
+def show_samples(model, dataloader, device, id_mapping, num_samples=3, mode='error'):
     model.eval()
     
     with torch.no_grad():
-        for batch_idx, (waveforms, error_labels, audio_lengths, label_lengths, wav_files) in enumerate(dataloader):
+        for batch_idx, (waveforms, labels, audio_lengths, label_lengths, wav_files) in enumerate(dataloader):
             if batch_idx >= num_samples:
                 break
                 
             waveforms = waveforms.to(device)
-            error_labels = error_labels.to(device)
+            labels = labels.to(device)
             audio_lengths = audio_lengths.to(device)
             
             attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
             attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
             
-            error_logits = model(waveforms, attention_mask)
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
+            if mode == 'error':
+                logits = model(waveforms, attention_mask)
+            else:
+                logits, _ = model(waveforms, attention_mask)
             
-            log_probs = torch.log_softmax(error_logits, dim=-1)
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            input_lengths = torch.clamp(input_lengths, min=1, max=logits.size(1))
+            
+            log_probs = torch.log_softmax(logits, dim=-1)
             greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()
             predictions = []
             
             for b in range(greedy_preds.shape[0]):
                 seq = []
-                prev = -1
+                prev = 0
                 actual_length = input_lengths[b].item()
                 
                 for t in range(min(greedy_preds.shape[1], actual_length)):
                     pred = greedy_preds[b, t]
-                    if pred != 0 and pred != prev and pred != 3:
+                    if pred != 0 and pred != prev:
                         seq.append(int(pred))
                     prev = pred
                 predictions.append(seq)
             
-            targets = []
-            for labels, length in zip(error_labels, label_lengths):
-                target_seq = labels[:length].cpu().numpy().tolist()
-                clean_target = [token for token in target_seq if token != 3]
-                targets.append(clean_target)
+            if mode == 'error':
+                targets = []
+                for labels_tensor, length in zip(labels, label_lengths):
+                    target_seq = labels_tensor[:length].cpu().numpy().tolist()
+                    targets.append(target_seq)
+                
+                pred = predictions[0]
+                target = targets[0]
+                
+                pred_symbols = [id_mapping.get(p, str(p)) for p in pred]
+                target_symbols = [id_mapping.get(t, str(t)) for t in target]
+            else:
+                pred = predictions[0]
+                target = labels[0][:label_lengths[0]].cpu().numpy().tolist()
+                
+                pred_symbols = [id_mapping.get(str(p), f"UNK({p})") for p in pred]
+                target_symbols = [id_mapping.get(str(t), f"UNK({t})") for t in target]
             
-            pred = predictions[0]
-            target = targets[0]
-            wav_file = wav_files[0]
-            
-            print(f"\n--- Error Detection Sample {batch_idx + 1} ---")
-            print(f"File: {wav_file}")
-            print(f"Actual:  {' '.join([error_type_names.get(t, str(t)) for t in target])}")
-            print(f"Predicted:  {' '.join([error_type_names.get(p, str(p)) for p in pred])}")
+            print(f"\n--- {mode.title()} Sample {batch_idx + 1} ---")
+            print(f"File: {wav_files[0]}")
+            print(f"Actual:  {' '.join(target_symbols)}")
+            print(f"Predicted:  {' '.join(pred_symbols)}")
             print(f"Match:  {'✓' if pred == target else '✗'}")
             
             if len(target) > 0 and len(pred) > 0:
@@ -171,55 +145,14 @@ def show_error_samples(model, dataloader, device, error_type_names, num_samples=
     
     model.train()
 
-def show_phoneme_samples(model, dataloader, device, id_to_phoneme, num_samples=3):
-    model.eval()
-    
-    with torch.no_grad():
-        for batch_idx, (waveforms, phoneme_labels, audio_lengths, label_lengths, wav_files) in enumerate(dataloader):
-            if batch_idx >= num_samples:
-                break
-                
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
-            
-            phoneme_logits, _ = model(waveforms, attention_mask)
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-            
-            log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
-            
-            pred_phonemes = batch_phoneme_preds[0]
-            true_phonemes = phoneme_labels[0][:label_lengths[0]].cpu().numpy().tolist()
-            wav_file = wav_files[0]
-            
-            pred_phoneme_symbols = [id_to_phoneme.get(str(p), f"UNK({p})") for p in pred_phonemes]
-            true_phoneme_symbols = [id_to_phoneme.get(str(t), f"UNK({t})") for t in true_phonemes]
-            
-            print(f"\n--- Phoneme Recognition Sample {batch_idx + 1} ---")
-            print(f"File: {wav_file}")
-            print(f"Actual:  {' '.join(true_phoneme_symbols)}")
-            print(f"Predicted:  {' '.join(pred_phoneme_symbols)}")
-            print(f"Match:  {'✓' if pred_phonemes == true_phonemes else '✗'}")
-    
-    model.train()
-
 def train_model(model, dataloader, criterion, optimizer_step_fn, optimizer_zero_grad_fn, device, epoch, mode, max_grad_norm=0.5, entropy_regularizer=None):
     model.train()
-    running_loss = 0.0
-    running_ctc_loss = 0.0
-    running_entropy_value = 0.0
+    running_loss = running_ctc_loss = running_entropy_value = 0.0
     
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch} [{mode}]')
     
     for batch_idx, batch_data in enumerate(progress_bar):
-        if mode == 'error':
-            waveforms, labels, audio_lengths, label_lengths, _ = batch_data
-        else:
-            waveforms, labels, audio_lengths, label_lengths, _ = batch_data
+        waveforms, labels, audio_lengths, label_lengths, _ = batch_data
             
         waveforms = waveforms.to(device)
         labels = labels.to(device)
@@ -277,10 +210,7 @@ def validate_model(model, dataloader, criterion, device, mode):
         progress_bar = tqdm(dataloader, desc=f'Validation [{mode}]')
         
         for batch_idx, batch_data in enumerate(progress_bar):
-            if mode == 'error':
-                waveforms, labels, audio_lengths, label_lengths, _ = batch_data
-            else:
-                waveforms, labels, audio_lengths, label_lengths, _ = batch_data
+            waveforms, labels, audio_lengths, label_lengths, _ = batch_data
                 
             waveforms = waveforms.to(device)
             labels = labels.to(device)
@@ -314,6 +244,49 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+def save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, path):
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'best_val_loss': best_val_loss,
+        'val_loss': val_loss,
+        'train_loss': train_loss
+    }
+    
+    if entropy_regularizer is not None:
+        checkpoint['beta_optimizer_state_dict'] = beta_optimizer.state_dict()
+        checkpoint['entropy_regularizer_state_dict'] = entropy_regularizer.state_dict()
+    
+    if scheduler is not None:
+        checkpoint['scheduler_state_dict'] = scheduler.state_dict()
+    
+    torch.save(checkpoint, path)
+
+def load_checkpoint(path, model, optimizer, scheduler, entropy_regularizer, beta_optimizer, device, logger):
+    checkpoint = torch.load(path, map_location=device)
+    
+    new_state_dict = {}
+    for key, value in checkpoint['model_state_dict'].items():
+        new_key = key[7:] if key.startswith('module.') else key
+        new_state_dict[new_key] = value
+    model.load_state_dict(new_state_dict)
+    
+    if 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        logger.info("Optimizer state restored")
+    if 'beta_optimizer_state_dict' in checkpoint and entropy_regularizer is not None:
+        beta_optimizer.load_state_dict(checkpoint['beta_optimizer_state_dict'])
+        logger.info("Beta optimizer state restored")
+    if 'scheduler_state_dict' in checkpoint and scheduler is not None:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        logger.info("Scheduler state restored")
+    if 'entropy_regularizer_state_dict' in checkpoint and entropy_regularizer is not None:
+        entropy_regularizer.load_state_dict(checkpoint['entropy_regularizer_state_dict'])
+        logger.info("Entropy regularizer state restored")
+    
+    return checkpoint['epoch'] + 1, checkpoint['best_val_loss']
 
 def main():
     parser = argparse.ArgumentParser(description='L2 Pronunciation Error Detection and Phoneme Recognition Model Training')
@@ -357,6 +330,7 @@ def main():
     parser.add_argument('--output_dir', type=str, default='models')
     parser.add_argument('--result_dir', type=str, default='results')
     parser.add_argument('--model_checkpoint', type=str, default=None)
+    parser.add_argument('--resume_from', type=str, default=None)
     
     args = parser.parse_args()
     
@@ -386,7 +360,7 @@ def main():
             phoneme_to_id = json.load(f)
         id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     
-    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct', 3: 'separator'}
+    error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
     if args.mode == 'error':
         logger.info("Initializing error detection model")
@@ -420,17 +394,19 @@ def main():
         entropy_regularizer = entropy_regularizer.to(args.device)
         logger.info(f"Using adaptive entropy regularization - beta: {args.initial_beta}, target: {args.target_entropy_factor}")
     
-    if args.model_checkpoint:
+    start_epoch = 1
+    best_val_loss = float('inf')
+    
+    if args.resume_from:
+        logger.info(f"Resuming training from {args.resume_from}")
+    elif args.model_checkpoint:
         logger.info(f"Loading checkpoint from {args.model_checkpoint}")
         state_dict = torch.load(args.model_checkpoint, map_location=args.device)
         
         new_state_dict = {}
         for key, value in state_dict.items():
-            if key.startswith('module.'):
-                new_key = key[7:]
-                new_state_dict[new_key] = value
-            else:
-                new_state_dict[key] = value
+            new_key = key[7:] if key.startswith('module.') else key
+            new_state_dict[new_key] = value
         
         model.load_state_dict(new_state_dict)
     
@@ -442,6 +418,7 @@ def main():
     
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     
+    beta_optimizer = None
     if entropy_regularizer is not None:
         beta_optimizer = optim.AdamW(entropy_regularizer.parameters(), lr=args.learning_rate * 0.1)
         def optimizer_step():
@@ -470,6 +447,12 @@ def main():
         )
         logger.info("Learning rate scheduler (ReduceLROnPlateau) initialized")
     
+    if args.resume_from:
+        start_epoch, best_val_loss = load_checkpoint(
+            args.resume_from, model, optimizer, scheduler, entropy_regularizer, beta_optimizer, args.device, logger
+        )
+        logger.info(f"Resuming from epoch {start_epoch}, best val loss: {best_val_loss:.4f}")
+    
     eval_dataloader = None
     if args.evaluate_every_epoch and args.eval_data:
         logger.info(f"Loading evaluation dataset: {args.eval_data}")
@@ -489,12 +472,10 @@ def main():
         train_dataset = ErrorLabelDataset(args.error_train_data, max_length=args.max_audio_length)
         val_dataset = ErrorLabelDataset(args.error_val_data, max_length=args.max_audio_length)
         
-        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=error_ctc_collate_fn)
-        val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=error_ctc_collate_fn)
+        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=generic_collate_fn)
+        val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=generic_collate_fn)
         
-        best_val_loss = float('inf')
-        
-        for epoch in range(1, args.num_epochs + 1):
+        for epoch in range(start_epoch, args.num_epochs + 1):
             logger.info(f"Epoch {epoch}/{args.num_epochs} starting")
             
             train_loss = train_model(model, train_dataloader, criterion, optimizer_step, optimizer_zero_grad, args.device, epoch, 'error', args.max_grad_norm, entropy_regularizer)
@@ -514,7 +495,7 @@ def main():
                 logger.info(f"\n{'='*50}")
                 logger.info(f"Epoch {epoch} - Sample Predictions")
                 logger.info(f"{'='*50}")
-                show_error_samples(model, val_dataloader, args.device, error_type_names, args.num_sample_show)
+                show_samples(model, val_dataloader, args.device, error_type_names, args.num_sample_show, 'error')
             
             epoch_metrics = {
                 'epoch': epoch,
@@ -545,12 +526,15 @@ def main():
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                
                 model_path = os.path.join(args.output_dir, f'best_error_detection.pth')
-                torch.save(model.state_dict(), model_path)
+                save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, model_path)
                 logger.info(f"New best model saved with validation loss {val_loss:.4f}: {model_path}")
+                
+                torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_error_detection_weights.pth'))
             
-            model_path = os.path.join(args.output_dir, f'last_error_detection.pth')
-            torch.save(model.state_dict(), model_path)
+            last_model_path = os.path.join(args.output_dir, f'last_error_detection.pth')
+            save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, last_model_path)
             
     elif args.mode == 'phoneme':
         if not args.phoneme_train_data or not args.phoneme_val_data:
@@ -564,12 +548,10 @@ def main():
         train_dataset = PhonemeRecognitionDataset(args.phoneme_train_data, phoneme_to_id, max_length=args.max_audio_length)
         val_dataset = PhonemeRecognitionDataset(args.phoneme_val_data, phoneme_to_id, max_length=args.max_audio_length)
         
-        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=phoneme_collate_fn)
-        val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=phoneme_collate_fn)
+        train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=generic_collate_fn)
+        val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=generic_collate_fn)
         
-        best_val_loss = float('inf')
-        
-        for epoch in range(1, args.num_epochs + 1):
+        for epoch in range(start_epoch, args.num_epochs + 1):
             logger.info(f"Epoch {epoch}/{args.num_epochs} starting")
             
             train_loss = train_model(model, train_dataloader, criterion, optimizer_step, optimizer_zero_grad, args.device, epoch, 'phoneme', args.max_grad_norm)
@@ -585,7 +567,7 @@ def main():
                 logger.info(f"\n{'='*50}")
                 logger.info(f"Epoch {epoch} - Sample Predictions")
                 logger.info(f"{'='*50}")
-                show_phoneme_samples(model, val_dataloader, args.device, id_to_phoneme, args.num_sample_show)
+                show_samples(model, val_dataloader, args.device, id_to_phoneme, args.num_sample_show, 'phoneme')
             
             epoch_metrics = {
                 'epoch': epoch,
@@ -616,12 +598,15 @@ def main():
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                
                 model_path = os.path.join(args.output_dir, f'best_phoneme_recognition.pth')
-                torch.save(model.state_dict(), model_path)
+                save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, model_path)
                 logger.info(f"New best model saved with validation loss {val_loss:.4f}: {model_path}")
+                
+                torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_phoneme_recognition_weights.pth'))
             
-            model_path = os.path.join(args.output_dir, f'last_phoneme_recognition.pth')
-            torch.save(model.state_dict(), model_path)
+            last_model_path = os.path.join(args.output_dir, f'last_phoneme_recognition.pth')
+            save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, last_model_path)
     
     logger.info("Training completed!")
 

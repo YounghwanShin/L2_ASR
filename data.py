@@ -12,7 +12,6 @@ class ErrorLabelDataset(Dataset):
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         self.error_mapping = {'C': 2, 'I': 1}
-        self.separator_token = 3
         
     def __len__(self):
         return len(self.wav_files)
@@ -34,12 +33,7 @@ class ErrorLabelDataset(Dataset):
             waveform = waveform[:, :self.max_length]
         
         error_labels = item.get('error_labels', '').split()
-        modified_labels = []
-        
-        for i, label in enumerate(error_labels):
-            modified_labels.append(self.error_mapping[label])
-            if i < len(error_labels) - 1:
-                modified_labels.append(self.separator_token)
+        modified_labels = [self.error_mapping[label] for label in error_labels]
         
         return (
             waveform.squeeze(0),
@@ -100,7 +94,6 @@ class EvaluationDataset(Dataset):
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         self.error_mapping = {'C': 2, 'I': 1}
-        self.separator_token = 3
         
     def __len__(self):
         return len(self.wav_files)
@@ -122,11 +115,7 @@ class EvaluationDataset(Dataset):
             waveform = waveform[:, :self.max_length]
         
         error_labels = item.get('error_labels', '').split()
-        modified_error_labels = []
-        for i, label in enumerate(error_labels):
-            modified_error_labels.append(self.error_mapping.get(label, 0))
-            if i < len(error_labels) - 1:
-                modified_error_labels.append(self.separator_token)
+        modified_error_labels = [self.error_mapping.get(label, 0) for label in error_labels]
         
         perceived_phonemes = item.get('perceived_train_target', '').split()
         perceived_ids = [
