@@ -10,13 +10,67 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torch.nn import CTCLoss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import torchaudio
 
 from model import ErrorDetectionModel, PhonemeRecognitionModel
 from data import ErrorLabelDataset, PhonemeRecognitionDataset, EvaluationDataset
 from evaluate import evaluate_error_detection, evaluate_phoneme_recognition, decode_ctc, collate_fn
+
+class BalancedErrorLabelDataset(Dataset):
+    def __init__(self, json_path, max_length=None, sampling_rate=16000, oversample_incorrect=True):
+        with open(json_path, 'r', encoding='utf-8') as f:
+            self.data = json.load(f)
+        
+        self.wav_files = list(self.data.keys())
+        self.sampling_rate = sampling_rate
+        self.max_length = max_length
+        self.error_mapping = {'C': 2, 'I': 1}
+        self.oversample_incorrect = oversample_incorrect
+        
+        if oversample_incorrect:
+            self._balance_dataset()
+        
+    def _balance_dataset(self):
+        incorrect_files = []
+        for wav_file in self.wav_files:
+            error_labels = self.data[wav_file].get('error_labels', '').split()
+            if 'I' in error_labels:
+                incorrect_files.append(wav_file)
+        
+        # Oversample files with incorrect labels by 3x
+        self.wav_files.extend(incorrect_files * 2)
+        
+    def __len__(self):
+        return len(self.wav_files)
+    
+    def __getitem__(self, idx):
+        wav_file = self.wav_files[idx]
+        item = self.data[wav_file]
+        
+        waveform, sample_rate = torchaudio.load(wav_file)
+        
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        
+        if sample_rate != self.sampling_rate:
+            resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
+            waveform = resampler(waveform)
+        
+        if self.max_length and waveform.shape[1] > self.max_length:
+            waveform = waveform[:, :self.max_length]
+        
+        error_labels = item.get('error_labels', '').split()
+        modified_labels = [self.error_mapping[label] for label in error_labels]
+        
+        return (
+            waveform.squeeze(0),
+            torch.tensor(modified_labels, dtype=torch.long),
+            torch.tensor(len(modified_labels), dtype=torch.long),
+            wav_file
+        )
 
 def get_wav2vec2_output_lengths_official(model, input_lengths):
     actual_model = model.module if hasattr(model, 'module') else model
@@ -245,7 +299,7 @@ def seed_everything(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, path):
+def save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, path, best_accuracy=None):
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -254,6 +308,9 @@ def save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optim
         'val_loss': val_loss,
         'train_loss': train_loss
     }
+    
+    if best_accuracy is not None:
+        checkpoint['best_accuracy'] = best_accuracy
     
     if entropy_regularizer is not None:
         checkpoint['beta_optimizer_state_dict'] = beta_optimizer.state_dict()
@@ -286,7 +343,8 @@ def load_checkpoint(path, model, optimizer, scheduler, entropy_regularizer, beta
         entropy_regularizer.load_state_dict(checkpoint['entropy_regularizer_state_dict'])
         logger.info("Entropy regularizer state restored")
     
-    return checkpoint['epoch'] + 1, checkpoint['best_val_loss']
+    best_accuracy = checkpoint.get('best_accuracy', 0.0)
+    return checkpoint['epoch'] + 1, checkpoint['best_val_loss'], best_accuracy
 
 def main():
     parser = argparse.ArgumentParser(description='L2 Pronunciation Error Detection and Phoneme Recognition Model Training')
@@ -396,6 +454,7 @@ def main():
     
     start_epoch = 1
     best_val_loss = float('inf')
+    best_accuracy = 0.0
     
     if args.resume_from:
         logger.info(f"Resuming training from {args.resume_from}")
@@ -448,10 +507,10 @@ def main():
         logger.info("Learning rate scheduler (ReduceLROnPlateau) initialized")
     
     if args.resume_from:
-        start_epoch, best_val_loss = load_checkpoint(
+        start_epoch, best_val_loss, best_accuracy = load_checkpoint(
             args.resume_from, model, optimizer, scheduler, entropy_regularizer, beta_optimizer, args.device, logger
         )
-        logger.info(f"Resuming from epoch {start_epoch}, best val loss: {best_val_loss:.4f}")
+        logger.info(f"Resuming from epoch {start_epoch}, best val loss: {best_val_loss:.4f}, best accuracy: {best_accuracy:.4f}")
     
     eval_dataloader = None
     if args.evaluate_every_epoch and args.eval_data:
@@ -469,7 +528,7 @@ def main():
             logger.error("Error training and validation data paths required for error detection mode.")
             sys.exit(1)
             
-        train_dataset = ErrorLabelDataset(args.error_train_data, max_length=args.max_audio_length)
+        train_dataset = BalancedErrorLabelDataset(args.error_train_data, max_length=args.max_audio_length, oversample_incorrect=True)
         val_dataset = ErrorLabelDataset(args.error_val_data, max_length=args.max_audio_length)
         
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=generic_collate_fn)
@@ -505,10 +564,12 @@ def main():
                 'beta': entropy_regularizer.beta.item() if entropy_regularizer is not None else None
             }
             
+            current_accuracy = 0.0
             if args.evaluate_every_epoch and eval_dataloader:
                 logger.info(f"Epoch {epoch}: Evaluating error detection...")
                 error_detection_results = evaluate_error_detection(model, eval_dataloader, args.device, error_type_names)
                 
+                current_accuracy = error_detection_results['token_accuracy']
                 logger.info(f"Sequence Accuracy: {error_detection_results['sequence_accuracy']:.4f}")
                 logger.info(f"Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
                 logger.info(f"Weighted F1: {error_detection_results['weighted_f1']:.4f}")
@@ -524,17 +585,25 @@ def main():
             with open(os.path.join(args.result_dir, f'error_detection_epoch{epoch}.json'), 'w') as f:
                 json.dump(epoch_metrics, f, indent=4)
             
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            # Save best model based on accuracy
+            if current_accuracy > best_accuracy:
+                best_accuracy = current_accuracy
                 
                 model_path = os.path.join(args.output_dir, f'best_error_detection.pth')
-                save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, model_path)
-                logger.info(f"New best model saved with validation loss {val_loss:.4f}: {model_path}")
+                save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, model_path, best_accuracy)
+                logger.info(f"New best model saved with token accuracy {current_accuracy:.4f}: {model_path}")
                 
                 torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_error_detection_weights.pth'))
             
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                
+                model_path = os.path.join(args.output_dir, f'best_error_detection_loss.pth')
+                save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, model_path, best_accuracy)
+                logger.info(f"Best validation loss model saved: {val_loss:.4f}")
+            
             last_model_path = os.path.join(args.output_dir, f'last_error_detection.pth')
-            save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, last_model_path)
+            save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, last_model_path, best_accuracy)
             
     elif args.mode == 'phoneme':
         if not args.phoneme_train_data or not args.phoneme_val_data:
@@ -576,16 +645,20 @@ def main():
                 'learning_rate': optimizer.param_groups[0]['lr']
             }
             
+            current_accuracy = 0.0
             if args.evaluate_every_epoch and eval_dataloader:
                 logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
                 phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, args.device, id_to_phoneme)
                 
+                current_accuracy = 1.0 - phoneme_recognition_results['per']  # Convert PER to accuracy
                 logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
+                logger.info(f"Phoneme Accuracy: {current_accuracy:.4f}")
                 logger.info(f"Total Phonemes: {phoneme_recognition_results['total_phonemes']}")
                 logger.info(f"Total Errors: {phoneme_recognition_results['total_errors']}")
                 
                 epoch_metrics['phoneme_recognition'] = {
                     'per': phoneme_recognition_results['per'],
+                    'accuracy': current_accuracy,
                     'total_phonemes': phoneme_recognition_results['total_phonemes'],
                     'total_errors': phoneme_recognition_results['total_errors'],
                     'insertions': phoneme_recognition_results['insertions'],
@@ -596,17 +669,25 @@ def main():
             with open(os.path.join(args.result_dir, f'phoneme_recognition_epoch{epoch}.json'), 'w') as f:
                 json.dump(epoch_metrics, f, indent=4)
             
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            # Save best model based on accuracy (1 - PER)
+            if current_accuracy > best_accuracy:
+                best_accuracy = current_accuracy
                 
                 model_path = os.path.join(args.output_dir, f'best_phoneme_recognition.pth')
-                save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, model_path)
-                logger.info(f"New best model saved with validation loss {val_loss:.4f}: {model_path}")
+                save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, model_path, best_accuracy)
+                logger.info(f"New best model saved with phoneme accuracy {current_accuracy:.4f} (PER: {1.0-current_accuracy:.4f}): {model_path}")
                 
                 torch.save(model.state_dict(), os.path.join(args.output_dir, f'best_phoneme_recognition_weights.pth'))
             
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                
+                model_path = os.path.join(args.output_dir, f'best_phoneme_recognition_loss.pth')
+                save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, model_path, best_accuracy)
+                logger.info(f"Best validation loss model saved: {val_loss:.4f}")
+            
             last_model_path = os.path.join(args.output_dir, f'last_phoneme_recognition.pth')
-            save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, last_model_path)
+            save_checkpoint(model, optimizer, scheduler, entropy_regularizer, beta_optimizer, epoch, val_loss, train_loss, best_val_loss, last_model_path, best_accuracy)
     
     logger.info("Training completed!")
 
