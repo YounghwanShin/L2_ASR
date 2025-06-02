@@ -8,3 +8,4 @@ error_labeling.py
 textgrid_processing.py
 /results
 /models
+/evaluation_results
