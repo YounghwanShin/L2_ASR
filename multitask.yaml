@@ -1,47 +1,38 @@
-# Multi-task Learning Configuration for L2 Speech Recognition
-
-# Data paths
 data_folder: ./data
 output_folder: ./results
 train_json: !ref <data_folder>/train_data.json
 valid_json: !ref <data_folder>/val_data.json
 test_json: !ref <data_folder>/eval.json
 
-# Task configuration
-task: both  # Options: "phoneme", "error", "both"
+task: both
 
-# Training parameters
 number_of_epochs: 30
-batch_size: 8
-lr: 0.0001
+batch_size: 4
+lr: 0.0003
 lr_wav2vec: 0.00001
-weight_decay: 0.0001
+weight_decay: 0.01
 phoneme_weight: 1.0
 error_weight: 1.0
 
-# Audio processing
 sample_rate: 16000
 
-# Model architecture
 wav2vec2_model: facebook/wav2vec2-base
 hidden_dim: 768
 
-# Data loader options
 train_dataloader_opts:
   batch_size: !ref <batch_size>
   shuffle: True
-  num_workers: 2
+  num_workers: 1
 
 valid_dataloader_opts:
   batch_size: !ref <batch_size>
   shuffle: False
-  num_workers: 2
+  num_workers: 1
 
 test_dataloader_opts:
   batch_size: !ref <batch_size>
   shuffle: False
-  num_workers: 2
+  num_workers: 1
 
-# Precision
 precision: fp32
 auto_mix_prec: False

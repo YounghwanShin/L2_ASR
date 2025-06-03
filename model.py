@@ -12,9 +12,8 @@ class Wav2Vec2Encoder(nn.Module):
         self.output_dim = self.wav2vec2.config.hidden_size
     
     def forward(self, x):
-        # x shape: (batch_size, time_steps)
         outputs = self.wav2vec2(x)
-        return outputs.last_hidden_state  # (batch_size, seq_len, hidden_dim)
+        return outputs.last_hidden_state
 
 class MultiTaskHead(nn.Module):
     def __init__(self, input_dim, num_phonemes, num_errors):
@@ -43,19 +42,15 @@ class SimpleMultiTaskBrain(sb.Brain):
     def __init__(self, modules, opt_class, hparams, run_opts=None, checkpointer=None):
         super().__init__(modules, opt_class, hparams, run_opts, checkpointer)
         
-        # Initialize tracking variables
         self.best_valid_loss = float('inf')
         self.best_phoneme_per = float('inf')
         self.best_error_acc = 0.0
     
     def compute_forward(self, batch, stage):
-        """Forward pass of the model"""
         batch = batch.to(self.device)
         
-        # Extract features using Wav2Vec2
         wav_features = self.modules.wav2vec2(batch.sig[0])
         
-        # Multi-task heads
         phoneme_logits, error_logits = self.modules.model(wav_features)
         
         predictions = {}
@@ -67,18 +62,17 @@ class SimpleMultiTaskBrain(sb.Brain):
         return predictions
     
     def compute_objectives(self, predictions, batch, stage):
-        """Compute loss objectives"""
         total_loss = torch.tensor(0.0, device=self.device)
         
-        # Phoneme recognition loss (CTC)
         if "phoneme_logits" in predictions and hasattr(batch, 'phoneme_tokens'):
             phoneme_log_probs = F.log_softmax(predictions["phoneme_logits"], dim=-1)
+            phoneme_log_probs = phoneme_log_probs.transpose(0, 1)
             
-            # Get input lengths
-            input_lengths = (batch.sig[1] * phoneme_log_probs.shape[1]).long()
+            batch_size = phoneme_log_probs.shape[1]
+            max_input_length = phoneme_log_probs.shape[0]
+            input_lengths = torch.full((batch_size,), max_input_length, dtype=torch.long, device=self.device)
             
-            # Get target sequences and lengths
-            targets = []
+            all_targets = []
             target_lengths = []
             
             for tokens in batch.phoneme_tokens:
@@ -86,33 +80,33 @@ class SimpleMultiTaskBrain(sb.Brain):
                     token_list = tokens.cpu().tolist()
                 else:
                     token_list = tokens
-                targets.extend(token_list)
+                all_targets.extend(token_list)
                 target_lengths.append(len(token_list))
             
-            targets = torch.tensor(targets, dtype=torch.long, device=self.device)
+            targets = torch.tensor(all_targets, dtype=torch.long, device=self.device)
             target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
             
-            # CTC loss
             phoneme_loss = F.ctc_loss(
-                log_probs=phoneme_log_probs.transpose(0, 1),
+                log_probs=phoneme_log_probs,
                 targets=targets,
                 input_lengths=input_lengths,
                 target_lengths=target_lengths,
                 blank=0,
-                reduction='mean'
+                reduction='mean',
+                zero_infinity=True
             )
             
             total_loss += self.hparams.phoneme_weight * phoneme_loss
         
-        # Error detection loss (CTC)
         if "error_logits" in predictions and hasattr(batch, 'error_tokens'):
             error_log_probs = F.log_softmax(predictions["error_logits"], dim=-1)
+            error_log_probs = error_log_probs.transpose(0, 1)
             
-            # Get input lengths
-            input_lengths = (batch.sig[1] * error_log_probs.shape[1]).long()
+            batch_size = error_log_probs.shape[1]
+            max_input_length = error_log_probs.shape[0]
+            input_lengths = torch.full((batch_size,), max_input_length, dtype=torch.long, device=self.device)
             
-            # Get target sequences and lengths
-            targets = []
+            all_targets = []
             target_lengths = []
             
             for tokens in batch.error_tokens:
@@ -120,20 +114,20 @@ class SimpleMultiTaskBrain(sb.Brain):
                     token_list = tokens.cpu().tolist()
                 else:
                     token_list = tokens
-                targets.extend(token_list)
+                all_targets.extend(token_list)
                 target_lengths.append(len(token_list))
             
-            targets = torch.tensor(targets, dtype=torch.long, device=self.device)
+            targets = torch.tensor(all_targets, dtype=torch.long, device=self.device)
             target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
             
-            # CTC loss
             error_loss = F.ctc_loss(
-                log_probs=error_log_probs.transpose(0, 1),
+                log_probs=error_log_probs,
                 targets=targets,
                 input_lengths=input_lengths,
                 target_lengths=target_lengths,
                 blank=0,
-                reduction='mean'
+                reduction='mean',
+                zero_infinity=True
             )
             
             total_loss += self.hparams.error_weight * error_loss
@@ -141,22 +135,18 @@ class SimpleMultiTaskBrain(sb.Brain):
         return total_loss
     
     def on_stage_start(self, stage, epoch):
-        """Called at the beginning of each stage"""
         if stage != sb.Stage.TRAIN:
-            # Initialize metrics for validation/test
             self.phoneme_predictions = []
             self.phoneme_targets = []
             self.error_predictions = []
             self.error_targets = []
     
     def on_stage_end(self, stage, stage_loss, epoch):
-        """Called at the end of each stage"""
         
         if stage == sb.Stage.TRAIN:
             print(f"Epoch {epoch}, Train Loss: {stage_loss:.4f}")
         
         elif stage == sb.Stage.VALID:
-            # Calculate metrics
             metrics = self.calculate_metrics()
             
             print(f"Epoch {epoch}, Valid Loss: {stage_loss:.4f}")
@@ -165,11 +155,9 @@ class SimpleMultiTaskBrain(sb.Brain):
             if 'error_accuracy' in metrics:
                 print(f"  Error Accuracy: {metrics['error_accuracy']:.4f}")
             
-            # Save best models
             self.save_best_models(stage_loss, metrics, epoch)
         
         elif stage == sb.Stage.TEST:
-            # Calculate and print final test metrics
             metrics = self.calculate_metrics()
             print("=== FINAL TEST RESULTS ===")
             print(f"Test Loss: {stage_loss:.4f}")
@@ -179,29 +167,25 @@ class SimpleMultiTaskBrain(sb.Brain):
                 print(f"Error Accuracy: {metrics['error_accuracy']:.4f}")
     
     def evaluate_batch(self, batch, stage):
-        """Evaluate a single batch"""
         with torch.no_grad():
             predictions = self.compute_forward(batch, stage)
             loss = self.compute_objectives(predictions, batch, stage)
             
-            # Collect predictions for metrics calculation
             if stage != sb.Stage.TRAIN:
                 self.collect_predictions(predictions, batch)
             
             return loss
     
     def collect_predictions(self, predictions, batch):
-        """Collect predictions and targets for metric calculation"""
         
-        # Phoneme predictions
         if "phoneme_logits" in predictions and hasattr(batch, 'phoneme_tokens'):
             phoneme_log_probs = F.log_softmax(predictions["phoneme_logits"], dim=-1)
-            input_lengths = (batch.sig[1] * phoneme_log_probs.shape[1]).long()
+            batch_size = phoneme_log_probs.shape[0]
+            max_length = phoneme_log_probs.shape[1]
+            input_lengths = torch.full((batch_size,), max_length, dtype=torch.long)
             
-            # Greedy CTC decoding
             batch_predictions = self.greedy_ctc_decode(phoneme_log_probs, input_lengths)
             
-            # Get targets
             batch_targets = []
             for tokens in batch.phoneme_tokens:
                 if isinstance(tokens, torch.Tensor):
@@ -213,15 +197,14 @@ class SimpleMultiTaskBrain(sb.Brain):
             self.phoneme_predictions.extend(batch_predictions)
             self.phoneme_targets.extend(batch_targets)
         
-        # Error predictions
         if "error_logits" in predictions and hasattr(batch, 'error_tokens'):
             error_log_probs = F.log_softmax(predictions["error_logits"], dim=-1)
-            input_lengths = (batch.sig[1] * error_log_probs.shape[1]).long()
+            batch_size = error_log_probs.shape[0]
+            max_length = error_log_probs.shape[1]
+            input_lengths = torch.full((batch_size,), max_length, dtype=torch.long)
             
-            # Greedy CTC decoding
             batch_predictions = self.greedy_ctc_decode(error_log_probs, input_lengths)
             
-            # Get targets
             batch_targets = []
             for tokens in batch.error_tokens:
                 if isinstance(tokens, torch.Tensor):
@@ -234,20 +217,17 @@ class SimpleMultiTaskBrain(sb.Brain):
             self.error_targets.extend(batch_targets)
     
     def greedy_ctc_decode(self, log_probs, input_lengths):
-        """Simple greedy CTC decoding"""
         batch_predictions = []
         
         for i, length in enumerate(input_lengths):
-            # Get predictions for this sequence
             seq_log_probs = log_probs[i, :length]
             pred_indices = torch.argmax(seq_log_probs, dim=-1)
             
-            # Remove blanks and duplicates
             decoded = []
             prev_idx = -1
             for idx in pred_indices:
                 idx = idx.item()
-                if idx != 0 and idx != prev_idx:  # 0 is blank
+                if idx != 0 and idx != prev_idx:
                     decoded.append(idx)
                 prev_idx = idx
             
@@ -256,10 +236,8 @@ class SimpleMultiTaskBrain(sb.Brain):
         return batch_predictions
     
     def calculate_metrics(self):
-        """Calculate evaluation metrics"""
         metrics = {}
         
-        # Phoneme Error Rate (PER)
         if self.phoneme_predictions and self.phoneme_targets:
             total_edits = 0
             total_length = 0
@@ -272,7 +250,6 @@ class SimpleMultiTaskBrain(sb.Brain):
             per = total_edits / max(total_length, 1)
             metrics['phoneme_per'] = per
         
-        # Error Detection Accuracy
         if self.error_predictions and self.error_targets:
             correct = 0
             total = 0
@@ -288,7 +265,6 @@ class SimpleMultiTaskBrain(sb.Brain):
         return metrics
     
     def edit_distance(self, pred, target):
-        """Calculate edit distance between two sequences"""
         m, n = len(pred), len(target)
         dp = [[0] * (n + 1) for _ in range(m + 1)]
         
@@ -307,53 +283,42 @@ class SimpleMultiTaskBrain(sb.Brain):
         return dp[m][n]
     
     def init_optimizers(self):
-        """Initialize optimizer for the model"""
-        # Get all parameters
-        all_params = list(self.modules.parameters())
+        wav2vec_params = list(self.modules.wav2vec2.parameters())
+        other_params = list(self.modules.model.parameters())
         
-        # Create single optimizer with default learning rate
-        optimizer = torch.optim.AdamW(
-            all_params,
-            lr=getattr(self.hparams, "lr", 1e-4),
-            weight_decay=getattr(self.hparams, "weight_decay", 1e-4)
-        )
+        optimizer = torch.optim.AdamW([
+            {'params': wav2vec_params, 'lr': self.hparams.lr_wav2vec},
+            {'params': other_params, 'lr': self.hparams.lr}
+        ], weight_decay=self.hparams.weight_decay)
         
         return optimizer
     
     def on_fit_start(self):
-        """Called at the start of training - manually set optimizer"""
         super().on_fit_start()
         
-        # Manually set optimizer if not already set
         if not hasattr(self, 'optimizer') or self.optimizer is None:
             self.optimizer = self.init_optimizers()
     
     def save_best_models(self, valid_loss, metrics, epoch):
-        """Save best models based on different criteria"""
         
-        # Save best validation loss
         if valid_loss < self.best_valid_loss:
             self.best_valid_loss = valid_loss
             print(f"  NEW BEST Valid Loss: {valid_loss:.4f}")
             self.save_checkpoint("best_loss")
         
-        # Save best phoneme PER
         if 'phoneme_per' in metrics and metrics['phoneme_per'] < self.best_phoneme_per:
             self.best_phoneme_per = metrics['phoneme_per']
             print(f"  NEW BEST Phoneme PER: {self.best_phoneme_per:.4f}")
             self.save_checkpoint("best_phoneme_per")
         
-        # Save best error accuracy
         if 'error_accuracy' in metrics and metrics['error_accuracy'] > self.best_error_acc:
             self.best_error_acc = metrics['error_accuracy']
             print(f"  NEW BEST Error Accuracy: {self.best_error_acc:.4f}")
             self.save_checkpoint("best_error_acc")
         
-        # Save current epoch
         self.save_checkpoint(f"epoch_{epoch}")
     
     def save_checkpoint(self, name):
-        """Save model checkpoint"""
         save_dir = os.path.join(self.hparams.output_folder, "save")
         os.makedirs(save_dir, exist_ok=True)
         
