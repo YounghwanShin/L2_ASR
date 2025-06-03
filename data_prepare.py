@@ -4,6 +4,7 @@ import torch
 from collections import Counter
 import speechbrain as sb
 from speechbrain.dataio.dataset import DynamicItemDataset
+import librosa
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ def build_vocabularies(train_data, hparams):
     
     return phoneme_to_id, error_to_id
 
-def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams):
+def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams, is_train=False):
     
     dataset_dict = {}
     valid_samples = 0
@@ -83,10 +84,25 @@ def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams):
     
     dataset = DynamicItemDataset(dataset_dict)
     
+    if is_train and hparams.get("sorting", "ascending") != "random":
+        if hparams["sorting"] == "ascending":
+            dataset = dataset.filtered_sorted(sort_key="duration")
+        elif hparams["sorting"] == "descending":
+            dataset = dataset.filtered_sorted(sort_key="duration", reverse=True)
+    elif not is_train:
+        dataset = dataset.filtered_sorted(sort_key="duration")
+    
     @sb.utils.data_pipeline.takes("wav")
     @sb.utils.data_pipeline.provides("sig")
     def audio_pipeline(wav_path):
-        sig = sb.dataio.dataio.read_audio(wav_path)
+        if hasattr(hparams, "wav2vec2") and hasattr(hparams["wav2vec2"], "feature_extractor"):
+            sig = hparams["wav2vec2"].feature_extractor(
+                librosa.core.load(wav_path, hparams["sample_rate"])[0],
+                sampling_rate=hparams["sample_rate"],
+            ).input_values[0]
+            sig = torch.Tensor(sig)
+        else:
+            sig = sb.dataio.dataio.read_audio(wav_path)
         return sig
     
     dataset.add_dynamic_item(audio_pipeline)
@@ -115,8 +131,8 @@ def create_datasets(hparams):
     hparams["num_phonemes"] = len(phoneme_to_id)
     hparams["num_errors"] = len(error_to_id)
     
-    train_dataset = create_dataset_from_data(train_data, phoneme_to_id, error_to_id, hparams)
-    valid_dataset = create_dataset_from_data(valid_data, phoneme_to_id, error_to_id, hparams)
-    test_dataset = create_dataset_from_data(test_data, phoneme_to_id, error_to_id, hparams)
+    train_dataset = create_dataset_from_data(train_data, phoneme_to_id, error_to_id, hparams, is_train=True)
+    valid_dataset = create_dataset_from_data(valid_data, phoneme_to_id, error_to_id, hparams, is_train=False)
+    test_dataset = create_dataset_from_data(test_data, phoneme_to_id, error_to_id, hparams, is_train=False)
     
     return train_dataset, valid_dataset, test_dataset

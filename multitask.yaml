@@ -7,7 +7,7 @@ test_json: !ref <data_folder>/eval.json
 task: both
 
 number_of_epochs: 30
-batch_size: 4
+batch_size: 16
 lr: 0.0003
 lr_wav2vec: 0.00001
 weight_decay: 0.01
@@ -15,13 +15,17 @@ phoneme_weight: 1.0
 error_weight: 1.0
 
 sample_rate: 16000
+sorting: ascending
+gradient_accumulation: 1
 
 wav2vec2_model: facebook/wav2vec2-base
 hidden_dim: 768
 
+wav2vec2_specaug: True
+
 train_dataloader_opts:
   batch_size: !ref <batch_size>
-  shuffle: True
+  shuffle: !ref <sorting> == "random"
   num_workers: 1
 
 valid_dataloader_opts:
@@ -36,3 +40,11 @@ test_dataloader_opts:
 
 precision: fp32
 auto_mix_prec: False
+
+wav2vec_opt_class: !name:torch.optim.AdamW
+  lr: !ref <lr_wav2vec>
+  weight_decay: !ref <weight_decay>
+
+adam_opt_class: !name:torch.optim.AdamW
+  lr: !ref <lr>
+  weight_decay: !ref <weight_decay>

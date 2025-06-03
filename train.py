@@ -6,6 +6,7 @@ import torch
 import hyperpyyaml as hpyy
 import speechbrain as sb
 from pathlib import Path
+from transformers import Wav2Vec2Processor
 
 from data_prepare import create_datasets
 from model import SimpleMultiTaskBrain
@@ -19,28 +20,28 @@ def setup_logging():
     )
 
 def run_training(hparams_file, run_opts, overrides):
-    # Load hyperparameters
     with open(hparams_file) as fin:
         hparams = hpyy.load_hyperpyyaml(fin, overrides)
     
-    # Create experiment directory
     sb.create_experiment_directory(
         experiment_directory=hparams["output_folder"],
         hyperparams_to_save=hparams_file,
         overrides=overrides,
     )
     
+    if hparams.get("sorting", "ascending") != "random":
+        hparams["train_dataloader_opts"]["shuffle"] = False
+    
+    hparams["wav2vec2"] = Wav2Vec2Processor.from_pretrained(hparams["wav2vec2_model"])
+    
     logger.info("Preparing datasets...")
     
-    # Create datasets
     train_data, valid_data, test_data = create_datasets(hparams)
     
     logger.info(f"Training set: {len(train_data)} samples")
     
-    # Import model classes after data loading
     from model import Wav2Vec2Encoder, MultiTaskHead
     
-    # Create modules after vocabulary sizes are known
     wav2vec2 = Wav2Vec2Encoder(model_name=hparams["wav2vec2_model"])
     model = MultiTaskHead(
         input_dim=hparams["hidden_dim"],
@@ -48,17 +49,14 @@ def run_training(hparams_file, run_opts, overrides):
         num_errors=hparams["num_errors"]
     )
     
-    # Create modules dict
     modules = {
         "wav2vec2": wav2vec2,
         "model": model
     }
     hparams["modules"] = modules
     
-    # Create epoch counter
     epoch_counter = sb.utils.epoch_loop.EpochCounter(limit=hparams["number_of_epochs"])
     
-    # Create checkpointer
     checkpointer = sb.utils.checkpoints.Checkpointer(
         checkpoints_dir=os.path.join(hparams["output_folder"], "save"),
         recoverables={
@@ -68,7 +66,6 @@ def run_training(hparams_file, run_opts, overrides):
         }
     )
     
-    # Initialize brain
     logger.info("Initializing model...")
     brain = SimpleMultiTaskBrain(
         modules=modules,
@@ -78,7 +75,6 @@ def run_training(hparams_file, run_opts, overrides):
         checkpointer=checkpointer,
     )
     
-    # Training
     logger.info(f"Starting training for {hparams['number_of_epochs']} epochs...")
     try:
         brain.fit(
@@ -89,7 +85,6 @@ def run_training(hparams_file, run_opts, overrides):
             valid_loader_kwargs=hparams["valid_dataloader_opts"],
         )
         
-        # Test
         logger.info("Running final evaluation...")
         brain.evaluate(
             test_data,
@@ -103,7 +98,6 @@ def run_training(hparams_file, run_opts, overrides):
 def main():
     hparams_file, run_opts, overrides = sb.parse_arguments(sys.argv[1:])
     
-    # Default run options if not provided
     if run_opts is None:
         run_opts = {"device": "cuda" if torch.cuda.is_available() else "cpu"}
     

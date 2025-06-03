@@ -5,14 +5,21 @@ from transformers import Wav2Vec2Model
 import torch.nn.functional as F
 import os
 
+def make_attn_mask(wavs, wav_lens):
+    abs_lens = (wav_lens * wavs.shape[1]).long()
+    attn_mask = wavs.new(wavs.shape).zero_().long()
+    for i in range(len(abs_lens)):
+        attn_mask[i, :abs_lens[i]] = 1
+    return attn_mask
+
 class Wav2Vec2Encoder(nn.Module):
     def __init__(self, model_name="facebook/wav2vec2-base"):
         super().__init__()
         self.wav2vec2 = Wav2Vec2Model.from_pretrained(model_name)
         self.output_dim = self.wav2vec2.config.hidden_size
     
-    def forward(self, x):
-        outputs = self.wav2vec2(x)
+    def forward(self, x, attention_mask=None):
+        outputs = self.wav2vec2(x, attention_mask=attention_mask)
         return outputs.last_hidden_state
 
 class MultiTaskHead(nn.Module):
@@ -49,28 +56,45 @@ class SimpleMultiTaskBrain(sb.Brain):
     def compute_forward(self, batch, stage):
         batch = batch.to(self.device)
         
-        wav_features = self.modules.wav2vec2(batch.sig[0])
+        wavs, wav_lens = batch.sig
+        
+        if stage == sb.Stage.TRAIN:
+            if hasattr(self.hparams, "augmentation"):
+                wavs = self.hparams.augmentation(wavs, wav_lens)
+        
+        if hasattr(self.modules.wav2vec2.wav2vec2, 'feature_extractor'):
+            if getattr(self.modules.wav2vec2.wav2vec2.feature_extractor, 'return_attention_mask', False):
+                attn_mask = make_attn_mask(wavs, wav_lens)
+            else:
+                attn_mask = None
+        else:
+            attn_mask = None
+        
+        wav_features = self.modules.wav2vec2(wavs, attention_mask=attn_mask)
         
         phoneme_logits, error_logits = self.modules.model(wav_features)
         
         predictions = {}
         if self.hparams.task in ["phoneme", "both"]:
             predictions["phoneme_logits"] = phoneme_logits
+            predictions["phoneme_log_probs"] = F.log_softmax(phoneme_logits, dim=-1)
         if self.hparams.task in ["error", "both"]:
             predictions["error_logits"] = error_logits
+            predictions["error_log_probs"] = F.log_softmax(error_logits, dim=-1)
+        
+        predictions["wav_lens"] = wav_lens
         
         return predictions
     
     def compute_objectives(self, predictions, batch, stage):
         total_loss = torch.tensor(0.0, device=self.device)
         
-        if "phoneme_logits" in predictions and hasattr(batch, 'phoneme_tokens'):
-            phoneme_log_probs = F.log_softmax(predictions["phoneme_logits"], dim=-1)
-            phoneme_log_probs = phoneme_log_probs.transpose(0, 1)
+        if "phoneme_log_probs" in predictions and hasattr(batch, 'phoneme_tokens'):
+            phoneme_log_probs = predictions["phoneme_log_probs"].transpose(0, 1)
             
             batch_size = phoneme_log_probs.shape[1]
-            max_input_length = phoneme_log_probs.shape[0]
-            input_lengths = torch.full((batch_size,), max_input_length, dtype=torch.long, device=self.device)
+            wav_lens = predictions["wav_lens"]
+            input_lengths = (wav_lens * phoneme_log_probs.shape[0]).long()
             
             all_targets = []
             target_lengths = []
@@ -98,13 +122,12 @@ class SimpleMultiTaskBrain(sb.Brain):
             
             total_loss += self.hparams.phoneme_weight * phoneme_loss
         
-        if "error_logits" in predictions and hasattr(batch, 'error_tokens'):
-            error_log_probs = F.log_softmax(predictions["error_logits"], dim=-1)
-            error_log_probs = error_log_probs.transpose(0, 1)
+        if "error_log_probs" in predictions and hasattr(batch, 'error_tokens'):
+            error_log_probs = predictions["error_log_probs"].transpose(0, 1)
             
             batch_size = error_log_probs.shape[1]
-            max_input_length = error_log_probs.shape[0]
-            input_lengths = torch.full((batch_size,), max_input_length, dtype=torch.long, device=self.device)
+            wav_lens = predictions["wav_lens"]
+            input_lengths = (wav_lens * error_log_probs.shape[0]).long()
             
             all_targets = []
             target_lengths = []
@@ -135,7 +158,18 @@ class SimpleMultiTaskBrain(sb.Brain):
         return total_loss
     
     def on_stage_start(self, stage, epoch):
+        if stage == sb.Stage.TRAIN:
+            if hasattr(self.modules.wav2vec2, 'wav2vec2'):
+                if hasattr(self.modules.wav2vec2.wav2vec2, 'config'):
+                    if hasattr(self.modules.wav2vec2.wav2vec2.config, 'apply_spec_augment'):
+                        self.modules.wav2vec2.wav2vec2.config.apply_spec_augment = True
+        
         if stage != sb.Stage.TRAIN:
+            if hasattr(self.modules.wav2vec2, 'wav2vec2'):
+                if hasattr(self.modules.wav2vec2.wav2vec2, 'config'):
+                    if hasattr(self.modules.wav2vec2.wav2vec2.config, 'apply_spec_augment'):
+                        self.modules.wav2vec2.wav2vec2.config.apply_spec_augment = False
+            
             self.phoneme_predictions = []
             self.phoneme_targets = []
             self.error_predictions = []
@@ -178,13 +212,13 @@ class SimpleMultiTaskBrain(sb.Brain):
     
     def collect_predictions(self, predictions, batch):
         
-        if "phoneme_logits" in predictions and hasattr(batch, 'phoneme_tokens'):
-            phoneme_log_probs = F.log_softmax(predictions["phoneme_logits"], dim=-1)
-            batch_size = phoneme_log_probs.shape[0]
-            max_length = phoneme_log_probs.shape[1]
-            input_lengths = torch.full((batch_size,), max_length, dtype=torch.long)
+        if "phoneme_log_probs" in predictions and hasattr(batch, 'phoneme_tokens'):
+            phoneme_log_probs = predictions["phoneme_log_probs"]
+            wav_lens = predictions["wav_lens"]
             
-            batch_predictions = self.greedy_ctc_decode(phoneme_log_probs, input_lengths)
+            batch_predictions = sb.decoders.ctc_greedy_decode(
+                phoneme_log_probs, wav_lens, blank_id=0
+            )
             
             batch_targets = []
             for tokens in batch.phoneme_tokens:
@@ -197,13 +231,13 @@ class SimpleMultiTaskBrain(sb.Brain):
             self.phoneme_predictions.extend(batch_predictions)
             self.phoneme_targets.extend(batch_targets)
         
-        if "error_logits" in predictions and hasattr(batch, 'error_tokens'):
-            error_log_probs = F.log_softmax(predictions["error_logits"], dim=-1)
-            batch_size = error_log_probs.shape[0]
-            max_length = error_log_probs.shape[1]
-            input_lengths = torch.full((batch_size,), max_length, dtype=torch.long)
+        if "error_log_probs" in predictions and hasattr(batch, 'error_tokens'):
+            error_log_probs = predictions["error_log_probs"]
+            wav_lens = predictions["wav_lens"]
             
-            batch_predictions = self.greedy_ctc_decode(error_log_probs, input_lengths)
+            batch_predictions = sb.decoders.ctc_greedy_decode(
+                error_log_probs, wav_lens, blank_id=0
+            )
             
             batch_targets = []
             for tokens in batch.error_tokens:
@@ -215,25 +249,6 @@ class SimpleMultiTaskBrain(sb.Brain):
             
             self.error_predictions.extend(batch_predictions)
             self.error_targets.extend(batch_targets)
-    
-    def greedy_ctc_decode(self, log_probs, input_lengths):
-        batch_predictions = []
-        
-        for i, length in enumerate(input_lengths):
-            seq_log_probs = log_probs[i, :length]
-            pred_indices = torch.argmax(seq_log_probs, dim=-1)
-            
-            decoded = []
-            prev_idx = -1
-            for idx in pred_indices:
-                idx = idx.item()
-                if idx != 0 and idx != prev_idx:
-                    decoded.append(idx)
-                prev_idx = idx
-            
-            batch_predictions.append(decoded)
-        
-        return batch_predictions
     
     def calculate_metrics(self):
         metrics = {}
@@ -282,22 +297,75 @@ class SimpleMultiTaskBrain(sb.Brain):
         
         return dp[m][n]
     
+    def fit_batch(self, batch):
+        if self.auto_mix_prec:
+            self.wav2vec_optimizer.zero_grad()
+            self.adam_optimizer.zero_grad()
+
+            with torch.cuda.amp.autocast():
+                outputs = self.compute_forward(batch, sb.Stage.TRAIN)
+                loss = self.compute_objectives(outputs, batch, sb.Stage.TRAIN)
+
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.wav2vec_optimizer)
+            self.scaler.unscale_(self.adam_optimizer)
+
+            if self.check_gradients():
+                self.scaler.step(self.wav2vec_optimizer)
+                self.scaler.step(self.adam_optimizer)
+
+            self.scaler.update()
+        else:
+            outputs = self.compute_forward(batch, sb.Stage.TRAIN)
+            loss = self.compute_objectives(outputs, batch, sb.Stage.TRAIN)
+            
+            if hasattr(self.hparams, 'gradient_accumulation'):
+                (loss / self.hparams.gradient_accumulation).backward()
+                
+                if self.step % self.hparams.gradient_accumulation == 0:
+                    if self.check_gradients():
+                        self.wav2vec_optimizer.step()
+                        self.adam_optimizer.step()
+                    
+                    self.wav2vec_optimizer.zero_grad()
+                    self.adam_optimizer.zero_grad()
+            else:
+                loss.backward()
+                
+                if self.check_gradients():
+                    self.wav2vec_optimizer.step()
+                    self.adam_optimizer.step()
+                
+                self.wav2vec_optimizer.zero_grad()
+                self.adam_optimizer.zero_grad()
+
+        return loss.detach().cpu()
+    
     def init_optimizers(self):
-        wav2vec_params = list(self.modules.wav2vec2.parameters())
-        other_params = list(self.modules.model.parameters())
+        self.wav2vec_optimizer = self.hparams.wav2vec_opt_class(
+            self.modules.wav2vec2.parameters()
+        )
+        self.adam_optimizer = self.hparams.adam_opt_class(
+            self.modules.model.parameters()
+        )
         
-        optimizer = torch.optim.AdamW([
-            {'params': wav2vec_params, 'lr': self.hparams.lr_wav2vec},
-            {'params': other_params, 'lr': self.hparams.lr}
-        ], weight_decay=self.hparams.weight_decay)
+        self.optimizer = self.adam_optimizer
         
-        return optimizer
+        if self.checkpointer is not None:
+            self.checkpointer.add_recoverable("wav2vec_opt", self.wav2vec_optimizer)
+            self.checkpointer.add_recoverable("adam_opt", self.adam_optimizer)
+    
+    def zero_grad(self, set_to_none=False):
+        if hasattr(self, 'wav2vec_optimizer') and self.wav2vec_optimizer is not None:
+            self.wav2vec_optimizer.zero_grad(set_to_none=set_to_none)
+        if hasattr(self, 'adam_optimizer') and self.adam_optimizer is not None:
+            self.adam_optimizer.zero_grad(set_to_none=set_to_none)
     
     def on_fit_start(self):
         super().on_fit_start()
         
-        if not hasattr(self, 'optimizer') or self.optimizer is None:
-            self.optimizer = self.init_optimizers()
+        if not hasattr(self, 'wav2vec_optimizer') or self.wav2vec_optimizer is None:
+            self.init_optimizers()
     
     def save_best_models(self, valid_loss, metrics, epoch):
         
