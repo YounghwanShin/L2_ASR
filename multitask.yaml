@@ -21,58 +21,26 @@ error_weight: 1.0
 
 # Audio processing
 sample_rate: 16000
-win_length: 25
-hop_length: 10
 
 # Model architecture
 wav2vec2_model: facebook/wav2vec2-base
 hidden_dim: 768
 
-# Model modules (will be created after data loading)
-# wav2vec2 and model will be created dynamically in train.py
-
-# Optimizer
-opt_class: !name:torch.optim.AdamW
-  lr: !ref <lr>
-  weight_decay: !ref <weight_decay>
-
-wav2vec_opt_class: !name:torch.optim.AdamW
-  lr: !ref <lr_wav2vec>
-  weight_decay: !ref <weight_decay>
-
 # Data loader options
 train_dataloader_opts:
   batch_size: !ref <batch_size>
   shuffle: True
-  num_workers: 4
+  num_workers: 2
 
 valid_dataloader_opts:
   batch_size: !ref <batch_size>
   shuffle: False
-  num_workers: 4
+  num_workers: 2
 
 test_dataloader_opts:
   batch_size: !ref <batch_size>
   shuffle: False
-  num_workers: 4
-
-# Audio processing pipeline
-compute_features: !new:speechbrain.lobes.features.Fbank
-  sample_rate: !ref <sample_rate>
-  n_fft: 400
-  n_mels: 80
-
-# Normalization
-mean_var_norm: !new:speechbrain.processing.features.InputNormalization
-  norm_type: global
-
-# Augmentation
-speed_perturb: !new:speechbrain.processing.speech_augmentation.SpeedPerturb
-  speeds: [95, 100, 105]
-
-# Logging
-train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
-  save_file: !ref <output_folder>/train_log.txt
+  num_workers: 2
 
 # Precision
 precision: fp32

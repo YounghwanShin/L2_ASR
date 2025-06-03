@@ -56,7 +56,6 @@ def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams):
     
     for sample_id, item in data_dict.items():
         sample = {
-            "id": sample_id,
             "wav": item["wav"],
             "duration": item["duration"]
         }
@@ -104,7 +103,7 @@ def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams):
     dataset.add_dynamic_item(audio_pipeline)
     
     # Set output keys based on task
-    output_keys = ["id", "sig"]
+    output_keys = ["sig"]
     if task in ["phoneme", "both"] and any("phoneme_tokens" in item for item in dataset_dict.values()):
         output_keys.append("phoneme_tokens")
     if task in ["error", "both"] and any("error_tokens" in item for item in dataset_dict.values()):
