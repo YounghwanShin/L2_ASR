@@ -28,18 +28,8 @@ hop_length: 10
 wav2vec2_model: facebook/wav2vec2-base
 hidden_dim: 768
 
-# Model modules
-wav2vec2: !new:model.Wav2Vec2Encoder
-  model_name: !ref <wav2vec2_model>
-
-model: !new:model.MultiTaskHead
-  input_dim: !ref <hidden_dim>
-  num_phonemes: !ref <num_phonemes>
-  num_errors: !ref <num_errors>
-
-modules:
-  wav2vec2: !ref <wav2vec2>
-  model: !ref <model>
+# Model modules (will be created after data loading)
+# wav2vec2 and model will be created dynamically in train.py
 
 # Optimizer
 opt_class: !name:torch.optim.AdamW
@@ -49,18 +39,6 @@ opt_class: !name:torch.optim.AdamW
 wav2vec_opt_class: !name:torch.optim.AdamW
   lr: !ref <lr_wav2vec>
   weight_decay: !ref <weight_decay>
-
-# Epoch counter
-epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
-  limit: !ref <number_of_epochs>
-
-# Checkpointer
-checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
-  checkpoints_dir: !ref <output_folder>/save
-  recoverables:
-    wav2vec2: !ref <wav2vec2>
-    model: !ref <model>
-    counter: !ref <epoch_counter>
 
 # Data loader options
 train_dataloader_opts:

@@ -30,12 +30,38 @@ def evaluate_model(hparams_file, run_opts, checkpoint_path=None):
     
     logger.info(f"Test set: {len(test_data)} samples")
     
+    # Import model classes
+    from model import Wav2Vec2Encoder, MultiTaskHead
+    
+    # Create modules after vocabulary sizes are known
+    wav2vec2 = Wav2Vec2Encoder(model_name=hparams["wav2vec2_model"])
+    model = MultiTaskHead(
+        input_dim=hparams["hidden_dim"],
+        num_phonemes=hparams["num_phonemes"],
+        num_errors=hparams["num_errors"]
+    )
+    
+    # Create modules dict
+    modules = {
+        "wav2vec2": wav2vec2,
+        "model": model
+    }
+    
+    # Create checkpointer
+    checkpointer = sb.utils.checkpoints.Checkpointer(
+        checkpoints_dir=os.path.join("./results", "save"),
+        recoverables={
+            "wav2vec2": wav2vec2,
+            "model": model,
+        }
+    )
+    
     # Initialize model
     brain = SimpleMultiTaskBrain(
-        modules=hparams["modules"],
+        modules=modules,
         hparams=hparams,
         run_opts=run_opts,
-        checkpointer=hparams["checkpointer"],
+        checkpointer=checkpointer,
     )
     
     # Load checkpoint if specified

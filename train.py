@@ -37,20 +37,51 @@ def run_training(hparams_file, run_opts, overrides):
     
     logger.info(f"Training set: {len(train_data)} samples")
     
+    # Import model classes after data loading
+    from model import Wav2Vec2Encoder, MultiTaskHead
+    
+    # Create modules after vocabulary sizes are known
+    wav2vec2 = Wav2Vec2Encoder(model_name=hparams["wav2vec2_model"])
+    model = MultiTaskHead(
+        input_dim=hparams["hidden_dim"],
+        num_phonemes=hparams["num_phonemes"],
+        num_errors=hparams["num_errors"]
+    )
+    
+    # Create modules dict
+    modules = {
+        "wav2vec2": wav2vec2,
+        "model": model
+    }
+    hparams["modules"] = modules
+    
+    # Create epoch counter
+    epoch_counter = sb.utils.epoch_loop.EpochCounter(limit=hparams["number_of_epochs"])
+    
+    # Create checkpointer
+    checkpointer = sb.utils.checkpoints.Checkpointer(
+        checkpoints_dir=os.path.join(hparams["output_folder"], "save"),
+        recoverables={
+            "wav2vec2": wav2vec2,
+            "model": model,
+            "counter": epoch_counter
+        }
+    )
+    
     # Initialize brain
     logger.info("Initializing model...")
     brain = SimpleMultiTaskBrain(
-        modules=hparams["modules"],
+        modules=modules,
         hparams=hparams,
         run_opts=run_opts,
-        checkpointer=hparams["checkpointer"],
+        checkpointer=checkpointer,
     )
     
     # Training
     logger.info(f"Starting training for {hparams['number_of_epochs']} epochs...")
     try:
         brain.fit(
-            brain.hparams.epoch_counter,
+            epoch_counter,
             train_data,
             valid_data,
             train_loader_kwargs=hparams["train_dataloader_opts"],
