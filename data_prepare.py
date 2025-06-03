@@ -52,9 +52,6 @@ def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams):
             "duration": item["duration"]
         }
         
-        if 'canonical_aligned' in item:
-            sample["canonical_aligned"] = item["canonical_aligned"]
-        
         if 'perceived_train_target' in item and item['perceived_train_target'].strip():
             perceived_phonemes = item['perceived_train_target'].split()
             perceived_ids = [phoneme_to_id.get(p, 0) for p in perceived_phonemes if p in phoneme_to_id]
