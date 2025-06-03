@@ -333,3 +333,8 @@ class SimpleMultiTaskBrain(sb.Brain):
         
         torch.save(checkpoint, save_path)
         print(f"  Saved: {save_path}")
+    
+    def tokens_to_phonemes(self, token_ids):
+        if not hasattr(self.hparams, 'id_to_phoneme'):
+            self.hparams['id_to_phoneme'] = {v: k for k, v in self.hparams.phoneme_to_id.items()}
+        return [self.hparams['id_to_phoneme'].get(idx, '<unk>') for idx in token_ids]
