@@ -72,6 +72,7 @@ def run_training(hparams_file, run_opts, overrides):
     logger.info("Initializing model...")
     brain = SimpleMultiTaskBrain(
         modules=modules,
+        opt_class=torch.optim.AdamW,
         hparams=hparams,
         run_opts=run_opts,
         checkpointer=checkpointer,

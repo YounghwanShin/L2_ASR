@@ -59,6 +59,7 @@ def evaluate_model(hparams_file, run_opts, checkpoint_path=None):
     # Initialize model
     brain = SimpleMultiTaskBrain(
         modules=modules,
+        opt_class=torch.optim.AdamW,
         hparams=hparams,
         run_opts=run_opts,
         checkpointer=checkpointer,

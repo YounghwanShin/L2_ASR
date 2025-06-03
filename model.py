@@ -40,8 +40,8 @@ class MultiTaskHead(nn.Module):
         return phoneme_logits, error_logits
 
 class SimpleMultiTaskBrain(sb.Brain):
-    def __init__(self, modules, hparams, run_opts, checkpointer):
-        super().__init__(modules, hparams, run_opts, checkpointer)
+    def __init__(self, modules, opt_class, hparams, run_opts=None, checkpointer=None):
+        super().__init__(modules, opt_class, hparams, run_opts, checkpointer)
         
         # Initialize tracking variables
         self.best_valid_loss = float('inf')
@@ -305,6 +305,27 @@ class SimpleMultiTaskBrain(sb.Brain):
                     dp[i][j] = 1 + min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
         
         return dp[m][n]
+    
+    def init_optimizers(self):
+        """Initialize optimizers for the model"""
+        # Separate learning rates for wav2vec2 and model
+        wav2vec_params = list(self.modules.wav2vec2.parameters())
+        model_params = list(self.modules.model.parameters())
+        
+        # Create separate optimizers
+        optimizer1 = torch.optim.AdamW(
+            wav2vec_params,
+            lr=getattr(self.hparams, "lr_wav2vec", 1e-5),
+            weight_decay=getattr(self.hparams, "weight_decay", 1e-4)
+        )
+        
+        optimizer2 = torch.optim.AdamW(
+            model_params,
+            lr=getattr(self.hparams, "lr", 1e-4),
+            weight_decay=getattr(self.hparams, "weight_decay", 1e-4)
+        )
+        
+        return [optimizer1, optimizer2]
     
     def save_best_models(self, valid_loss, metrics, epoch):
         """Save best models based on different criteria"""
