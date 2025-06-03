@@ -1,19 +1,19 @@
-# Simple L2Arctic Multi-task Pronunciation Assessment
+# SpeechBrain L2Arctic Multi-task Pronunciation Assessment
 
-A simplified multi-task deep learning model for L2 pronunciation assessment.
+A simplified multi-task deep learning model for L2 pronunciation assessment using SpeechBrain framework.
 
 ## Features
-- Simple error detection (pronunciation errors)
-- Simple phoneme recognition  
+- Error detection (pronunciation errors)
+- Phoneme recognition  
 - Wav2Vec2-based feature extraction
-- CTC-based training
-- No complex dependencies
+- CTC-based training with SpeechBrain
+- Simplified architecture
 
 ## Quick Start
 
 ### 1. Install Dependencies
 ```bash
-pip install torch torchaudio transformers pyyaml tqdm numpy
+pip install -r requirements.txt
 ```
 
 ### 2. Prepare Data
@@ -44,6 +44,12 @@ Edit `multitask.yaml` to adjust:
 - Training hyperparameters (lr, epochs, batch_size)
 - Data paths
 - Task settings (error, phoneme, both)
+
+## Model Architecture
+- **Wav2Vec2**: Pre-trained feature extractor
+- **Linear Projection**: Feature dimension transformation
+- **Task-specific heads**: Separate outputs for error detection and phoneme recognition
+- **CTC Loss**: Sequence alignment loss
 
 ## Output Structure
 ```

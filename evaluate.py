@@ -6,6 +6,7 @@ import logging
 from tqdm import tqdm
 import yaml
 import argparse
+import speechbrain as sb
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ def decode_ctc_greedy(log_probs, input_lengths, blank_idx=0):
     return decoded_seqs
 
 
-def evaluate_simple(brain, data_loader, task="both", device="cuda"):
+def evaluate_speechbrain(brain, data_loader, task="both", device="cuda"):
     brain.modules.eval()
     
     all_error_predictions = []
@@ -44,7 +45,7 @@ def evaluate_simple(brain, data_loader, task="both", device="cuda"):
         
         for batch in progress_bar:
             batch = batch.to(device)
-            predictions = brain.compute_forward(batch, None)
+            predictions = brain.compute_forward(batch, sb.Stage.TEST)
             
             if 'error_logits' in predictions and hasattr(batch, 'error_tokens'):
                 error_log_probs = predictions['error_logits'].log_softmax(dim=-1)
@@ -54,9 +55,16 @@ def evaluate_simple(brain, data_loader, task="both", device="cuda"):
                 batch_error_preds = decode_ctc_greedy(error_log_probs, input_lengths)
                 
                 batch_error_targets = []
-                for tokens, length in zip(batch.error_tokens.data, batch.error_tokens.lengths):
-                    target = tokens[:length].cpu().numpy().tolist()
-                    batch_error_targets.append(target)
+                if hasattr(batch.error_tokens, 'data'):
+                    for tokens, length in zip(batch.error_tokens.data, batch.error_tokens.lengths):
+                        target = tokens[:length].cpu().numpy().tolist()
+                        batch_error_targets.append(target)
+                else:
+                    for tokens in batch.error_tokens:
+                        if isinstance(tokens, list):
+                            batch_error_targets.append(tokens)
+                        else:
+                            batch_error_targets.append(tokens.cpu().numpy().tolist())
                 
                 all_error_predictions.extend(batch_error_preds)
                 all_error_targets.extend(batch_error_targets)
@@ -69,9 +77,16 @@ def evaluate_simple(brain, data_loader, task="both", device="cuda"):
                 batch_phoneme_preds = decode_ctc_greedy(phoneme_log_probs, input_lengths)
                 
                 batch_phoneme_targets = []
-                for tokens, length in zip(batch.phoneme_tokens.data, batch.phoneme_tokens.lengths):
-                    target = tokens[:length].cpu().numpy().tolist()
-                    batch_phoneme_targets.append(target)
+                if hasattr(batch.phoneme_tokens, 'data'):
+                    for tokens, length in zip(batch.phoneme_tokens.data, batch.phoneme_tokens.lengths):
+                        target = tokens[:length].cpu().numpy().tolist()
+                        batch_phoneme_targets.append(target)
+                else:
+                    for tokens in batch.phoneme_tokens:
+                        if isinstance(tokens, list):
+                            batch_phoneme_targets.append(tokens)
+                        else:
+                            batch_phoneme_targets.append(tokens.cpu().numpy().tolist())
                 
                 all_phoneme_predictions.extend(batch_phoneme_preds)
                 all_phoneme_targets.extend(batch_phoneme_targets)
@@ -94,7 +109,7 @@ def evaluate_simple(brain, data_loader, task="both", device="cuda"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Evaluate Simple Multi-task Model')
+    parser = argparse.ArgumentParser(description='Evaluate SpeechBrain Multi-task Model')
     parser.add_argument('hparams_file', type=str, help='Hyperparameters file')
     parser.add_argument('--output_folder', type=str, default='./eval_results', help='Output folder')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use')
@@ -131,7 +146,7 @@ def main():
         run_opts={"device": args.device}
     )
     
-    results = evaluate_simple(brain, test_loader, hparams["task"], args.device)
+    results = evaluate_speechbrain(brain, test_loader, hparams["task"], args.device)
     
     results_file = os.path.join(args.output_folder, 'evaluation_results.json')
     with open(results_file, 'w') as f:

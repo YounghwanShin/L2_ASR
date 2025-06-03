@@ -85,11 +85,36 @@ class SimpleMultiTaskBrain(sb.Brain):
         if 'error_logits' in predictions and hasattr(batch, 'error_tokens'):
             error_log_probs = predictions['error_logits'].log_softmax(dim=-1)
             
+            # Handle both PaddedBatch and list formats
+            if hasattr(batch.error_tokens, 'data'):
+                targets = batch.error_tokens.data
+                target_lengths = batch.error_tokens.lengths
+            else:
+                # Convert list to padded tensor
+                targets = []
+                target_lengths = []
+                for tokens in batch.error_tokens:
+                    if isinstance(tokens, list):
+                        targets.append(torch.tensor(tokens, dtype=torch.long))
+                        target_lengths.append(len(tokens))
+                    else:
+                        targets.append(tokens)
+                        target_lengths.append(len(tokens))
+                
+                # Pad sequences
+                max_len = max(target_lengths)
+                padded_targets = torch.zeros(len(targets), max_len, dtype=torch.long, device=self.device)
+                for i, target in enumerate(targets):
+                    padded_targets[i, :len(target)] = target.to(self.device)
+                
+                targets = padded_targets
+                target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
+            
             error_loss = sb.nnet.losses.ctc_loss(
                 log_probs=error_log_probs,
-                targets=batch.error_tokens.data,
+                targets=targets,
                 input_lens=batch.sig[1],
-                target_lens=batch.error_tokens.lengths,
+                target_lens=target_lengths,
                 blank_index=0
             )
             total_loss += self.hparams["error_weight"] * error_loss
@@ -97,11 +122,36 @@ class SimpleMultiTaskBrain(sb.Brain):
         if 'phoneme_logits' in predictions and hasattr(batch, 'phoneme_tokens'):
             phoneme_log_probs = predictions['phoneme_logits'].log_softmax(dim=-1)
             
+            # Handle both PaddedBatch and list formats
+            if hasattr(batch.phoneme_tokens, 'data'):
+                targets = batch.phoneme_tokens.data
+                target_lengths = batch.phoneme_tokens.lengths
+            else:
+                # Convert list to padded tensor
+                targets = []
+                target_lengths = []
+                for tokens in batch.phoneme_tokens:
+                    if isinstance(tokens, list):
+                        targets.append(torch.tensor(tokens, dtype=torch.long))
+                        target_lengths.append(len(tokens))
+                    else:
+                        targets.append(tokens)
+                        target_lengths.append(len(tokens))
+                
+                # Pad sequences
+                max_len = max(target_lengths)
+                padded_targets = torch.zeros(len(targets), max_len, dtype=torch.long, device=self.device)
+                for i, target in enumerate(targets):
+                    padded_targets[i, :len(target)] = target.to(self.device)
+                
+                targets = padded_targets
+                target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
+            
             phoneme_loss = sb.nnet.losses.ctc_loss(
                 log_probs=phoneme_log_probs,
-                targets=batch.phoneme_tokens.data,
+                targets=targets,
                 input_lens=batch.sig[1],
-                target_lens=batch.phoneme_tokens.lengths,
+                target_lens=target_lengths,
                 blank_index=0
             )
             total_loss += self.hparams["phoneme_weight"] * phoneme_loss
@@ -116,6 +166,7 @@ class SimpleMultiTaskBrain(sb.Brain):
         
         if stage == sb.Stage.TRAIN:
             self.train_stats = stage_stats
+            print(f"Epoch {epoch}, Train Loss: {stage_loss:.4f}")
             
         elif stage == sb.Stage.VALID:
             print(f"Epoch {epoch}, Valid Loss: {stage_loss:.4f}")
@@ -123,3 +174,52 @@ class SimpleMultiTaskBrain(sb.Brain):
             
         elif stage == sb.Stage.TEST:
             self.test_stats = stage_stats
+    
+    def fit_batch(self, batch):
+        should_step = self.step <= self.hparams["number_of_epochs"]
+        if should_step:
+            predictions = self.compute_forward(batch, sb.Stage.TRAIN)
+            loss = self.compute_objectives(predictions, batch, sb.Stage.TRAIN)
+            
+            # Multiple optimizers
+            if isinstance(self.optimizer, list):
+                for opt in self.optimizer:
+                    opt.zero_grad()
+            else:
+                self.optimizer.zero_grad()
+            
+            loss.backward()
+            
+            if self.hparams.get("grad_clipping"):
+                torch.nn.utils.clip_grad_norm_(
+                    self.modules.parameters(), 
+                    self.hparams["grad_clipping"]
+                )
+            
+            if isinstance(self.optimizer, list):
+                for opt in self.optimizer:
+                    opt.step()
+            else:
+                self.optimizer.step()
+            
+            self.step += 1
+        
+        return loss.detach() if should_step else None
+    
+    def init_optimizers(self):
+        wav2vec_params = list(self.modules.wav2vec2.parameters())
+        model_params = list(self.modules.model.parameters())
+        
+        wav2vec_optimizer = torch.optim.AdamW(
+            wav2vec_params, 
+            lr=self.hparams["lr_wav2vec"], 
+            weight_decay=self.hparams["weight_decay"]
+        )
+        
+        model_optimizer = torch.optim.AdamW(
+            model_params, 
+            lr=self.hparams["lr"], 
+            weight_decay=self.hparams["weight_decay"]
+        )
+        
+        return [wav2vec_optimizer, model_optimizer]
