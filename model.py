@@ -36,22 +36,29 @@ class SimpleMultiTaskModel(nn.Module):
         super().__init__()
         self.hparams = hparams
         
+        wav2vec2_hub = hparams.get("wav2vec2_hub") if hasattr(hparams, 'get') else hparams.wav2vec2_hub
+        wav2vec2_freeze = hparams.get("wav2vec2_freeze") if hasattr(hparams, 'get') else hparams.wav2vec2_freeze
+        hidden_dim = hparams.get("hidden_dim") if hasattr(hparams, 'get') else hparams.hidden_dim
+        dropout = hparams.get("dropout") if hasattr(hparams, 'get') else hparams.dropout
+        task = hparams.get("task") if hasattr(hparams, 'get') else hparams.task
+        num_error_types = hparams.get("num_error_types") if hasattr(hparams, 'get') else hparams.num_error_types
+        num_phonemes = hparams.get("num_phonemes") if hasattr(hparams, 'get') else hparams.num_phonemes
+        
         self.wav2vec2 = SimpleWav2Vec2(
-            model_name=hparams["wav2vec2_hub"],
-            freeze=hparams["wav2vec2_freeze"]
+            model_name=wav2vec2_hub,
+            freeze=wav2vec2_freeze
         )
         
         wav2vec_dim = self.wav2vec2.output_size
-        hidden_dim = hparams["hidden_dim"]
         
         self.projection = nn.Linear(wav2vec_dim, hidden_dim)
-        self.dropout = nn.Dropout(hparams["dropout"])
+        self.dropout = nn.Dropout(dropout)
         
-        if hparams["task"] in ['error', 'both']:
-            self.error_head = nn.Linear(hidden_dim, hparams["num_error_types"])
+        if task in ['error', 'both']:
+            self.error_head = nn.Linear(hidden_dim, num_error_types)
         
-        if hparams["task"] in ['phoneme', 'both']:
-            self.phoneme_head = nn.Linear(hidden_dim, hparams["num_phonemes"])
+        if task in ['phoneme', 'both']:
+            self.phoneme_head = nn.Linear(hidden_dim, num_phonemes)
     
     def forward(self, features, length=None):
         x = self.projection(features)
@@ -85,29 +92,21 @@ class SimpleMultiTaskBrain(sb.Brain):
         if 'error_logits' in predictions and hasattr(batch, 'error_tokens'):
             error_log_probs = predictions['error_logits'].log_softmax(dim=-1)
             
-            # Handle both PaddedBatch and list formats
             if hasattr(batch.error_tokens, 'data'):
                 targets = batch.error_tokens.data
                 target_lengths = batch.error_tokens.lengths
             else:
-                # Convert list to padded tensor
                 targets = []
                 target_lengths = []
                 for tokens in batch.error_tokens:
                     if isinstance(tokens, list):
-                        targets.append(torch.tensor(tokens, dtype=torch.long))
+                        targets.extend(tokens)
                         target_lengths.append(len(tokens))
                     else:
-                        targets.append(tokens)
+                        targets.extend(tokens.cpu().numpy().tolist())
                         target_lengths.append(len(tokens))
                 
-                # Pad sequences
-                max_len = max(target_lengths)
-                padded_targets = torch.zeros(len(targets), max_len, dtype=torch.long, device=self.device)
-                for i, target in enumerate(targets):
-                    padded_targets[i, :len(target)] = target.to(self.device)
-                
-                targets = padded_targets
+                targets = torch.tensor(targets, dtype=torch.long, device=self.device)
                 target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
             
             error_loss = sb.nnet.losses.ctc_loss(
@@ -117,34 +116,26 @@ class SimpleMultiTaskBrain(sb.Brain):
                 target_lens=target_lengths,
                 blank_index=0
             )
-            total_loss += self.hparams["error_weight"] * error_loss
+            total_loss += self.hparams.error_weight * error_loss
         
         if 'phoneme_logits' in predictions and hasattr(batch, 'phoneme_tokens'):
             phoneme_log_probs = predictions['phoneme_logits'].log_softmax(dim=-1)
             
-            # Handle both PaddedBatch and list formats
             if hasattr(batch.phoneme_tokens, 'data'):
                 targets = batch.phoneme_tokens.data
                 target_lengths = batch.phoneme_tokens.lengths
             else:
-                # Convert list to padded tensor
                 targets = []
                 target_lengths = []
                 for tokens in batch.phoneme_tokens:
                     if isinstance(tokens, list):
-                        targets.append(torch.tensor(tokens, dtype=torch.long))
+                        targets.extend(tokens)
                         target_lengths.append(len(tokens))
                     else:
-                        targets.append(tokens)
+                        targets.extend(tokens.cpu().numpy().tolist())
                         target_lengths.append(len(tokens))
                 
-                # Pad sequences
-                max_len = max(target_lengths)
-                padded_targets = torch.zeros(len(targets), max_len, dtype=torch.long, device=self.device)
-                for i, target in enumerate(targets):
-                    padded_targets[i, :len(target)] = target.to(self.device)
-                
-                targets = padded_targets
+                targets = torch.tensor(targets, dtype=torch.long, device=self.device)
                 target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
             
             phoneme_loss = sb.nnet.losses.ctc_loss(
@@ -154,7 +145,7 @@ class SimpleMultiTaskBrain(sb.Brain):
                 target_lens=target_lengths,
                 blank_index=0
             )
-            total_loss += self.hparams["phoneme_weight"] * phoneme_loss
+            total_loss += self.hparams.phoneme_weight * phoneme_loss
         
         return total_loss
     
@@ -176,7 +167,7 @@ class SimpleMultiTaskBrain(sb.Brain):
             self.test_stats = stage_stats
     
     def fit_batch(self, batch):
-        should_step = self.step <= self.hparams["number_of_epochs"]
+        should_step = self.step <= self.hparams.number_of_epochs
         if should_step:
             predictions = self.compute_forward(batch, sb.Stage.TRAIN)
             loss = self.compute_objectives(predictions, batch, sb.Stage.TRAIN)
@@ -190,10 +181,10 @@ class SimpleMultiTaskBrain(sb.Brain):
             
             loss.backward()
             
-            if self.hparams.get("grad_clipping"):
+            if hasattr(self.hparams, "grad_clipping") and self.hparams.grad_clipping:
                 torch.nn.utils.clip_grad_norm_(
                     self.modules.parameters(), 
-                    self.hparams["grad_clipping"]
+                    self.hparams.grad_clipping
                 )
             
             if isinstance(self.optimizer, list):
@@ -212,14 +203,14 @@ class SimpleMultiTaskBrain(sb.Brain):
         
         wav2vec_optimizer = torch.optim.AdamW(
             wav2vec_params, 
-            lr=self.hparams["lr_wav2vec"], 
-            weight_decay=self.hparams["weight_decay"]
+            lr=self.hparams.lr_wav2vec, 
+            weight_decay=self.hparams.weight_decay
         )
         
         model_optimizer = torch.optim.AdamW(
             model_params, 
-            lr=self.hparams["lr"], 
-            weight_decay=self.hparams["weight_decay"]
+            lr=self.hparams.lr, 
+            weight_decay=self.hparams.weight_decay
         )
         
         return [wav2vec_optimizer, model_optimizer]
