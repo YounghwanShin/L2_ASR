@@ -1,41 +1,101 @@
-seed: 42
+# Multi-task Learning Configuration for L2 Speech Recognition
 
-data_folder: ./data  
+# Data paths
+data_folder: ./data
 output_folder: ./results
-save_folder: ./results/save
-train_json: ./data/train_data.json
-val_json: ./data/val_data.json
-test_json: ./data/eval.json
-phoneme_map: ./data/phoneme_to_id.json
+train_json: !ref <data_folder>/train_data.json
+valid_json: !ref <data_folder>/val_data.json
+test_json: !ref <data_folder>/eval.json
 
+# Task configuration
+task: both  # Options: "phoneme", "error", "both"
+
+# Training parameters
 number_of_epochs: 30
 batch_size: 8
-eval_batch_size: 8
 lr: 0.0001
-lr_wav2vec: 0.00005
-
-hidden_dim: 512
-num_phonemes: 43
-num_error_types: 3
-
-wav2vec2_hub: facebook/wav2vec2-large-xlsr-53
-wav2vec2_freeze: False
-
-sample_rate: 16000
-max_audio_length: 320000
-
-error_weight: 1.0
-phoneme_weight: 1.0
-task: both
-
-grad_clipping: 5.0
+lr_wav2vec: 0.00001
 weight_decay: 0.0001
-dropout: 0.1
+phoneme_weight: 1.0
+error_weight: 1.0
 
-evaluate_every_epoch: True
-show_samples: True
-num_sample_show: 3
+# Audio processing
+sample_rate: 16000
+win_length: 25
+hop_length: 10
 
-num_workers: 4
-pin_memory: True
-persistent_workers: True
+# Model architecture
+wav2vec2_model: facebook/wav2vec2-base
+hidden_dim: 768
+
+# Model modules
+wav2vec2: !new:model.Wav2Vec2Encoder
+  model_name: !ref <wav2vec2_model>
+
+model: !new:model.MultiTaskHead
+  input_dim: !ref <hidden_dim>
+  num_phonemes: !ref <num_phonemes>
+  num_errors: !ref <num_errors>
+
+modules:
+  wav2vec2: !ref <wav2vec2>
+  model: !ref <model>
+
+# Optimizer
+opt_class: !name:torch.optim.AdamW
+  lr: !ref <lr>
+  weight_decay: !ref <weight_decay>
+
+wav2vec_opt_class: !name:torch.optim.AdamW
+  lr: !ref <lr_wav2vec>
+  weight_decay: !ref <weight_decay>
+
+# Epoch counter
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+  limit: !ref <number_of_epochs>
+
+# Checkpointer
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+  checkpoints_dir: !ref <output_folder>/save
+  recoverables:
+    wav2vec2: !ref <wav2vec2>
+    model: !ref <model>
+    counter: !ref <epoch_counter>
+
+# Data loader options
+train_dataloader_opts:
+  batch_size: !ref <batch_size>
+  shuffle: True
+  num_workers: 4
+
+valid_dataloader_opts:
+  batch_size: !ref <batch_size>
+  shuffle: False
+  num_workers: 4
+
+test_dataloader_opts:
+  batch_size: !ref <batch_size>
+  shuffle: False
+  num_workers: 4
+
+# Audio processing pipeline
+compute_features: !new:speechbrain.lobes.features.Fbank
+  sample_rate: !ref <sample_rate>
+  n_fft: 400
+  n_mels: 80
+
+# Normalization
+mean_var_norm: !new:speechbrain.processing.features.InputNormalization
+  norm_type: global
+
+# Augmentation
+speed_perturb: !new:speechbrain.processing.speech_augmentation.SpeedPerturb
+  speeds: [95, 100, 105]
+
+# Logging
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+  save_file: !ref <output_folder>/train_log.txt
+
+# Precision
+precision: fp32
+auto_mix_prec: False

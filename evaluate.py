@@ -1,164 +1,89 @@
-import torch
-import numpy as np
-import json
+#!/usr/bin/env python3
 import os
+import sys
+import torch
 import logging
-from tqdm import tqdm
-import yaml
-import argparse
+import hyperpyyaml as hpyy
 import speechbrain as sb
+from data_prepare import create_datasets
+from model import SimpleMultiTaskBrain
 
 logger = logging.getLogger(__name__)
 
-
-def decode_ctc_greedy(log_probs, input_lengths, blank_idx=0):
-    greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()
-    batch_size = greedy_preds.shape[0]
-    decoded_seqs = []
-    
-    for b in range(batch_size):
-        seq = []
-        prev = blank_idx
-        actual_length = min(input_lengths[b].item(), greedy_preds.shape[1])
-        
-        for t in range(actual_length):
-            pred = greedy_preds[b, t]
-            if pred != blank_idx and pred != prev:
-                seq.append(int(pred))
-            prev = pred
-        
-        decoded_seqs.append(seq)
-    
-    return decoded_seqs
-
-
-def evaluate_speechbrain(brain, data_loader, task="both", device="cuda"):
-    brain.modules.eval()
-    
-    all_error_predictions = []
-    all_error_targets = []
-    all_phoneme_predictions = []
-    all_phoneme_targets = []
-    
-    with torch.no_grad():
-        progress_bar = tqdm(data_loader, desc='Evaluation')
-        
-        for batch in progress_bar:
-            batch = batch.to(device)
-            predictions = brain.compute_forward(batch, sb.Stage.TEST)
-            
-            if 'error_logits' in predictions and hasattr(batch, 'error_tokens'):
-                error_log_probs = predictions['error_logits'].log_softmax(dim=-1)
-                input_lengths = batch.sig[1] * error_log_probs.shape[1]
-                input_lengths = input_lengths.long()
-                
-                batch_error_preds = decode_ctc_greedy(error_log_probs, input_lengths)
-                
-                batch_error_targets = []
-                if hasattr(batch.error_tokens, 'data'):
-                    for tokens, length in zip(batch.error_tokens.data, batch.error_tokens.lengths):
-                        target = tokens[:length].cpu().numpy().tolist()
-                        batch_error_targets.append(target)
-                else:
-                    for tokens in batch.error_tokens:
-                        if isinstance(tokens, list):
-                            batch_error_targets.append(tokens)
-                        else:
-                            batch_error_targets.append(tokens.cpu().numpy().tolist())
-                
-                all_error_predictions.extend(batch_error_preds)
-                all_error_targets.extend(batch_error_targets)
-            
-            if 'phoneme_logits' in predictions and hasattr(batch, 'phoneme_tokens'):
-                phoneme_log_probs = predictions['phoneme_logits'].log_softmax(dim=-1)
-                input_lengths = batch.sig[1] * phoneme_log_probs.shape[1]
-                input_lengths = input_lengths.long()
-                
-                batch_phoneme_preds = decode_ctc_greedy(phoneme_log_probs, input_lengths)
-                
-                batch_phoneme_targets = []
-                if hasattr(batch.phoneme_tokens, 'data'):
-                    for tokens, length in zip(batch.phoneme_tokens.data, batch.phoneme_tokens.lengths):
-                        target = tokens[:length].cpu().numpy().tolist()
-                        batch_phoneme_targets.append(target)
-                else:
-                    for tokens in batch.phoneme_tokens:
-                        if isinstance(tokens, list):
-                            batch_phoneme_targets.append(tokens)
-                        else:
-                            batch_phoneme_targets.append(tokens.cpu().numpy().tolist())
-                
-                all_phoneme_predictions.extend(batch_phoneme_preds)
-                all_phoneme_targets.extend(batch_phoneme_targets)
-    
-    results = {}
-    
-    if all_error_predictions:
-        error_acc = sum(1 for pred, target in zip(all_error_predictions, all_error_targets) 
-                       if pred == target) / len(all_error_predictions)
-        results['error_accuracy'] = error_acc
-        logger.info(f"Error Detection Accuracy: {error_acc:.4f}")
-    
-    if all_phoneme_predictions:
-        phoneme_acc = sum(1 for pred, target in zip(all_phoneme_predictions, all_phoneme_targets) 
-                         if pred == target) / len(all_phoneme_predictions)
-        results['phoneme_accuracy'] = phoneme_acc
-        logger.info(f"Phoneme Recognition Accuracy: {phoneme_acc:.4f}")
-    
-    return results
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Evaluate SpeechBrain Multi-task Model')
-    parser.add_argument('hparams_file', type=str, help='Hyperparameters file')
-    parser.add_argument('--output_folder', type=str, default='./eval_results', help='Output folder')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use')
-    
-    args = parser.parse_args()
-    
-    with open(args.hparams_file, 'r') as f:
-        hparams = yaml.safe_load(f)
-    
-    os.makedirs(args.output_folder, exist_ok=True)
-    
+def setup_logging():
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(os.path.join(args.output_folder, 'evaluation.log')),
-            logging.StreamHandler()
-        ]
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-    
-    logger.info("Starting evaluation...")
-    
-    from model import SimpleMultiTaskBrain, SimpleMultiTaskModel
-    from data_prepare import dataio_prepare
-    
-    train_loader, val_loader, test_loader = dataio_prepare(hparams)
-    
-    model = SimpleMultiTaskModel(hparams)
-    modules = {"model": model, "wav2vec2": model.wav2vec2}
-    
-    brain = SimpleMultiTaskBrain(
-        modules=modules,
-        hparams=hparams,
-        run_opts={"device": args.device}
-    )
-    
-    results = evaluate_speechbrain(brain, test_loader, hparams["task"], args.device)
-    
-    results_file = os.path.join(args.output_folder, 'evaluation_results.json')
-    with open(results_file, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    logger.info(f"Evaluation completed. Results saved to {args.output_folder}")
-    logger.info("=== SUMMARY ===")
-    for key, value in results.items():
-        logger.info(f"{key}: {value:.4f}")
-    
-    return results
 
+def evaluate_model(hparams_file, run_opts, checkpoint_path=None):
+    """Evaluate trained model on test set"""
+    
+    # Load hyperparameters
+    with open(hparams_file) as fin:
+        hparams = hpyy.load_hyperpyyaml(fin)
+    
+    logger.info("Loading datasets...")
+    
+    # Create datasets
+    _, _, test_data = create_datasets(hparams)
+    
+    logger.info(f"Test set: {len(test_data)} samples")
+    
+    # Initialize model
+    brain = SimpleMultiTaskBrain(
+        modules=hparams["modules"],
+        hparams=hparams,
+        run_opts=run_opts,
+        checkpointer=hparams["checkpointer"],
+    )
+    
+    # Load checkpoint if specified
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        logger.info(f"Loading checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=brain.device)
+        brain.modules.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Print checkpoint info
+        if 'best_phoneme_per' in checkpoint:
+            logger.info(f"Checkpoint - Best Phoneme PER: {checkpoint['best_phoneme_per']:.4f}")
+        if 'best_error_acc' in checkpoint:
+            logger.info(f"Checkpoint - Best Error Accuracy: {checkpoint['best_error_acc']:.4f}")
+    else:
+        logger.warning("No checkpoint specified or found. Using random weights.")
+    
+    # Evaluate
+    logger.info("Starting evaluation...")
+    brain.evaluate(
+        test_data,
+        test_loader_kwargs=hparams["test_dataloader_opts"]
+    )
+
+def main():
+    """Main evaluation function"""
+    if len(sys.argv) < 2:
+        print("Usage: python evaluate.py <config_file> [checkpoint_path]")
+        print("Example: python evaluate.py multitask.yaml ./results/save/best_phoneme_per.ckpt")
+        sys.exit(1)
+    
+    setup_logging()
+    
+    hparams_file = sys.argv[1]
+    checkpoint_path = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    # Set up run options
+    run_opts = {
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "data_parallel_count": -1,
+        "precision": "fp32"
+    }
+    
+    logger.info("Starting model evaluation...")
+    logger.info(f"Config file: {hparams_file}")
+    if checkpoint_path:
+        logger.info(f"Checkpoint: {checkpoint_path}")
+    
+    evaluate_model(hparams_file, run_opts, checkpoint_path)
 
 if __name__ == "__main__":
     main()
