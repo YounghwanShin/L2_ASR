@@ -191,12 +191,17 @@ def dataio_prepare(hparams):
         
         dataset.set_output_keys(output_keys)
         
-        loader_opts = hparams.get(f"{split}_dataloader_opts", hparams["train_dataloader_opts"])
+        batch_size = hparams.get("batch_size", 8)
+        if split != "train":
+            batch_size = hparams.get("eval_batch_size", batch_size)
         
         data_loader = SaveableDataLoader(
             dataset,
             collate_fn=PaddedBatch,
-            **loader_opts
+            batch_size=batch_size,
+            shuffle=(split == "train"),
+            num_workers=hparams.get("num_workers", 0),
+            pin_memory=hparams.get("pin_memory", False)
         )
         
         datasets[split] = dataset

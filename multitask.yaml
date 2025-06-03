@@ -1,121 +1,41 @@
-# L2Arctic Multi-task Configuration
 seed: 42
-__set_seed: !apply:torch.manual_seed [!ref <seed>]
 
-# Data paths
 data_folder: ./data  
 output_folder: ./results
-save_folder: !ref <output_folder>/save
-train_json: !ref <data_folder>/train_data.json
-val_json: !ref <data_folder>/val_data.json
-test_json: !ref <data_folder>/eval.json
-phoneme_map: !ref <data_folder>/phoneme_to_id.json
+save_folder: ./results/save
+train_json: ./data/train_data.json
+val_json: ./data/val_data.json
+test_json: ./data/eval.json
+phoneme_map: ./data/phoneme_to_id.json
 
-# Training
 number_of_epochs: 30
 batch_size: 8
 eval_batch_size: 8
 lr: 0.0001
 lr_wav2vec: 0.00005
 
-# Model
-hidden_dim: 1024
+hidden_dim: 512
 num_phonemes: 43
 num_error_types: 3
-use_cross_attention: True
 
-# Wav2Vec2
 wav2vec2_hub: facebook/wav2vec2-large-xlsr-53
 wav2vec2_freeze: False
 
-# Audio
 sample_rate: 16000
 max_audio_length: 320000
 
-# Tasks
 error_weight: 1.0
 phoneme_weight: 1.0
 task: both
 
-# Optimization
 grad_clipping: 5.0
 weight_decay: 0.0001
 dropout: 0.1
 
-# Evaluation
 evaluate_every_epoch: True
 show_samples: True
 num_sample_show: 3
 
-# Data loading
 num_workers: 4
 pin_memory: True
 persistent_workers: True
-
-# Wav2Vec2 module
-wav2vec2: !new:speechbrain.lobes.models.huggingface_transformers.wav2vec2.Wav2Vec2
-    source: !ref <wav2vec2_hub>
-    output_norm: True
-    freeze: !ref <wav2vec2_freeze>
-    save_path: !ref <save_folder>/wav2vec2_checkpoint
-
-# Optimizers
-adam_opt_class: !name:torch.optim.AdamW
-    lr: !ref <lr>
-    weight_decay: !ref <weight_decay>
-
-wav2vec_opt_class: !name:torch.optim.AdamW
-    lr: !ref <lr_wav2vec>
-    weight_decay: !ref <weight_decay>
-
-# Scheduler
-lr_annealing: !new:speechbrain.nnet.schedulers.ReduceLROnPlateau
-    factor: 0.5
-    patience: 3
-
-# Metrics
-error_stats: !name:speechbrain.utils.metric_stats.ErrorRateStats
-phoneme_stats: !name:speechbrain.utils.metric_stats.ErrorRateStats
-
-# Checkpointer
-checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
-    checkpoints_dir: !ref <save_folder>
-    recoverables:
-        model: !ref <model>
-        wav2vec2: !ref <wav2vec2>
-        counter: !ref <epoch_counter>
-
-# Epoch counter
-epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
-    limit: !ref <number_of_epochs>
-
-# Model
-model: !new:model.MultiTaskModel
-    hidden_dim: !ref <hidden_dim>
-    num_phonemes: !ref <num_phonemes>
-    num_error_types: !ref <num_error_types>
-    use_cross_attention: !ref <use_cross_attention>
-    dropout: !ref <dropout>
-    task: !ref <task>
-
-# Data loader options
-train_dataloader_opts:
-    batch_size: !ref <batch_size>
-    shuffle: True
-    num_workers: !ref <num_workers>
-    pin_memory: !ref <pin_memory>
-    persistent_workers: !ref <persistent_workers>
-
-val_dataloader_opts:
-    batch_size: !ref <eval_batch_size>
-    shuffle: False
-    num_workers: !ref <num_workers>
-    pin_memory: !ref <pin_memory>
-    persistent_workers: !ref <persistent_workers>
-
-test_dataloader_opts:
-    batch_size: !ref <eval_batch_size>
-    shuffle: False
-    num_workers: !ref <num_workers>
-    pin_memory: !ref <pin_memory>
-    persistent_workers: !ref <persistent_workers>
