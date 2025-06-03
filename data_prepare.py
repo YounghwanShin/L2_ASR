@@ -5,6 +5,7 @@ from collections import Counter
 import speechbrain as sb
 from speechbrain.dataio.dataset import DynamicItemDataset
 import librosa
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +58,13 @@ def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams, is_
             perceived_phonemes = item['perceived_train_target'].split()
             perceived_ids = [phoneme_to_id.get(p, 0) for p in perceived_phonemes if p in phoneme_to_id]
             if perceived_ids:
-                sample["phoneme_tokens"] = perceived_ids
+                sample["phoneme_tokens"] = torch.LongTensor(perceived_ids)
         
         if 'error_labels' in item and item['error_labels'].strip():
             error_labels = item['error_labels'].split()
             error_ids = [error_to_id.get(e, 0) for e in error_labels if e in error_to_id]
             if error_ids:
-                sample["error_tokens"] = error_ids
+                sample["error_tokens"] = torch.LongTensor(error_ids)
         
         has_phoneme = "phoneme_tokens" in sample
         has_error = "error_tokens" in sample
@@ -107,7 +108,7 @@ def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams, is_
     
     dataset.add_dynamic_item(audio_pipeline)
     
-    output_keys = ["sig"]
+    output_keys = ["id", "sig"]
     if task in ["phoneme", "both"]:
         output_keys.append("phoneme_tokens")
     if task in ["error", "both"]:
@@ -135,4 +136,34 @@ def create_datasets(hparams):
     valid_dataset = create_dataset_from_data(valid_data, phoneme_to_id, error_to_id, hparams, is_train=False)
     test_dataset = create_dataset_from_data(test_data, phoneme_to_id, error_to_id, hparams, is_train=False)
     
-    return train_dataset, valid_dataset, test_dataset
+    label_encoder = sb.dataio.encoder.CTCTextEncoder()
+    
+    phoneme_vocab = list(phoneme_to_id.keys())
+    special_labels = {
+        "blank_label": hparams["blank_index"],
+    }
+    
+    @sb.utils.data_pipeline.takes("phoneme_tokens")
+    @sb.utils.data_pipeline.provides("phn_list_target")
+    def token_to_phoneme_list(tokens):
+        return [phoneme_vocab[idx] for idx in tokens if idx < len(phoneme_vocab)]
+    
+    train_dataset.add_dynamic_item(token_to_phoneme_list)
+    
+    save_folder = hparams.get("output_folder", "./results")
+    lab_enc_file = os.path.join(save_folder, "label_encoder.txt")
+    os.makedirs(save_folder, exist_ok=True)
+    
+    label_encoder.load_or_create(
+        path=lab_enc_file,
+        from_didatasets=[train_dataset],
+        output_key="phn_list_target",
+        special_labels=special_labels,
+        sequence_input=True,
+    )
+    
+    train_dataset.set_output_keys(["id", "sig", "phoneme_tokens"])
+    valid_dataset.set_output_keys(["id", "sig", "phoneme_tokens"])
+    test_dataset.set_output_keys(["id", "sig", "phoneme_tokens"])
+    
+    return train_dataset, valid_dataset, test_dataset, label_encoder

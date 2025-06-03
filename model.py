@@ -4,6 +4,11 @@ import speechbrain as sb
 from transformers import Wav2Vec2Model
 import torch.nn.functional as F
 import os
+from speechbrain.utils.metric_stats import ErrorRateStats
+from speechbrain.utils.data_utils import undo_padding
+import logging
+
+logger = logging.getLogger(__name__)
 
 def make_attn_mask(wavs, wav_lens):
     abs_lens = (wav_lens * wavs.shape[1]).long()
@@ -58,9 +63,8 @@ class SimpleMultiTaskBrain(sb.Brain):
         
         wavs, wav_lens = batch.sig
         
-        if stage == sb.Stage.TRAIN:
-            if hasattr(self.hparams, "augmentation"):
-                wavs = self.hparams.augmentation(wavs, wav_lens)
+        if stage == sb.Stage.TRAIN and hasattr(self.hparams, "augmentation"):
+            wavs = self.hparams.augmentation(wavs, wav_lens)
         
         if hasattr(self.modules.wav2vec2.wav2vec2, 'feature_extractor'):
             if getattr(self.modules.wav2vec2.wav2vec2.feature_extractor, 'return_attention_mask', False):
@@ -74,86 +78,63 @@ class SimpleMultiTaskBrain(sb.Brain):
         
         phoneme_logits, error_logits = self.modules.model(wav_features)
         
-        predictions = {}
-        if self.hparams.task in ["phoneme", "both"]:
-            predictions["phoneme_logits"] = phoneme_logits
-            predictions["phoneme_log_probs"] = F.log_softmax(phoneme_logits, dim=-1)
-        if self.hparams.task in ["error", "both"]:
-            predictions["error_logits"] = error_logits
-            predictions["error_log_probs"] = F.log_softmax(error_logits, dim=-1)
+        if hasattr(self.hparams, "log_softmax"):
+            phoneme_log_probs = self.hparams.log_softmax(phoneme_logits)
+            error_log_probs = self.hparams.log_softmax(error_logits)
+        else:
+            phoneme_log_probs = F.log_softmax(phoneme_logits, dim=-1)
+            error_log_probs = F.log_softmax(error_logits, dim=-1)
         
-        predictions["wav_lens"] = wav_lens
-        
-        return predictions
+        return phoneme_log_probs, error_log_probs, wav_lens
     
     def compute_objectives(self, predictions, batch, stage):
+        phoneme_log_probs, error_log_probs, wav_lens = predictions
+        
         total_loss = torch.tensor(0.0, device=self.device)
         
-        if "phoneme_log_probs" in predictions and hasattr(batch, 'phoneme_tokens'):
-            phoneme_log_probs = predictions["phoneme_log_probs"].transpose(0, 1)
-            
-            batch_size = phoneme_log_probs.shape[1]
-            wav_lens = predictions["wav_lens"]
-            input_lengths = (wav_lens * phoneme_log_probs.shape[0]).long()
-            
-            all_targets = []
-            target_lengths = []
-            
-            for tokens in batch.phoneme_tokens:
-                if isinstance(tokens, torch.Tensor):
-                    token_list = tokens.cpu().tolist()
-                else:
-                    token_list = tokens
-                all_targets.extend(token_list)
-                target_lengths.append(len(token_list))
-            
-            targets = torch.tensor(all_targets, dtype=torch.long, device=self.device)
-            target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
-            
-            phoneme_loss = F.ctc_loss(
-                log_probs=phoneme_log_probs,
-                targets=targets,
-                input_lengths=input_lengths,
-                target_lengths=target_lengths,
-                blank=0,
-                reduction='mean',
-                zero_infinity=True
-            )
-            
-            total_loss += self.hparams.phoneme_weight * phoneme_loss
+        if hasattr(self.hparams, 'task'):
+            task = self.hparams.task
+            phoneme_weight = self.hparams.phoneme_weight
+            error_weight = self.hparams.error_weight
+            blank_index = self.hparams.blank_index
+        else:
+            task = self.hparams.get("task", "both")
+            phoneme_weight = self.hparams.get("phoneme_weight", 1.0)
+            error_weight = self.hparams.get("error_weight", 1.0)
+            blank_index = self.hparams.get("blank_index", 0)
         
-        if "error_log_probs" in predictions and hasattr(batch, 'error_tokens'):
-            error_log_probs = predictions["error_log_probs"].transpose(0, 1)
+        if task in ["phoneme", "both"] and hasattr(batch, 'phoneme_tokens'):
+            phoneme_targets, phoneme_target_lens = batch.phoneme_tokens
             
-            batch_size = error_log_probs.shape[1]
-            wav_lens = predictions["wav_lens"]
-            input_lengths = (wav_lens * error_log_probs.shape[0]).long()
-            
-            all_targets = []
-            target_lengths = []
-            
-            for tokens in batch.error_tokens:
-                if isinstance(tokens, torch.Tensor):
-                    token_list = tokens.cpu().tolist()
-                else:
-                    token_list = tokens
-                all_targets.extend(token_list)
-                target_lengths.append(len(token_list))
-            
-            targets = torch.tensor(all_targets, dtype=torch.long, device=self.device)
-            target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
-            
-            error_loss = F.ctc_loss(
-                log_probs=error_log_probs,
-                targets=targets,
-                input_lengths=input_lengths,
-                target_lengths=target_lengths,
-                blank=0,
-                reduction='mean',
-                zero_infinity=True
+            phoneme_loss = self.hparams.ctc_cost(
+                phoneme_log_probs, phoneme_targets, wav_lens, phoneme_target_lens
             )
+            total_loss += phoneme_weight * phoneme_loss
+        
+        if task in ["error", "both"] and hasattr(batch, 'error_tokens'):
+            error_targets, error_target_lens = batch.error_tokens
             
-            total_loss += self.hparams.error_weight * error_loss
+            error_loss = self.hparams.ctc_cost(
+                error_log_probs, error_targets, wav_lens, error_target_lens
+            )
+            total_loss += error_weight * error_loss
+        
+        if stage == sb.Stage.TEST:
+            if task in ["phoneme", "both"] and hasattr(batch, 'phoneme_tokens'):
+                phoneme_sequence = sb.decoders.ctc_greedy_decode(
+                    phoneme_log_probs, wav_lens, blank_id=blank_index
+                )
+                
+                phoneme_targets, phoneme_target_lens = batch.phoneme_tokens
+                
+                self.phoneme_metrics.append(
+                    ids=batch.id,
+                    predict=phoneme_sequence,
+                    target=phoneme_targets,
+                    predict_len=None,
+                    target_len=phoneme_target_lens,
+                    ind2lab=self.label_encoder.decode_ndim,
+                )
         
         return total_loss
     
@@ -170,176 +151,46 @@ class SimpleMultiTaskBrain(sb.Brain):
                     if hasattr(self.modules.wav2vec2.wav2vec2.config, 'apply_spec_augment'):
                         self.modules.wav2vec2.wav2vec2.config.apply_spec_augment = False
             
-            self.phoneme_predictions = []
-            self.phoneme_targets = []
-            self.error_predictions = []
-            self.error_targets = []
+            if hasattr(self.hparams, "per_stats"):
+                self.phoneme_metrics = self.hparams.per_stats()
+            else:
+                per_stats = self.hparams.get("per_stats", None) if hasattr(self.hparams, 'get') else None
+                if per_stats:
+                    self.phoneme_metrics = per_stats()
+                else:
+                    from speechbrain.utils.metric_stats import ErrorRateStats
+                    self.phoneme_metrics = ErrorRateStats()
     
     def on_stage_end(self, stage, stage_loss, epoch):
         
         if stage == sb.Stage.TRAIN:
+            self.train_loss = stage_loss
             print(f"Epoch {epoch}, Train Loss: {stage_loss:.4f}")
         
         elif stage == sb.Stage.VALID:
-            metrics = self.calculate_metrics()
-            
             print(f"Epoch {epoch}, Valid Loss: {stage_loss:.4f}")
-            if 'phoneme_per' in metrics:
-                print(f"  Phoneme PER: {metrics['phoneme_per']:.4f}")
-            if 'error_accuracy' in metrics:
-                print(f"  Error Accuracy: {metrics['error_accuracy']:.4f}")
             
-            self.save_best_models(stage_loss, metrics, epoch)
+            if stage_loss < self.best_valid_loss:
+                self.best_valid_loss = stage_loss
+                print(f"  NEW BEST Valid Loss: {stage_loss:.4f}")
+                self.save_checkpoint("best_loss")
+                
+                if hasattr(self, 'test_data') and self.test_data is not None:
+                    self.run_test_evaluation(self.test_data, epoch)
         
         elif stage == sb.Stage.TEST:
-            metrics = self.calculate_metrics()
+            per = self.phoneme_metrics.summarize("error_rate")
+            
             print("=== FINAL TEST RESULTS ===")
             print(f"Test Loss: {stage_loss:.4f}")
-            if 'phoneme_per' in metrics:
-                print(f"Phoneme PER: {metrics['phoneme_per']:.4f}")
-            if 'error_accuracy' in metrics:
-                print(f"Error Accuracy: {metrics['error_accuracy']:.4f}")
+            print(f"Phoneme PER: {per:.4f}")
     
     def evaluate_batch(self, batch, stage):
         with torch.no_grad():
             predictions = self.compute_forward(batch, stage)
             loss = self.compute_objectives(predictions, batch, stage)
             
-            if stage != sb.Stage.TRAIN:
-                self.collect_predictions(predictions, batch)
-            
             return loss
-    
-    def collect_predictions(self, predictions, batch):
-        
-        if "phoneme_log_probs" in predictions and hasattr(batch, 'phoneme_tokens'):
-            phoneme_log_probs = predictions["phoneme_log_probs"]
-            wav_lens = predictions["wav_lens"]
-            
-            batch_predictions = sb.decoders.ctc_greedy_decode(
-                phoneme_log_probs, wav_lens, blank_id=0
-            )
-            
-            batch_targets = []
-            for tokens in batch.phoneme_tokens:
-                if isinstance(tokens, torch.Tensor):
-                    token_list = tokens.cpu().tolist()
-                else:
-                    token_list = tokens
-                batch_targets.append(token_list)
-            
-            self.phoneme_predictions.extend(batch_predictions)
-            self.phoneme_targets.extend(batch_targets)
-        
-        if "error_log_probs" in predictions and hasattr(batch, 'error_tokens'):
-            error_log_probs = predictions["error_log_probs"]
-            wav_lens = predictions["wav_lens"]
-            
-            batch_predictions = sb.decoders.ctc_greedy_decode(
-                error_log_probs, wav_lens, blank_id=0
-            )
-            
-            batch_targets = []
-            for tokens in batch.error_tokens:
-                if isinstance(tokens, torch.Tensor):
-                    token_list = tokens.cpu().tolist()
-                else:
-                    token_list = tokens
-                batch_targets.append(token_list)
-            
-            self.error_predictions.extend(batch_predictions)
-            self.error_targets.extend(batch_targets)
-    
-    def calculate_metrics(self):
-        metrics = {}
-        
-        if self.phoneme_predictions and self.phoneme_targets:
-            total_edits = 0
-            total_length = 0
-            
-            for pred, target in zip(self.phoneme_predictions, self.phoneme_targets):
-                edits = self.edit_distance(pred, target)
-                total_edits += edits
-                total_length += len(target)
-            
-            per = total_edits / max(total_length, 1)
-            metrics['phoneme_per'] = per
-        
-        if self.error_predictions and self.error_targets:
-            correct = 0
-            total = 0
-            
-            for pred, target in zip(self.error_predictions, self.error_targets):
-                min_len = min(len(pred), len(target))
-                correct += sum(1 for i in range(min_len) if pred[i] == target[i])
-                total += len(target)
-            
-            accuracy = correct / max(total, 1)
-            metrics['error_accuracy'] = accuracy
-        
-        return metrics
-    
-    def edit_distance(self, pred, target):
-        m, n = len(pred), len(target)
-        dp = [[0] * (n + 1) for _ in range(m + 1)]
-        
-        for i in range(m + 1):
-            dp[i][0] = i
-        for j in range(n + 1):
-            dp[0][j] = j
-        
-        for i in range(1, m + 1):
-            for j in range(1, n + 1):
-                if pred[i-1] == target[j-1]:
-                    dp[i][j] = dp[i-1][j-1]
-                else:
-                    dp[i][j] = 1 + min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
-        
-        return dp[m][n]
-    
-    def fit_batch(self, batch):
-        if self.auto_mix_prec:
-            self.wav2vec_optimizer.zero_grad()
-            self.adam_optimizer.zero_grad()
-
-            with torch.cuda.amp.autocast():
-                outputs = self.compute_forward(batch, sb.Stage.TRAIN)
-                loss = self.compute_objectives(outputs, batch, sb.Stage.TRAIN)
-
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.wav2vec_optimizer)
-            self.scaler.unscale_(self.adam_optimizer)
-
-            if self.check_gradients():
-                self.scaler.step(self.wav2vec_optimizer)
-                self.scaler.step(self.adam_optimizer)
-
-            self.scaler.update()
-        else:
-            outputs = self.compute_forward(batch, sb.Stage.TRAIN)
-            loss = self.compute_objectives(outputs, batch, sb.Stage.TRAIN)
-            
-            if hasattr(self.hparams, 'gradient_accumulation'):
-                (loss / self.hparams.gradient_accumulation).backward()
-                
-                if self.step % self.hparams.gradient_accumulation == 0:
-                    if self.check_gradients():
-                        self.wav2vec_optimizer.step()
-                        self.adam_optimizer.step()
-                    
-                    self.wav2vec_optimizer.zero_grad()
-                    self.adam_optimizer.zero_grad()
-            else:
-                loss.backward()
-                
-                if self.check_gradients():
-                    self.wav2vec_optimizer.step()
-                    self.adam_optimizer.step()
-                
-                self.wav2vec_optimizer.zero_grad()
-                self.adam_optimizer.zero_grad()
-
-        return loss.detach().cpu()
     
     def init_optimizers(self):
         self.wav2vec_optimizer = self.hparams.wav2vec_opt_class(
@@ -367,27 +218,62 @@ class SimpleMultiTaskBrain(sb.Brain):
         if not hasattr(self, 'wav2vec_optimizer') or self.wav2vec_optimizer is None:
             self.init_optimizers()
     
-    def save_best_models(self, valid_loss, metrics, epoch):
+    def fit_batch(self, batch):
+        if hasattr(self.hparams, 'gradient_accumulation'):
+            gradient_accumulation = self.hparams.gradient_accumulation
+        else:
+            gradient_accumulation = self.hparams.get("gradient_accumulation", 1)
         
-        if valid_loss < self.best_valid_loss:
-            self.best_valid_loss = valid_loss
-            print(f"  NEW BEST Valid Loss: {valid_loss:.4f}")
-            self.save_checkpoint("best_loss")
-        
-        if 'phoneme_per' in metrics and metrics['phoneme_per'] < self.best_phoneme_per:
-            self.best_phoneme_per = metrics['phoneme_per']
-            print(f"  NEW BEST Phoneme PER: {self.best_phoneme_per:.4f}")
-            self.save_checkpoint("best_phoneme_per")
-        
-        if 'error_accuracy' in metrics and metrics['error_accuracy'] > self.best_error_acc:
-            self.best_error_acc = metrics['error_accuracy']
-            print(f"  NEW BEST Error Accuracy: {self.best_error_acc:.4f}")
-            self.save_checkpoint("best_error_acc")
-        
-        self.save_checkpoint(f"epoch_{epoch}")
+        if self.auto_mix_prec:
+            self.wav2vec_optimizer.zero_grad()
+            self.adam_optimizer.zero_grad()
+
+            with torch.cuda.amp.autocast():
+                outputs = self.compute_forward(batch, sb.Stage.TRAIN)
+                loss = self.compute_objectives(outputs, batch, sb.Stage.TRAIN)
+
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.wav2vec_optimizer)
+            self.scaler.unscale_(self.adam_optimizer)
+
+            if self.check_gradients():
+                self.scaler.step(self.wav2vec_optimizer)
+                self.scaler.step(self.adam_optimizer)
+
+            self.scaler.update()
+        else:
+            outputs = self.compute_forward(batch, sb.Stage.TRAIN)
+            loss = self.compute_objectives(outputs, batch, sb.Stage.TRAIN)
+            
+            if gradient_accumulation > 1:
+                (loss / gradient_accumulation).backward()
+                
+                if self.step % gradient_accumulation == 0:
+                    if self.check_gradients():
+                        self.wav2vec_optimizer.step()
+                        self.adam_optimizer.step()
+                    
+                    self.wav2vec_optimizer.zero_grad()
+                    self.adam_optimizer.zero_grad()
+            else:
+                loss.backward()
+                
+                if self.check_gradients():
+                    self.wav2vec_optimizer.step()
+                    self.adam_optimizer.step()
+                
+                self.wav2vec_optimizer.zero_grad()
+                self.adam_optimizer.zero_grad()
+
+        return loss.detach().cpu()
     
     def save_checkpoint(self, name):
-        save_dir = os.path.join(self.hparams.output_folder, "save")
+        if hasattr(self.hparams, 'output_folder'):
+            output_folder = self.hparams.output_folder
+        else:
+            output_folder = self.hparams.get("output_folder", "./results")
+        
+        save_dir = os.path.join(output_folder, "save")
         os.makedirs(save_dir, exist_ok=True)
         
         save_path = os.path.join(save_dir, f"{name}.ckpt")
@@ -401,3 +287,49 @@ class SimpleMultiTaskBrain(sb.Brain):
         
         torch.save(checkpoint, save_path)
         print(f"  Saved: {save_path}")
+    
+    def run_test_evaluation(self, test_data, epoch):
+        
+        self.on_stage_start(sb.Stage.TEST, epoch)
+        self.modules.eval()
+        
+        with torch.no_grad():
+            if hasattr(self.hparams, 'test_dataloader_opts'):
+                test_dataloader_opts = self.hparams.test_dataloader_opts
+            else:
+                batch_size = self.hparams.get("batch_size", 4) if hasattr(self.hparams, 'get') else 4
+                test_dataloader_opts = {
+                    "batch_size": batch_size,
+                    "shuffle": False,
+                    "num_workers": 1
+                }
+            
+            test_loader = self.make_dataloader(
+                test_data, sb.Stage.TEST, **test_dataloader_opts
+            )
+            
+            total_loss = 0.0
+            num_batches = 0
+            
+            for batch in test_loader:
+                loss = self.evaluate_batch(batch, sb.Stage.TEST)
+                total_loss += loss.item()
+                num_batches += 1
+            
+            avg_loss = total_loss / max(num_batches, 1)
+        
+        self.on_interim_test_end(avg_loss, epoch)
+        self.modules.train()
+    
+    def on_interim_test_end(self, stage_loss, epoch):
+        per = self.phoneme_metrics.summarize("error_rate")
+        
+        print(f"  Test Loss: {stage_loss:.4f}")
+        print(f"  Phoneme PER: {per:.4f}")
+        
+        if per < self.best_phoneme_per:
+            self.best_phoneme_per = per
+            print(f"  NEW BEST Phoneme PER: {per:.4f}")
+            self.save_checkpoint("best_phoneme_per")
+        
+        self.save_checkpoint(f"epoch_{epoch}")

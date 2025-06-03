@@ -7,8 +7,8 @@ test_json: !ref <data_folder>/eval.json
 task: both
 
 number_of_epochs: 30
-batch_size: 16
-lr: 0.0003
+batch_size: 4
+lr: 0.0001
 lr_wav2vec: 0.00001
 weight_decay: 0.01
 phoneme_weight: 1.0
@@ -22,6 +22,7 @@ wav2vec2_model: facebook/wav2vec2-base
 hidden_dim: 768
 
 wav2vec2_specaug: True
+blank_index: 0
 
 train_dataloader_opts:
   batch_size: !ref <batch_size>
@@ -40,6 +41,14 @@ test_dataloader_opts:
 
 precision: fp32
 auto_mix_prec: False
+
+log_softmax: !new:speechbrain.nnet.activations.Softmax
+    apply_log: True
+
+ctc_cost: !name:speechbrain.nnet.losses.ctc_loss
+    blank_index: !ref <blank_index>
+
+per_stats: !name:speechbrain.utils.metric_stats.ErrorRateStats
 
 wav2vec_opt_class: !name:torch.optim.AdamW
   lr: !ref <lr_wav2vec>
