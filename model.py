@@ -307,25 +307,26 @@ class SimpleMultiTaskBrain(sb.Brain):
         return dp[m][n]
     
     def init_optimizers(self):
-        """Initialize optimizers for the model"""
-        # Separate learning rates for wav2vec2 and model
-        wav2vec_params = list(self.modules.wav2vec2.parameters())
-        model_params = list(self.modules.model.parameters())
+        """Initialize optimizer for the model"""
+        # Get all parameters
+        all_params = list(self.modules.parameters())
         
-        # Create separate optimizers
-        optimizer1 = torch.optim.AdamW(
-            wav2vec_params,
-            lr=getattr(self.hparams, "lr_wav2vec", 1e-5),
-            weight_decay=getattr(self.hparams, "weight_decay", 1e-4)
-        )
-        
-        optimizer2 = torch.optim.AdamW(
-            model_params,
+        # Create single optimizer with default learning rate
+        optimizer = torch.optim.AdamW(
+            all_params,
             lr=getattr(self.hparams, "lr", 1e-4),
             weight_decay=getattr(self.hparams, "weight_decay", 1e-4)
         )
         
-        return [optimizer1, optimizer2]
+        return optimizer
+    
+    def on_fit_start(self):
+        """Called at the start of training - manually set optimizer"""
+        super().on_fit_start()
+        
+        # Manually set optimizer if not already set
+        if not hasattr(self, 'optimizer') or self.optimizer is None:
+            self.optimizer = self.init_optimizers()
     
     def save_best_models(self, valid_loss, metrics, epoch):
         """Save best models based on different criteria"""
