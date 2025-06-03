@@ -36,6 +36,7 @@ class SimpleMultiTaskModel(nn.Module):
         super().__init__()
         self.hparams = hparams
         
+        # Handle both dict and SimpleNamespace
         wav2vec2_hub = hparams.get("wav2vec2_hub") if hasattr(hparams, 'get') else hparams.wav2vec2_hub
         wav2vec2_freeze = hparams.get("wav2vec2_freeze") if hasattr(hparams, 'get') else hparams.wav2vec2_freeze
         hidden_dim = hparams.get("hidden_dim") if hasattr(hparams, 'get') else hparams.hidden_dim
@@ -100,14 +101,19 @@ class SimpleMultiTaskBrain(sb.Brain):
                 target_lengths = []
                 for tokens in batch.error_tokens:
                     if isinstance(tokens, list):
-                        targets.extend(tokens)
+                        targets.append(torch.tensor(tokens, dtype=torch.long))
                         target_lengths.append(len(tokens))
                     else:
-                        targets.extend(tokens.cpu().numpy().tolist())
+                        targets.append(tokens)
                         target_lengths.append(len(tokens))
                 
-                targets = torch.tensor(targets, dtype=torch.long, device=self.device)
-                target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
+                max_len = max(target_lengths)
+                padded_targets = torch.zeros(len(targets), max_len, dtype=torch.long, device=self.device)
+                for i, target in enumerate(targets):
+                    padded_targets[i, :len(target)] = target.to(self.device)
+                
+                targets = padded_targets
+                target_lengths = torch.tensor(target_lengths, dtype=torch.float, device=self.device) / max_len
             
             error_loss = sb.nnet.losses.ctc_loss(
                 log_probs=error_log_probs,
@@ -129,14 +135,19 @@ class SimpleMultiTaskBrain(sb.Brain):
                 target_lengths = []
                 for tokens in batch.phoneme_tokens:
                     if isinstance(tokens, list):
-                        targets.extend(tokens)
+                        targets.append(torch.tensor(tokens, dtype=torch.long))
                         target_lengths.append(len(tokens))
                     else:
-                        targets.extend(tokens.cpu().numpy().tolist())
+                        targets.append(tokens)
                         target_lengths.append(len(tokens))
                 
-                targets = torch.tensor(targets, dtype=torch.long, device=self.device)
-                target_lengths = torch.tensor(target_lengths, dtype=torch.long, device=self.device)
+                max_len = max(target_lengths)
+                padded_targets = torch.zeros(len(targets), max_len, dtype=torch.long, device=self.device)
+                for i, target in enumerate(targets):
+                    padded_targets[i, :len(target)] = target.to(self.device)
+                
+                targets = padded_targets
+                target_lengths = torch.tensor(target_lengths, dtype=torch.float, device=self.device) / max_len
             
             phoneme_loss = sb.nnet.losses.ctc_loss(
                 log_probs=phoneme_log_probs,
@@ -165,37 +176,6 @@ class SimpleMultiTaskBrain(sb.Brain):
             
         elif stage == sb.Stage.TEST:
             self.test_stats = stage_stats
-    
-    def fit_batch(self, batch):
-        should_step = self.step <= self.hparams.number_of_epochs
-        if should_step:
-            predictions = self.compute_forward(batch, sb.Stage.TRAIN)
-            loss = self.compute_objectives(predictions, batch, sb.Stage.TRAIN)
-            
-            # Multiple optimizers
-            if isinstance(self.optimizer, list):
-                for opt in self.optimizer:
-                    opt.zero_grad()
-            else:
-                self.optimizer.zero_grad()
-            
-            loss.backward()
-            
-            if hasattr(self.hparams, "grad_clipping") and self.hparams.grad_clipping:
-                torch.nn.utils.clip_grad_norm_(
-                    self.modules.parameters(), 
-                    self.hparams.grad_clipping
-                )
-            
-            if isinstance(self.optimizer, list):
-                for opt in self.optimizer:
-                    opt.step()
-            else:
-                self.optimizer.step()
-            
-            self.step += 1
-        
-        return loss.detach() if should_step else None
     
     def init_optimizers(self):
         wav2vec_params = list(self.modules.wav2vec2.parameters())
