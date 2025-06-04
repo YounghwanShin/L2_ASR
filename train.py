@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from model import MultiTaskModel, MultiTaskLoss
-from data import MultiTaskDataset, EvaluationDataset, multitask_collate_fn, evaluation_collate_fn
+from data_prepare import MultiTaskDataset, EvaluationDataset, multitask_collate_fn, evaluation_collate_fn
 from evaluate import evaluate_error_detection, evaluate_phoneme_recognition, show_multitask_samples, get_wav2vec2_output_lengths_official
 
 def train_multitask_epoch(model, dataloader, criterion, optimizer, device, epoch, max_grad_norm=0.5):

@@ -1,6 +1,6 @@
 python train.py \
-  --train_data data/complete_train.json \
-  --val_data data/complete_val.json \
+  --train_data data/train_data.json \
+  --val_data data/val_data.json \
   --eval_data data/eval.json \
   --phoneme_map data/phoneme_to_id.json \
   --hidden_dim 1024 \

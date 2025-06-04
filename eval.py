@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from model import MultiTaskModel
-from data import EvaluationDataset, evaluation_collate_fn
+from data_prepare import EvaluationDataset, evaluation_collate_fn
 from evaluate import evaluate_error_detection, evaluate_phoneme_recognition
 
 def load_model_checkpoint(checkpoint_path, device):
