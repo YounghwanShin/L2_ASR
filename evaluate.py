@@ -7,7 +7,7 @@ import hyperpyyaml as hpyy
 import speechbrain as sb
 from transformers import Wav2Vec2Processor
 from data_prepare import create_datasets
-from model import SimpleMultiTaskBrain
+from model import SimpleMultiTaskBrain, Wav2Vec2Encoder, MultiTaskHead
 
 logger = logging.getLogger(__name__)
 
@@ -18,22 +18,18 @@ def setup_logging():
     )
 
 def evaluate_model(hparams_file, run_opts, checkpoint_path=None):
-    
     with open(hparams_file) as fin:
         hparams = hpyy.load_hyperpyyaml(fin)
     
     if hparams.get("sorting", "ascending") != "random":
         hparams["train_dataloader_opts"]["shuffle"] = False
     
+    from transformers import Wav2Vec2Processor
     hparams["wav2vec2"] = Wav2Vec2Processor.from_pretrained(hparams["wav2vec2_model"])
     
     logger.info("Loading datasets...")
-    
     _, _, test_data = create_datasets(hparams)
-    
     logger.info(f"Test set: {len(test_data)} samples")
-    
-    from model import Wav2Vec2Encoder, MultiTaskHead
     
     wav2vec2 = Wav2Vec2Encoder(model_name=hparams["wav2vec2_model"])
     model = MultiTaskHead(

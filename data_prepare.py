@@ -16,7 +16,6 @@ def load_data(json_path):
     return data
 
 def build_vocabularies(train_data, hparams):
-    
     phoneme_counter = Counter()
     error_counter = Counter()
     
@@ -41,11 +40,9 @@ def build_vocabularies(train_data, hparams):
     return phoneme_to_id, error_to_id
 
 def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams, is_train=False):
-    
     dataset_dict = {}
     valid_samples = 0
     skipped_samples = 0
-    
     task = hparams["task"]
     
     for sample_id, item in data_dict.items():
@@ -96,14 +93,13 @@ def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams, is_
     @sb.utils.data_pipeline.takes("wav")
     @sb.utils.data_pipeline.provides("sig")
     def audio_pipeline(wav_path):
-        if hasattr(hparams, "wav2vec2") and hasattr(hparams["wav2vec2"], "feature_extractor"):
-            sig = hparams["wav2vec2"].feature_extractor(
-                librosa.core.load(wav_path, hparams["sample_rate"])[0],
-                sampling_rate=hparams["sample_rate"],
-            ).input_values[0]
-            sig = torch.Tensor(sig)
-        else:
-            sig = sb.dataio.dataio.read_audio(wav_path)
+        import librosa
+        audio, sr = librosa.load(wav_path, sr=hparams["sample_rate"])
+        sig = hparams["wav2vec2"].feature_extractor(
+            audio,
+            sampling_rate=hparams["sample_rate"],
+        ).input_values[0]
+        sig = torch.Tensor(sig)
         return sig
     
     dataset.add_dynamic_item(audio_pipeline)
@@ -120,7 +116,6 @@ def create_dataset_from_data(data_dict, phoneme_to_id, error_to_id, hparams, is_
     return dataset
 
 def create_datasets(hparams):
-    
     train_data = load_data(hparams["train_json"])
     valid_data = load_data(hparams["valid_json"])
     test_data = load_data(hparams["test_json"])
@@ -162,8 +157,8 @@ def create_datasets(hparams):
         sequence_input=True,
     )
     
-    train_dataset.set_output_keys(["id", "sig", "phoneme_tokens"])
-    valid_dataset.set_output_keys(["id", "sig", "phoneme_tokens"])
-    test_dataset.set_output_keys(["id", "sig", "phoneme_tokens"])
+    train_dataset.set_output_keys(["id", "sig", "phoneme_tokens", "error_tokens"])
+    valid_dataset.set_output_keys(["id", "sig", "phoneme_tokens", "error_tokens"])
+    test_dataset.set_output_keys(["id", "sig", "phoneme_tokens", "error_tokens"])
     
     return train_dataset, valid_dataset, test_dataset, label_encoder
