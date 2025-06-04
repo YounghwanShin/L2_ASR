@@ -15,10 +15,10 @@ class Config:
     num_phonemes = 42
     num_error_types = 3
     
-    batch_size = 16
-    eval_batch_size = 16
+    batch_size = 32
+    eval_batch_size = 32
     wav2vec_lr = 1e-5
-    main_lr = 1e-4
+    main_lr = 3e-4
     num_epochs = 30
     gradient_accumulation = 2
     

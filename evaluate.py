@@ -1,8 +1,11 @@
 import torch
 import numpy as np
+import logging
 from tqdm import tqdm
 from sklearn.metrics import classification_report, f1_score
 from speechbrain.utils.edit_distance import wer_details_for_batch
+
+logger = logging.getLogger(__name__)
 
 def get_wav2vec2_output_lengths_official(model, input_lengths):
     actual_model = model.module if hasattr(model, 'module') else model
@@ -46,7 +49,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
     all_predictions, all_targets, all_ids = [], [], []
     
     with torch.no_grad():
-        progress_bar = tqdm(dataloader, desc='Error Detection Evaluation')
+        progress_bar = tqdm(dataloader, desc='Error Detection Evaluation', dynamic_ncols=True)
         
         for batch_data in progress_bar:
             (waveforms, error_labels, _, _, audio_lengths, error_label_lengths, 
@@ -135,7 +138,7 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     all_predictions, all_targets, all_ids = [], [], []
     
     with torch.no_grad():
-        progress_bar = tqdm(dataloader, desc='Phoneme Recognition Evaluation')
+        progress_bar = tqdm(dataloader, desc='Phoneme Recognition Evaluation', dynamic_ncols=True)
         
         for batch_data in progress_bar:
             (waveforms, _, perceived_phoneme_ids, canonical_phoneme_ids, 
