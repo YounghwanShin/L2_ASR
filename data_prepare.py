@@ -6,7 +6,7 @@ import random
 
 class MultiTaskDataset(Dataset):
     def __init__(self, json_path, phoneme_to_id, max_length=None, sampling_rate=16000, 
-                 task_mode='both', error_task_ratio=0.5, oversample_error=True):
+                 task_mode='both', error_task_ratio=0.5):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
         
@@ -19,35 +19,18 @@ class MultiTaskDataset(Dataset):
         self.error_task_ratio = error_task_ratio
         
         self.valid_files = []
-        self.error_files = []
-        self.phoneme_files = []
-        self.both_files = []
         
         for wav_file in self.wav_files:
             item = self.data[wav_file]
             has_error_labels = 'error_labels' in item and item['error_labels'].strip()
             has_phoneme_labels = 'perceived_train_target' in item and item['perceived_train_target'].strip()
             
-            if has_error_labels and has_phoneme_labels:
-                self.both_files.append(wav_file)
+            if task_mode == 'both' and (has_error_labels or has_phoneme_labels):
                 self.valid_files.append(wav_file)
-            elif has_error_labels:
-                self.error_files.append(wav_file)
-                if task_mode in ['error', 'both']:
-                    self.valid_files.append(wav_file)
-            elif has_phoneme_labels:
-                self.phoneme_files.append(wav_file)
-                if task_mode in ['phoneme', 'both']:
-                    self.valid_files.append(wav_file)
-        
-        if oversample_error and task_mode == 'both':
-            error_only_files = [f for f in self.error_files if 'I' in self.data[f].get('error_labels', '')]
-            self.valid_files.extend(error_only_files * 2)
-        
-        print(f"Dataset loaded: {len(self.valid_files)} valid files")
-        print(f"  - Error only: {len(self.error_files)}")
-        print(f"  - Phoneme only: {len(self.phoneme_files)}")
-        print(f"  - Both tasks: {len(self.both_files)}")
+            elif task_mode == 'error' and has_error_labels:
+                self.valid_files.append(wav_file)
+            elif task_mode == 'phoneme' and has_phoneme_labels:
+                self.valid_files.append(wav_file)
         
         if task_mode == 'both':
             self._create_task_schedule()
@@ -61,9 +44,7 @@ class MultiTaskDataset(Dataset):
             has_phoneme = 'perceived_train_target' in item and item['perceived_train_target'].strip()
             
             if has_error and has_phoneme:
-                if random.random() < 0.3:
-                    self.task_schedule.append(('joint', wav_file))
-                elif random.random() < self.error_task_ratio:
+                if random.random() < self.error_task_ratio:
                     self.task_schedule.append(('error', wav_file))
                 else:
                     self.task_schedule.append(('phoneme', wav_file))

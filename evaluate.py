@@ -85,9 +85,6 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
     
     total_tokens = sum(detail['num_ref_tokens'] for detail in wer_details)
     total_errors = sum(detail['insertions'] + detail['deletions'] + detail['substitutions'] for detail in wer_details)
-    total_insertions = sum(detail['insertions'] for detail in wer_details)
-    total_deletions = sum(detail['deletions'] for detail in wer_details)
-    total_substitutions = sum(detail['substitutions'] for detail in wer_details)
     
     sequence_accuracy = correct_sequences / total_sequences if total_sequences > 0 else 0
     token_accuracy = 1 - (total_errors / total_tokens) if total_tokens > 0 else 0
@@ -130,11 +127,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
         'macro_f1': float(macro_f1),
         'class_metrics': class_metrics,
         'total_sequences': int(total_sequences),
-        'total_tokens': int(total_tokens),
-        'total_insertions': int(total_insertions),
-        'total_deletions': int(total_deletions),
-        'total_substitutions': int(total_substitutions),
-        'wer_details': wer_details
+        'total_tokens': int(total_tokens)
     }
 
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
@@ -193,91 +186,11 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     
     per = total_errors / total_phonemes if total_phonemes > 0 else 0
     
-    per_sample_metrics = [
-        {
-            'wav_file': detail['key'],
-            'per': detail['WER'],
-            'insertions': detail['insertions'],
-            'deletions': detail['deletions'],
-            'substitutions': detail['substitutions'],
-            'true_phonemes': detail['ref_tokens'],
-            'pred_phonemes': detail['hyp_tokens']
-        }
-        for detail in per_details
-    ]
-    
     return {
         'per': float(per),
         'total_phonemes': int(total_phonemes),
         'total_errors': int(total_errors),
         'insertions': int(total_insertions),
         'deletions': int(total_deletions),
-        'substitutions': int(total_substitutions),
-        'per_sample': per_sample_metrics,
-        'per_details': per_details
+        'substitutions': int(total_substitutions)
     }
-
-def show_multitask_samples(model, dataloader, device, error_type_names, id_to_phoneme, num_samples=3):
-    model.eval()
-    
-    with torch.no_grad():
-        sample_count = 0
-        for batch_data in dataloader:
-            if sample_count >= num_samples:
-                break
-                
-            (waveforms, error_labels, perceived_phoneme_ids, _, 
-             audio_lengths, error_label_lengths, perceived_lengths, _, wav_files) = batch_data
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
-            
-            outputs = model(waveforms, attention_mask, task='both')
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            
-            error_predictions = []
-            phoneme_predictions = []
-            
-            if 'error_logits' in outputs:
-                error_log_probs = torch.log_softmax(outputs['error_logits'], dim=-1)
-                error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
-                error_predictions = decode_ctc(error_log_probs, error_input_lengths)
-                
-            if 'phoneme_logits' in outputs:
-                phoneme_log_probs = torch.log_softmax(outputs['phoneme_logits'], dim=-1)
-                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
-                phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
-            
-            for i in range(min(len(wav_files), num_samples - sample_count)):
-                print(f"\n--- Multi-task Sample {sample_count + 1} ---")
-                print(f"File: {wav_files[i]}")
-                
-                if error_predictions and error_label_lengths[i] > 0:
-                    error_target = error_labels[i][:error_label_lengths[i]].cpu().numpy().tolist()
-                    error_pred = error_predictions[i] if i < len(error_predictions) else []
-                    
-                    error_target_symbols = [error_type_names.get(t, str(t)) for t in error_target]
-                    error_pred_symbols = [error_type_names.get(p, str(p)) for p in error_pred]
-                    
-                    print(f"Error Actual:    {' '.join(error_target_symbols)}")
-                    print(f"Error Predicted: {' '.join(error_pred_symbols)}")
-                    
-                if phoneme_predictions and perceived_lengths[i] > 0:
-                    phoneme_target = perceived_phoneme_ids[i][:perceived_lengths[i]].cpu().numpy().tolist()
-                    phoneme_pred = phoneme_predictions[i] if i < len(phoneme_predictions) else []
-                    
-                    phoneme_target_symbols = [id_to_phoneme.get(str(t), f"UNK({t})") for t in phoneme_target]
-                    phoneme_pred_symbols = [id_to_phoneme.get(str(p), f"UNK({p})") for p in phoneme_pred]
-                    
-                    print(f"Phoneme Actual:    {' '.join(phoneme_target_symbols)}")
-                    print(f"Phoneme Predicted: {' '.join(phoneme_pred_symbols)}")
-                
-                sample_count += 1
-                if sample_count >= num_samples:
-                    break
-    
-    model.train()
