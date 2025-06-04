@@ -8,14 +8,16 @@ task: both
 
 number_of_epochs: 30
 batch_size: 16
-lr: 0.00005
-lr_wav2vec: 0.000005
-weight_decay: 0.001
+lr: 0.0003
+lr_wav2vec: 0.00001
+weight_decay: 0.01
 phoneme_weight: 1.0
-error_weight: 0.1
+error_weight: 0.5
 
 sample_rate: 16000
 sorting: ascending
+gradient_accumulation: 1
+max_grad_norm: 1.0
 
 wav2vec2_model: facebook/wav2vec2-base
 hidden_dim: 768

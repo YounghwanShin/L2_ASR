@@ -122,13 +122,21 @@ class SimpleMultiTaskBrain(sb.Brain):
                 error_targets, error_target_lens = batch.error_tokens
                 
                 for i, (pred_seq, target_seq, target_len) in enumerate(zip(error_sequence, error_targets, error_target_lens)):
-                    target_seq = target_seq[:target_len]
-                    min_len = min(len(pred_seq), len(target_seq))
-                    
-                    for j in range(min_len):
-                        self.error_total += 1
-                        if pred_seq[j] == target_seq[j]:
-                            self.error_correct += 1
+                    try:
+                        if isinstance(target_len, torch.Tensor):
+                            target_len_val = int(target_len.item())
+                        else:
+                            target_len_val = int(target_len)
+                        
+                        target_seq = target_seq[:target_len_val]
+                        min_len = min(len(pred_seq), len(target_seq))
+                        
+                        for j in range(min_len):
+                            self.error_total += 1
+                            if pred_seq[j] == target_seq[j]:
+                                self.error_correct += 1
+                    except Exception as e:
+                        continue
         
         return total_loss
     
@@ -197,9 +205,18 @@ class SimpleMultiTaskBrain(sb.Brain):
         outputs = self.compute_forward(batch, sb.Stage.TRAIN)
         loss = self.compute_objectives(outputs, batch, sb.Stage.TRAIN)
         
+        if getattr(self.hparams, 'gradient_accumulation', 1) > 1:
+            loss = loss / self.hparams.gradient_accumulation
+        
         loss.backward()
         
         if self.check_gradients():
+            if hasattr(self.hparams, 'max_grad_norm'):
+                torch.nn.utils.clip_grad_norm_(
+                    list(self.modules.wav2vec2.parameters()) + list(self.modules.model.parameters()),
+                    self.hparams.max_grad_norm
+                )
+            
             self.wav2vec_optimizer.step()
             self.adam_optimizer.step()
         
