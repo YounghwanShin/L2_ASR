@@ -35,7 +35,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch}')
     
     for batch_idx, batch_data in enumerate(progress_bar):
-        batch_total_loss = 0.0
+        accumulated_loss = 0.0
         
         if 'error' in batch_data:
             data = batch_data['error']
@@ -47,7 +47,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
             attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
             
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(waveforms, attention_mask=attention_mask, task='error')
                 input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
                 input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
@@ -59,11 +59,9 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     error_target_lengths=error_label_lengths
                 )
                 
-                batch_total_loss += error_loss / gradient_accumulation
+                accumulated_loss += error_loss / gradient_accumulation
                 error_loss_sum += error_loss_dict.get('error_loss', 0.0)
                 error_count += 1
-            
-            scaler.scale(batch_total_loss).backward()
         
         if 'phoneme' in batch_data:
             data = batch_data['phoneme']
@@ -75,7 +73,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
             attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
             
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(waveforms, attention_mask=attention_mask, task='phoneme')
                 input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
                 input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
@@ -87,11 +85,12 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     phoneme_target_lengths=phoneme_label_lengths
                 )
                 
-                batch_total_loss += phoneme_loss / gradient_accumulation
+                accumulated_loss += phoneme_loss / gradient_accumulation
                 phoneme_loss_sum += phoneme_loss_dict.get('phoneme_loss', 0.0)
                 phoneme_count += 1
-            
-            scaler.scale(batch_total_loss).backward()
+        
+        if accumulated_loss > 0:
+            scaler.scale(accumulated_loss).backward()
         
         if (batch_idx + 1) % gradient_accumulation == 0:
             scaler.step(wav2vec_optimizer)
@@ -100,7 +99,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             wav2vec_optimizer.zero_grad()
             main_optimizer.zero_grad()
             
-            total_loss += batch_total_loss.item() * gradient_accumulation
+            total_loss += accumulated_loss.item() * gradient_accumulation
         
         avg_total = total_loss / max(((batch_idx + 1) // gradient_accumulation), 1)
         avg_error = error_loss_sum / max(error_count, 1)
@@ -122,7 +121,7 @@ def validate_epoch(model, dataloader, criterion, device):
         progress_bar = tqdm(dataloader, desc='Validation')
         
         for batch_idx, batch_data in enumerate(progress_bar):
-            batch_total_loss = 0.0
+            accumulated_loss = 0.0
             
             if 'error' in batch_data:
                 data = batch_data['error']
@@ -144,7 +143,7 @@ def validate_epoch(model, dataloader, criterion, device):
                     error_input_lengths=input_lengths,
                     error_target_lengths=error_label_lengths
                 )
-                batch_total_loss += error_loss
+                accumulated_loss += error_loss
             
             if 'phoneme' in batch_data:
                 data = batch_data['phoneme']
@@ -166,9 +165,9 @@ def validate_epoch(model, dataloader, criterion, device):
                     phoneme_input_lengths=input_lengths,
                     phoneme_target_lengths=phoneme_label_lengths
                 )
-                batch_total_loss += phoneme_loss
+                accumulated_loss += phoneme_loss
             
-            total_loss += batch_total_loss.item()
+            total_loss += accumulated_loss.item()
             progress_bar.set_postfix({'Val_Loss': total_loss / (batch_idx + 1)})
     
     return total_loss / len(dataloader)
@@ -246,7 +245,8 @@ def main():
         pretrained_model_name=config.pretrained_model,
         hidden_dim=config.hidden_dim,
         num_phonemes=config.num_phonemes,
-        num_error_types=config.num_error_types
+        num_error_types=config.num_error_types,
+        dropout=config.dropout
     )
     
     if torch.cuda.device_count() > 1:
@@ -271,7 +271,7 @@ def main():
     wav2vec_optimizer = optim.AdamW(wav2vec_params, lr=config.wav2vec_lr)
     main_optimizer = optim.AdamW(main_params, lr=config.main_lr)
     
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
     
     scheduler = ReduceLROnPlateau(main_optimizer, mode='min', factor=config.scheduler_factor, patience=config.scheduler_patience)
     

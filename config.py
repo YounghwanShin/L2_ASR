@@ -11,7 +11,7 @@ class Config:
     phoneme_map = f'{data_folder}/phoneme_to_id.json'
     
     pretrained_model = 'facebook/wav2vec2-large-xlsr-53'
-    hidden_dim = 512
+    hidden_dim = 1024
     num_phonemes = 42
     num_error_types = 3
     

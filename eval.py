@@ -72,7 +72,8 @@ def main():
         pretrained_model_name=config.pretrained_model,
         hidden_dim=config.hidden_dim,
         num_phonemes=config.num_phonemes,
-        num_error_types=config.num_error_types
+        num_error_types=config.num_error_types,
+        dropout=config.dropout
     )
     
     state_dict = load_model_checkpoint(args.model_checkpoint, config.device)
