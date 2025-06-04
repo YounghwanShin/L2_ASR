@@ -69,12 +69,12 @@ def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error
             waveforms = waveforms.to(device)
             audio_lengths = audio_lengths.to(device)
             
-            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            max_len = input_lengths.max().item()
+            attention_mask = torch.arange(max_len).expand(waveforms.shape[0], max_len).to(device)
+            attention_mask = (attention_mask < input_lengths.unsqueeze(1))
             
             outputs = model(waveforms, attention_mask, task='both')
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
             
             error_logits = outputs['error_logits']
             phoneme_logits = outputs['phoneme_logits']
@@ -133,12 +133,13 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             error_labels = data['labels'].to(device)
             error_label_lengths = data['label_lengths'].to(device)
             
-            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            max_len = input_lengths.max().item()
+            attention_mask = torch.arange(max_len).expand(waveforms.shape[0], max_len).to(device)
+            attention_mask = (attention_mask < input_lengths.unsqueeze(1))
             
             with torch.amp.autocast('cuda'):
                 outputs = model(waveforms, attention_mask=attention_mask, task='error')
-                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
                 input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
                 
                 error_loss, error_loss_dict = criterion(
@@ -159,12 +160,13 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             phoneme_labels = data['labels'].to(device)
             phoneme_label_lengths = data['label_lengths'].to(device)
             
-            attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-            attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            max_len = input_lengths.max().item()
+            attention_mask = torch.arange(max_len).expand(waveforms.shape[0], max_len).to(device)
+            attention_mask = (attention_mask < input_lengths.unsqueeze(1))
             
             with torch.amp.autocast('cuda'):
                 outputs = model(waveforms, attention_mask=attention_mask, task='phoneme')
-                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
                 input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
                 
                 phoneme_loss, phoneme_loss_dict = criterion(
@@ -219,11 +221,12 @@ def validate_epoch(model, dataloader, criterion, device):
                 error_labels = data['labels'].to(device)
                 error_label_lengths = data['label_lengths'].to(device)
                 
-                attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-                attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
+                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+                max_len = input_lengths.max().item()
+                attention_mask = torch.arange(max_len).expand(waveforms.shape[0], max_len).to(device)
+                attention_mask = (attention_mask < input_lengths.unsqueeze(1))
                 
                 outputs = model(waveforms, attention_mask=attention_mask, task='error')
-                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
                 input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
                 
                 error_loss, _ = criterion(
@@ -241,11 +244,12 @@ def validate_epoch(model, dataloader, criterion, device):
                 phoneme_labels = data['labels'].to(device)
                 phoneme_label_lengths = data['label_lengths'].to(device)
                 
-                attention_mask = torch.arange(waveforms.shape[1]).expand(waveforms.shape[0], -1).to(device)
-                attention_mask = (attention_mask < audio_lengths.unsqueeze(1)).float()
+                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+                max_len = input_lengths.max().item()
+                attention_mask = torch.arange(max_len).expand(waveforms.shape[0], max_len).to(device)
+                attention_mask = (attention_mask < input_lengths.unsqueeze(1))
                 
                 outputs = model(waveforms, attention_mask=attention_mask, task='phoneme')
-                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
                 input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
                 
                 phoneme_loss, _ = criterion(
