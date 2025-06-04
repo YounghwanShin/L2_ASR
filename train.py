@@ -13,11 +13,46 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from config import Config
-from model import SimpleMultiTaskModel, MultiTaskLoss
 from data_prepare import MultiTaskDataset, EvaluationDataset, multitask_collate_fn, evaluation_collate_fn
 from evaluate import evaluate_error_detection, evaluate_phoneme_recognition, get_wav2vec2_output_lengths_official, decode_ctc
 
 logger = logging.getLogger(__name__)
+
+def get_model_class(model_type):
+    if model_type == 'simple':
+        from model import SimpleMultiTaskModel, MultiTaskLoss
+        return SimpleMultiTaskModel, MultiTaskLoss
+    elif model_type == 'transformer':
+        from model_transformer import TransformerMultiTaskModel, MultiTaskLoss
+        return TransformerMultiTaskModel, MultiTaskLoss
+    elif model_type == 'cross':
+        from model_cross import CrossAttentionMultiTaskModel, MultiTaskLoss
+        return CrossAttentionMultiTaskModel, MultiTaskLoss
+    elif model_type == 'hierarchical':
+        from model_hierarchical import HierarchicalMultiTaskModel, MultiTaskLoss
+        return HierarchicalMultiTaskModel, MultiTaskLoss
+    else:
+        raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer, cross, hierarchical")
+
+def setup_experiment_dirs(config):
+    os.makedirs(config.checkpoint_dir, exist_ok=True)
+    os.makedirs(config.log_dir, exist_ok=True)
+    os.makedirs(config.result_dir, exist_ok=True)
+    
+    config_path = os.path.join(config.experiment_dir, 'config.json')
+    config.save_config(config_path)
+    
+    log_file = os.path.join(config.log_dir, 'training.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%m/%d/%Y %H:%M:%S',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
 
 def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error_type_names, num_samples=3):
     model.eval()
@@ -249,6 +284,7 @@ def save_checkpoint(model, wav2vec_opt, main_opt, scheduler, epoch, val_loss, tr
     if scheduler is not None:
         checkpoint['scheduler_state_dict'] = scheduler.state_dict()
     
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(checkpoint, path)
 
 def main():
@@ -282,29 +318,23 @@ def main():
                 attr_type = type(getattr(config, key))
                 setattr(config, key, attr_type(value))
     
+    config.__post_init__()
+    
     seed_everything(config.seed)
-    
-    os.makedirs(config.output_dir, exist_ok=True)
-    os.makedirs(config.result_dir, exist_ok=True)
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%m/%d/%Y %H:%M:%S'
-    )
-    logger = logging.getLogger(__name__)
+    setup_experiment_dirs(config)
     
     with open(config.phoneme_map, 'r') as f:
         phoneme_to_id = json.load(f)
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
-    model = SimpleMultiTaskModel(
+    model_class, loss_class = get_model_class(config.model_type)
+    
+    model = model_class(
         pretrained_model_name=config.pretrained_model,
-        hidden_dim=config.hidden_dim,
         num_phonemes=config.num_phonemes,
         num_error_types=config.num_error_types,
-        dropout=config.dropout
+        **config.get_model_config()
     )
     
     if torch.cuda.device_count() > 1:
@@ -312,7 +342,7 @@ def main():
     
     model = model.to(config.device)
     
-    criterion = MultiTaskLoss(
+    criterion = loss_class(
         error_weight=config.error_weight,
         phoneme_weight=config.phoneme_weight
     )
@@ -372,6 +402,8 @@ def main():
     best_error_accuracy = 0.0
     best_phoneme_accuracy = 0.0
     
+    logger.info(f"Starting training with model type: {config.model_type}")
+    logger.info(f"Experiment: {config.experiment_name}")
     logger.info(f"Starting training for {config.num_epochs} epochs")
     
     for epoch in range(1, config.num_epochs + 1):
@@ -436,6 +468,16 @@ def main():
             save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
                           epoch, val_loss, train_loss, metrics, model_path)
             logger.info(f"New best validation loss: {best_val_loss:.4f}")
+    
+    final_metrics = {
+        'best_error_accuracy': best_error_accuracy,
+        'best_phoneme_accuracy': best_phoneme_accuracy,
+        'best_val_loss': best_val_loss
+    }
+    
+    metrics_path = os.path.join(config.result_dir, 'final_metrics.json')
+    with open(metrics_path, 'w') as f:
+        json.dump(final_metrics, f, indent=2)
     
     logger.info("Training completed!")
     logger.info(f"Best Error Accuracy: {best_error_accuracy:.4f}")

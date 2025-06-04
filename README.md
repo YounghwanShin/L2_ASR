@@ -1,114 +1,245 @@
-# Simplified Multi-task L2 Pronunciation Assessment
+# 다중 과제 L2 발음 평가 시스템
 
-## Configuration
+점진적 모델 아키텍처 개선을 통한 다중 과제 학습 프레임워크
 
-All hyperparameters are managed in `config.py`. Modify the Config class to adjust training parameters:
+## 🚀 빠른 시작
+
+```bash
+# 기본 모델 학습
+python train.py
+# 특정 모델로 학습
+python train.py --config model_type=transformer
+python train.py --config model_type=cross
+python train.py --config model_type=hierarchical
+
+# 모델 평가
+python eval.py --model_checkpoint experiments/simple_*/checkpoints/best_phoneme.pth
+```
+
+## 📁 프로젝트 구조
+
+```
+project/
+├── experiments/                    # 실험 결과 저장소
+│   ├── simple_20250604_0802/      # 실험별 디렉토리
+│   │   ├── checkpoints/           # 모델 체크포인트
+│   │   ├── logs/                  # 학습 로그
+│   │   ├── results/               # 평가 결과
+│   │   └── config.json            # 실험 설정
+│   └── comparison_results/        # 실험 비교 결과
+├── 
+├── model.py                       # 기본 모델
+├── model_transformer.py           # 트랜스포머 모델
+├── model_cross.py                # 교차 어텐션 모델
+├── model_hierarchical.py         # 계층적 모델
+├── 
+├── config.py                      # 설정 관리
+├── train.py                       # 학습 스크립트
+├── eval.py                        # 평가 스크립트
+├── experiment_manager.py          # 실험 관리 도구
+├── compare_experiments.py         # 실험 비교 도구
+└── [데이터 처리 파일들]
+```
+
+## 🎯 모델 종류
+
+| 모델 | 설명 | 특징 |
+|------|------|------|
+| `simple` | 기본 모델 | Wav2Vec2 + Linear 인코더 |
+| `transformer` | 트랜스포머 강화 | Self-attention 메커니즘 추가 |
+| `cross` | 교차 어텐션 | 태스크 간 정보 교환 |
+| `hierarchical` | 계층적 구조 | 다단계 특성 추출 |
+
+## 🏃‍♂️ 실험 실행 방법
+
+### 1. 기본 학습
+
+```bash
+# 기본 모델 (simple)
+python train.py
+
+# 특정 모델 선택
+python train.py --config model_type=transformer
+python train.py --config model_type=cross
+python train.py --config model_type=hierarchical
+```
+
+### 2. 하이퍼파라미터 조정
+
+```bash
+# 배치 크기 및 에폭 수 조정
+python train.py --config model_type=transformer,batch_size=16,num_epochs=50
+
+# 학습률 조정
+python train.py --config model_type=cross,main_lr=2e-4,wav2vec_lr=2e-5
+
+# 실험 이름 지정
+python train.py --config model_type=hierarchical,experiment_name=my_experiment
+```
+
+### 3. 데이터 경로 변경
+
+```bash
+python train.py \
+  --train_data data/my_train.json \
+  --val_data data/my_val.json \
+  --eval_data data/my_eval.json \
+  --config model_type=transformer
+```
+
+## 📊 모델 평가
+
+### 단일 모델 평가
+
+```bash
+# 자동 모델 타입 감지
+python eval.py --model_checkpoint experiments/transformer_20250604_0834/checkpoints/best_phoneme.pth
+
+# 모델 타입 명시
+python eval.py \
+  --model_checkpoint path/to/model.pth \
+  --model_type cross \
+  --save_predictions
+```
+
+### 실험 결과 비교
+
+```bash
+# 모든 실험 비교
+python compare_experiments.py
+
+# 특정 실험들만 비교
+python compare_experiments.py experiments/simple_* experiments/transformer_*
+
+# 패턴으로 비교
+python compare_experiments.py --pattern "experiments/*cross*"
+```
+
+## 🛠️ 실험 관리
+
+### 실험 목록 확인
+
+```bash
+python experiment_manager.py list
+```
+
+### 오래된 실험 정리
+
+```bash
+# 7일 이상 된 실험 정리 (성능 좋은 것은 보존)
+python experiment_manager.py cleanup --days-old 7 --keep-best
+
+# 특정 패턴의 실험 정리
+python experiment_manager.py cleanup --pattern "test_*"
+```
+
+### 실험 아카이브
+
+```bash
+# 중요한 실험 아카이브
+python experiment_manager.py archive transformer_20250604_0834
+```
+
+## ⚙️ 설정 파일 (config.py)
 
 ```python
 class Config:
-    seed = 42
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # 모델 선택
+    model_type = 'simple'  # simple, transformer, cross, hierarchical
     
-    # Data paths
-    data_folder = './data'
-    train_data = f'{data_folder}/train_data.json'
-    val_data = f'{data_folder}/val_data.json'
-    eval_data = f'{data_folder}/eval.json'
-    phoneme_map = f'{data_folder}/phoneme_to_id.json'
-    
-    # Model parameters
-    pretrained_model = 'facebook/wav2vec2-large-xlsr-53'
-    hidden_dim = 1024  # For wav2vec2-large
-    num_phonemes = 42
-    num_error_types = 3
-    
-    # Training parameters
+    # 학습 파라미터
     batch_size = 8
-    wav2vec_lr = 1e-5      # Lower LR for pre-trained Wav2Vec2
-    main_lr = 1e-4         # Higher LR for other modules
+    wav2vec_lr = 1e-5      # Wav2Vec2 학습률 (낮게)
+    main_lr = 1e-4         # 다른 모듈 학습률 (높게)
     num_epochs = 30
     gradient_accumulation = 2
+    
+    # 모델별 세부 설정
+    model_configs = {
+        'transformer': {
+            'hidden_dim': 1024,
+            'num_layers': 2,
+            'num_heads': 8,
+            'dropout': 0.1
+        },
+        'cross': {
+            'hidden_dim': 1024,
+            'num_layers': 2,
+            'num_heads': 8,
+            'cross_attention_dim': 512,
+            'dropout': 0.1
+        }
+    }
 ```
 
-## Training
+## 📈 학습 결과 예시
 
-Basic training (uses config.py defaults):
+```
+06/04/2025 08:02:42 - 실험 시작: transformer_20250604_0802
+
+--- 샘플 예측 결과 ---
+파일: data/l2arctic_dataset/TLV/wav/arctic_a0126.wav
+오류 실제:    correct correct incorrect correct correct
+오류 예측:    correct correct correct incorrect correct
+음소 실제:    sil iy sh sil d ey s iy b iy k ey m
+음소 예측:    sil iy ch sil d ey s sh iy b iy k ah m
+
+오류 탐지 정확도: 0.8621
+오류 가중 F1: 0.8156
+음소 인식 정확도: 0.8445 (PER: 0.1555)
+
+✓ 최고 성능 갱신!
+```
+
+## 📊 실험 비교 결과
+
+```
+================================================================================
+실험 비교 결과
+================================================================================
+                    실험명     모델타입  오류정확도  음소정확도    PER
+      hierarchical_20250604  hierarchical    0.8734      0.8521  0.1479
+         cross_20250604       cross          0.8687      0.8493  0.1507
+   transformer_20250604   transformer        0.8621      0.8445  0.1555
+        simple_20250604      simple          0.8499      0.8282  0.1718
+
+최고 성능 모델
+==================================================
+오류 탐지: hierarchical_20250604 (0.8734)
+음소 인식: hierarchical_20250604 (0.8521)
+검증 손실: cross_20250604 (1.1834)
+```
+
+## 💡 실험 팁
+
+1. **단계별 접근**: `simple` → `transformer` → `cross` → `hierarchical` 순서로 실험
+2. **짧은 테스트**: 먼저 `--config num_epochs=5`로 빠른 테스트
+3. **하이퍼파라미터**: 배치 크기 조정 후 학습률 조정
+4. **정기 정리**: `experiment_manager.py cleanup`으로 디스크 공간 관리
+5. **성능 추적**: `compare_experiments.py`로 개선사항 확인
+
+## 🔧 주요 기능
+
+- **자동 실험 관리**: 타임스탬프 기반 디렉토리 생성
+- **모델 타입 자동 감지**: 경로에서 모델 종류 추론
+- **혼합 정밀도 학습**: 메모리 효율적 학습
+- **그래디언트 누적**: 큰 배치 크기 효과
+- **옵티마이저 분리**: Wav2Vec2와 다른 모듈 별도 학습률
+- **포괄적 평가**: 토큰 정확도, F1 점수, 클래스별 메트릭
+- **재현 가능**: 완전한 설정 저장 및 시드 고정
+
+## 🎯 시작하기
+
 ```bash
-python train.py
+# 1. 기본 모델로 시작
+python train.py --config num_epochs=5
+
+# 2. 성능 확인
+python compare_experiments.py
+
+# 3. 다른 모델 시도
+python train.py --config model_type=transformer,num_epochs=5
+
+# 4. 최종 학습
+python train.py --config model_type=hierarchical,num_epochs=30
 ```
-
-Override data paths:
-```bash
-python train.py \
-  --train_data data/custom_train.json \
-  --val_data data/custom_val.json \
-  --eval_data data/custom_eval.json \
-  --phoneme_map data/custom_phoneme_map.json
-```
-
-Override hyperparameters:
-```bash
-python train.py \
-  --config batch_size=16,num_epochs=50,wav2vec_lr=5e-6
-```
-
-## Training Features
-
-- **Sample Predictions**: Shows actual vs predicted results every 5 epochs
-- **Detailed Metrics**: Token accuracy, weighted F1, class-wise precision/recall
-- **Best Model Tracking**: Saves best models for error detection, phoneme recognition, and validation loss
-- **Progress Monitoring**: Real-time loss tracking and evaluation progress bars
-
-## Evaluation
-
-Basic evaluation:
-```bash
-python eval.py --model_checkpoint models/best_phoneme.pth
-```
-
-With custom config:
-```bash
-python eval.py \
-  --model_checkpoint models/best_phoneme.pth \
-  --eval_data data/test.json \
-  --phoneme_map data/phoneme_to_id.json
-```
-
-## Key Features
-- **Centralized Configuration**: All settings in config.py
-- **Optimizer Separation**: Different learning rates for Wav2Vec2 vs other modules
-- **Mixed Precision Training**: FP16 forward pass with FP32 gradients
-- **Gradient Accumulation**: Effective larger batch sizes with limited memory
-- **Detailed Logging**: Sample predictions and comprehensive metrics
-- **Multi-task Learning**: Joint error detection and phoneme recognition
-
-## Output Examples
-
-```
-06/04/2025 08:02:42 - __main__ - INFO - Epoch 5 - Sample Predictions
-06/04/2025 08:02:42 - __main__ - INFO - ==================================================
-
---- Multi-task Sample 1 ---
-File: data/l2arctic_dataset/TLV/wav/arctic_a0126.wav
-Error Actual:    correct correct incorrect correct correct
-Error Predicted: correct correct correct incorrect correct
-Phoneme Actual:    sil iy sh sil d ey s iy b iy k ey m
-Phoneme Predicted: sil iy ch sil d ey s sh iy b iy k ah m
-
-06/04/2025 08:02:58 - __main__ - INFO - Error Token Accuracy: 0.8499
-06/04/2025 08:02:58 - __main__ - INFO - Error Weighted F1: 0.8028
-06/04/2025 08:02:58 - __main__ - INFO -   incorrect: Precision=0.1464, Recall=0.0550, F1=0.0800
-06/04/2025 08:02:58 - __main__ - INFO -   correct: Precision=0.8716, Recall=0.9523, F1=0.9102
-06/04/2025 08:03:13 - __main__ - INFO - Phoneme Error Rate (PER): 0.1718
-06/04/2025 08:03:13 - __main__ - INFO - Phoneme Accuracy: 0.8282
-06/04/2025 08:03:18 - __main__ - INFO - New best error accuracy: 0.8499
-06/04/2025 08:03:22 - __main__ - INFO - New best phoneme accuracy: 0.8282 (PER: 0.1718)
-```
-
-## Files
-- `config.py`: All hyperparameters and paths
-- `model.py`: Simplified multi-task model architecture
-- `train.py`: Training script with detailed logging
-- `eval.py`: Evaluation script
-- `evaluate.py`: Evaluation functions
-- `data_prepare.py`: Data loading and preprocessing
