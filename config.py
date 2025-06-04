@@ -47,10 +47,10 @@ class Config:
         }
     }
     
-    batch_size = 8
-    eval_batch_size = 8
+    batch_size = 32
+    eval_batch_size = 32
     wav2vec_lr = 1e-5
-    main_lr = 1e-4
+    main_lr = 3e-4
     num_epochs = 30
     gradient_accumulation = 2
     

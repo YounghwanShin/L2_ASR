@@ -7,7 +7,7 @@
 ```bash
 # 기본 모델 학습
 python train.py
-# 특정 모델로 학습
+# 특정 모델로 학습 - 이거 디버깅 해야해요... 승범님 죄송합니다.. ㅠㅠ
 python train.py --config model_type=transformer
 python train.py --config model_type=cross
 python train.py --config model_type=hierarchical
