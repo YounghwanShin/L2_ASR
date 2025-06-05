@@ -18,6 +18,18 @@ from phoneme_evaluate import evaluate_phoneme_recognition, get_wav2vec2_output_l
 
 logger = logging.getLogger(__name__)
 
+def make_attn_mask(wavs, wav_lens):
+    abs_lens = (wav_lens * wavs.shape[1]).long()
+    attn_mask = wavs.new(wavs.shape).zero_().long()
+    for i in range(len(abs_lens)):
+        attn_mask[i, :abs_lens[i]] = 1
+    return attn_mask
+
+def enable_wav2vec2_specaug(model, enable=True):
+    actual_model = model.module if hasattr(model, 'module') else model
+    if hasattr(actual_model.encoder.wav2vec2, 'config'):
+        actual_model.encoder.wav2vec2.config.apply_spec_augment = enable
+
 def get_phoneme_model_class(model_type):
     if model_type == 'simple':
         from models.phoneme_model import SimplePhonemeModel, PhonemeLoss
@@ -50,6 +62,7 @@ def setup_experiment_dirs(config):
 
 def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, num_samples=3):
     model.eval()
+    enable_wav2vec2_specaug(model, False)
     samples_shown = 0
     
     with torch.no_grad():
@@ -64,9 +77,8 @@ def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, num_s
             audio_lengths = audio_lengths.to(device)
             
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            max_len = input_lengths.max().item()
-            attention_mask = torch.arange(max_len).expand(waveforms.shape[0], max_len).to(device)
-            attention_mask = (attention_mask < input_lengths.unsqueeze(1))
+            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
+            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
             outputs = model(waveforms, attention_mask)
             phoneme_logits = outputs['phoneme_logits']
@@ -95,8 +107,10 @@ def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, num_s
                 break
 
 def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer, 
-                device, epoch, scaler, gradient_accumulation=1):
+                device, epoch, scaler, gradient_accumulation=1, config=None):
     model.train()
+    if config and config.wav2vec2_specaug:
+        enable_wav2vec2_specaug(model, True)
     
     total_loss = 0.0
     phoneme_loss_sum = 0.0
@@ -114,9 +128,8 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
         phoneme_label_lengths = batch_data['phoneme_lengths'].to(device)
         
         input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-        max_len = input_lengths.max().item()
-        attention_mask = torch.arange(max_len).expand(waveforms.shape[0], max_len).to(device)
-        attention_mask = (attention_mask < input_lengths.unsqueeze(1))
+        wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
+        attention_mask = make_attn_mask(waveforms, wav_lens_norm)
         
         with torch.amp.autocast('cuda'):
             outputs = model(waveforms, attention_mask=attention_mask)
@@ -160,6 +173,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
 
 def validate_epoch(model, dataloader, criterion, device):
     model.eval()
+    enable_wav2vec2_specaug(model, False)
     total_loss = 0.0
     
     with torch.no_grad():
@@ -175,9 +189,8 @@ def validate_epoch(model, dataloader, criterion, device):
             phoneme_label_lengths = batch_data['phoneme_lengths'].to(device)
             
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            max_len = input_lengths.max().item()
-            attention_mask = torch.arange(max_len).expand(waveforms.shape[0], max_len).to(device)
-            attention_mask = (attention_mask < input_lengths.unsqueeze(1))
+            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
+            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
             outputs = model(waveforms, attention_mask=attention_mask)
             input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
@@ -346,11 +359,12 @@ def main():
     logger.info(f"Starting phoneme-only training with model type: {config.model_type}")
     logger.info(f"Experiment: {config.experiment_name}")
     logger.info(f"Starting training for {config.num_epochs} epochs")
+    logger.info(f"SpecAugment enabled: {config.wav2vec2_specaug}")
     
     for epoch in range(1, config.num_epochs + 1):
         train_loss = train_epoch(
             model, train_dataloader, criterion, wav2vec_optimizer, main_optimizer,
-            config.device, epoch, scaler, config.gradient_accumulation
+            config.device, epoch, scaler, config.gradient_accumulation, config
         )
         
         val_loss = validate_epoch(model, val_dataloader, criterion, config.device)
@@ -371,6 +385,8 @@ def main():
         
         logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
         logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
+        if 'mpd_f1' in phoneme_recognition_results:
+            logger.info(f"MPD F1 Score: {phoneme_recognition_results['mpd_f1']:.4f}")
         
         current_phoneme_accuracy = 1.0 - phoneme_recognition_results['per']
         
@@ -378,6 +394,9 @@ def main():
             'phoneme_accuracy': current_phoneme_accuracy,
             'per': phoneme_recognition_results['per']
         }
+        
+        if 'mpd_f1' in phoneme_recognition_results:
+            metrics['mpd_f1'] = phoneme_recognition_results['mpd_f1']
         
         if current_phoneme_accuracy > best_phoneme_accuracy:
             best_phoneme_accuracy = current_phoneme_accuracy

@@ -33,6 +33,11 @@ def infer_model_type_from_path(checkpoint_path):
             return 'transformer'
     return 'simple'
 
+def enable_wav2vec2_specaug(model, enable=True):
+    actual_model = model.module if hasattr(model, 'module') else model
+    if hasattr(actual_model.encoder.wav2vec2, 'config'):
+        actual_model.encoder.wav2vec2.config.apply_spec_augment = enable
+
 def main():
     parser = argparse.ArgumentParser(description='Evaluate Phoneme-only L2 Pronunciation Model')
     parser.add_argument('--model_checkpoint', type=str, required=True, help='Path to model checkpoint')
@@ -90,6 +95,7 @@ def main():
     
     model = model.to(device)
     model.eval()
+    enable_wav2vec2_specaug(model, False)
     
     eval_dataset = PhonemeEvaluationDataset(
         config.eval_data, phoneme_to_id,
@@ -112,6 +118,8 @@ def main():
     
     logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
     logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
+    if 'mpd_f1' in phoneme_recognition_results:
+        logger.info(f"MPD F1 Score: {phoneme_recognition_results['mpd_f1']:.4f}")
     
     final_results = {
         'model_type': f"phoneme_{model_type}",
@@ -121,6 +129,9 @@ def main():
             'accuracy': 1.0 - phoneme_recognition_results['per']
         }
     }
+    
+    if 'mpd_f1' in phoneme_recognition_results:
+        final_results['phoneme_recognition']['mpd_f1'] = phoneme_recognition_results['mpd_f1']
     
     if args.save_predictions:
         output_dir = os.path.dirname(args.model_checkpoint)

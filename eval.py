@@ -130,6 +130,7 @@ def main():
     
     logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
     logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
+    logger.info(f"MPD F1 Score: {phoneme_recognition_results['mpd_f1']:.4f}")
     
     final_results = {
         'model_type': model_type,
@@ -141,7 +142,8 @@ def main():
         },
         'phoneme_recognition': {
             'per': phoneme_recognition_results['per'],
-            'accuracy': 1.0 - phoneme_recognition_results['per']
+            'accuracy': 1.0 - phoneme_recognition_results['per'],
+            'mpd_f1': phoneme_recognition_results['mpd_f1']
         }
     }
     

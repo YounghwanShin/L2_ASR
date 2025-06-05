@@ -18,8 +18,8 @@ class Config:
     
     model_type = 'simple'
     
-    batch_size = 32
-    eval_batch_size = 32
+    batch_size = 16
+    eval_batch_size = 16
     num_epochs = 40
     gradient_accumulation = 2
     
@@ -34,6 +34,8 @@ class Config:
     save_best_error = True
     save_best_phoneme = True
     save_best_loss = True
+    
+    wav2vec2_specaug = True
     
     seed = 42
     
