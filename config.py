@@ -20,7 +20,7 @@ class Config:
     
     batch_size = 32
     eval_batch_size = 32
-    num_epochs = 30
+    num_epochs = 40
     gradient_accumulation = 2
     
     main_lr = 3e-4
