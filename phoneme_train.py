@@ -14,7 +14,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from config import Config
 from phoneme_data_prepare import PhonemeDataset, PhonemeEvaluationDataset, phoneme_collate_fn, phoneme_evaluation_collate_fn
-from evaluate import evaluate_phoneme_recognition, get_wav2vec2_output_lengths_official, decode_ctc
+from phoneme_evaluate import evaluate_phoneme_recognition, get_wav2vec2_output_lengths_official, decode_ctc
 
 logger = logging.getLogger(__name__)
 

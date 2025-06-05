@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 from config import Config
 from phoneme_data_prepare import PhonemeEvaluationDataset, phoneme_evaluation_collate_fn
-from evaluate import evaluate_phoneme_recognition
+from phoneme_evaluate import evaluate_phoneme_recognition
 
 def get_phoneme_model_class(model_type):
     if model_type == 'simple':
