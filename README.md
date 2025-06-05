@@ -12,7 +12,7 @@ This repository contains a comprehensive system for evaluating second language p
 # Multi-task model training (alternating mode - default)
 python train.py
 
-# Multi-task model training (simultaneous mode)
+# Multi-task model training (simultaneous mode) 실험 1번
 python train.py --config simultaneous_training=True
 
 # Specific multi-task model training
@@ -20,10 +20,10 @@ python train.py --config model_type=transformer
 python train.py --config model_type=cross
 python train.py --config model_type=hierarchical
 
-# Simultaneous training with specific model
+# Simultaneous training with specific model 실험 2번
 python train.py --config model_type=transformer,simultaneous_training=True
 
-# Phoneme-only model training
+# Phoneme-only model training 실험 3, 4번
 python phoneme_train.py --config model_type=simple
 python phoneme_train.py --config model_type=transformer
 
