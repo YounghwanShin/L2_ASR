@@ -24,10 +24,7 @@ class LowLevelEncoder(nn.Module):
         x = self.input_projection(x)
         x = self.dropout(x)
         
-        if attention_mask is not None:
-            attention_mask = ~attention_mask.bool()
-        
-        x = self.transformer(x, src_key_padding_mask=attention_mask)
+        x = self.transformer(x)
         return self.layer_norm(x)
 
 class MidLevelEncoder(nn.Module):
@@ -51,10 +48,7 @@ class MidLevelEncoder(nn.Module):
         x = self.projection(x)
         x = self.dropout(x)
         
-        if attention_mask is not None:
-            attention_mask = ~attention_mask.bool()
-        
-        x = self.transformer(x, src_key_padding_mask=attention_mask)
+        x = self.transformer(x)
         return self.layer_norm(x)
 
 class AdaptiveGating(nn.Module):
@@ -93,10 +87,7 @@ class AttentionHead(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x, attention_mask=None):
-        if attention_mask is not None:
-            attention_mask = ~attention_mask.bool()
-        
-        attended, _ = self.attention(x, x, x, key_padding_mask=attention_mask)
+        attended, _ = self.attention(x, x, x)
         x = self.layer_norm(x + self.dropout(attended))
         
         x = self.pre_classifier(x)

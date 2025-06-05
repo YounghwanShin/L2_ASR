@@ -24,10 +24,7 @@ class TaskSpecificEncoder(nn.Module):
         x = self.input_projection(x)
         x = self.dropout(x)
         
-        if attention_mask is not None:
-            attention_mask = ~attention_mask.bool()
-        
-        x = self.transformer(x, src_key_padding_mask=attention_mask)
+        x = self.transformer(x)
         return self.layer_norm(x)
 
 class CrossAttentionModule(nn.Module):
@@ -55,13 +52,7 @@ class CrossAttentionModule(nn.Module):
     def forward(self, query, key_value, attention_mask=None):
         residual = query
         
-        if attention_mask is not None:
-            attention_mask = ~attention_mask.bool()
-        
-        cross_out, _ = self.cross_attention(
-            query, key_value, key_value, 
-            key_padding_mask=attention_mask
-        )
+        cross_out, _ = self.cross_attention(query, key_value, key_value)
         
         cross_projected = self.cross_projection(cross_out)
         cross_projected = self.dropout(cross_projected)

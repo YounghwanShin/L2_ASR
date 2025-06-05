@@ -24,10 +24,7 @@ class TransformerEncoder(nn.Module):
         x = self.input_projection(x)
         x = self.dropout(x)
         
-        if attention_mask is not None:
-            attention_mask = ~attention_mask.bool()
-        
-        x = self.transformer(x, src_key_padding_mask=attention_mask)
+        x = self.transformer(x)
         return self.layer_norm(x)
 
 class ErrorDetectionHead(nn.Module):
