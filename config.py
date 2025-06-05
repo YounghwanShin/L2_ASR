@@ -10,7 +10,7 @@ class Config:
     max_length = 320000
     
     num_phonemes = 42
-    num_error_classes = 3
+    num_error_types = 3
     
     task_mode = 'both'
     error_task_ratio = 0.5
@@ -18,15 +18,22 @@ class Config:
     
     model_type = 'simple'
     
-    batch_size = 8
-    eval_batch_size = 8
+    batch_size = 32
+    eval_batch_size = 32
     num_epochs = 30
     gradient_accumulation = 2
     
-    main_lr = 1e-4
+    main_lr = 3e-4
     wav2vec_lr = 1e-5
     scheduler_factor = 0.5
     scheduler_patience = 3
+    
+    error_weight = 1.0
+    phoneme_weight = 1.0
+    
+    save_best_error = True
+    save_best_phoneme = True
+    save_best_loss = True
     
     seed = 42
     
@@ -42,7 +49,7 @@ class Config:
     
     model_configs = {
         'simple': {
-            'hidden_dim': 512,
+            'hidden_dim': 1024,
             'dropout': 0.1
         },
         'transformer': {

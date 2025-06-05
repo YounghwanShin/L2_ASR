@@ -90,6 +90,9 @@ def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, num_s
                 samples_shown += 1
                 if samples_shown >= num_samples:
                     break
+            
+            if samples_shown >= num_samples:
+                break
 
 def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer, 
                 device, epoch, scaler, gradient_accumulation=1):
@@ -141,6 +144,12 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             
             total_loss += accumulated_loss.item() * gradient_accumulation
         
+        del waveforms, audio_lengths, phoneme_labels, phoneme_label_lengths
+        del attention_mask, outputs, phoneme_loss, accumulated_loss
+        
+        if (batch_idx + 1) % 100 == 0:
+            torch.cuda.empty_cache()
+        
         avg_total = total_loss / max(((batch_idx + 1) // gradient_accumulation), 1)
         avg_phoneme = phoneme_loss_sum / max(phoneme_count, 1)
         
@@ -149,6 +158,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             'Phoneme': f'{avg_phoneme:.4f}'
         })
     
+    torch.cuda.empty_cache()
     return total_loss / (len(dataloader) // gradient_accumulation)
 
 def validate_epoch(model, dataloader, criterion, device):
@@ -183,8 +193,13 @@ def validate_epoch(model, dataloader, criterion, device):
             )
             
             total_loss += phoneme_loss.item()
+            
+            del waveforms, audio_lengths, phoneme_labels, phoneme_label_lengths
+            del attention_mask, outputs, phoneme_loss
+            
             progress_bar.set_postfix({'Val_Loss': total_loss / (batch_idx + 1)})
     
+    torch.cuda.empty_cache()
     return total_loss / len(dataloader)
 
 def seed_everything(seed):
@@ -223,6 +238,9 @@ def main():
     parser.add_argument('--output_dir', type=str, help='Override output directory')
     
     args = parser.parse_args()
+    
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    torch.cuda.empty_cache()
     
     config = Config()
     
@@ -277,6 +295,7 @@ def main():
         model = nn.DataParallel(model)
     
     model = model.to(config.device)
+    torch.cuda.empty_cache()
     
     criterion = loss_class()
     
@@ -350,9 +369,11 @@ def main():
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
             show_sample_predictions(model, eval_dataloader, config.device, id_to_phoneme)
+            torch.cuda.empty_cache()
         
         logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
         phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, config.device, id_to_phoneme)
+        torch.cuda.empty_cache()
         
         logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
         logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
@@ -377,6 +398,8 @@ def main():
             save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
                           epoch, val_loss, train_loss, metrics, model_path)
             logger.info(f"New best validation loss: {best_val_loss:.4f}")
+        
+        torch.cuda.empty_cache()
     
     final_metrics = {
         'best_phoneme_accuracy': best_phoneme_accuracy,
