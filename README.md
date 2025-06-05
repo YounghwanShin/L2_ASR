@@ -4,21 +4,26 @@ A multi-task learning framework for second language pronunciation assessment wit
 
 ## Overview
 
-This repository contains a comprehensive system for evaluating second language pronunciation through simultaneous error detection and phoneme recognition. The framework implements four distinct neural architectures with increasing complexity to establish baseline performance and explore architectural improvements.
+This repository contains a comprehensive system for evaluating second language pronunciation through simultaneous error detection and phoneme recognition. The framework implements multiple neural architectures with increasing complexity to establish baseline performance and explore architectural improvements. Additionally, it provides phoneme-only models for comparative analysis against multi-task approaches.
 
 ## Quick Start
 
 ```bash
-# Basic model training
+# Multi-task model training
 python train.py
 
-# Specific model training
+# Specific multi-task model training
 python train.py --config model_type=transformer
 python train.py --config model_type=cross
 python train.py --config model_type=hierarchical
 
+# Phoneme-only model training
+python phoneme_train.py --config model_type=simple
+python phoneme_train.py --config model_type=transformer
+
 # Model evaluation
 python eval.py --model_checkpoint experiments/simple_*/checkpoints/best_phoneme.pth
+python phoneme_eval.py --model_checkpoint experiments/phoneme_simple_*/checkpoints/best_phoneme.pth
 ```
 
 ## Project Structure
@@ -33,30 +38,44 @@ project/
 │   │   └── config.json            # Experiment configuration
 │   └── comparison_results/        # Cross-experiment comparisons
 ├── models/                        # Model implementations
-│   ├── model.py                   # Simple baseline model
-│   ├── model_transformer.py       # Transformer-enhanced model
-│   ├── model_cross.py            # Cross-attention model
-│   └── model_hierarchical.py     # Hierarchical model
+│   ├── model.py                   # Simple multi-task model
+│   ├── model_transformer.py       # Transformer multi-task model
+│   ├── model_cross.py            # Cross-attention multi-task model
+│   ├── model_hierarchical.py     # Hierarchical multi-task model
+│   ├── phoneme_model.py          # Simple phoneme-only model
+│   └── phoneme_model_transformer.py # Transformer phoneme-only model
 ├── config.py                      # Configuration management
-├── train.py                       # Training script
-├── eval.py                        # Evaluation script
+├── train.py                       # Multi-task training script
+├── eval.py                        # Multi-task evaluation script
+├── phoneme_train.py               # Phoneme-only training script
+├── phoneme_eval.py                # Phoneme-only evaluation script
+├── phoneme_data_prepare.py        # Phoneme-only data processing
 ├── experiment_manager.py          # Experiment management utilities
 ├── compare_experiments.py         # Performance comparison tools
-└── [data processing modules]
+└── [other data processing modules]
 ```
 
 ## Model Architectures
 
+### Multi-Task Models
+
 | Model | Description | Features |
 |-------|-------------|----------|
-| `simple` | Baseline model | Wav2Vec2 + Linear encoder |
-| `transformer` | Enhanced baseline | Self-attention mechanisms |
-| `cross` | Cross-attention | Inter-task information exchange |
+| `simple` | Baseline multi-task | Wav2Vec2 + Linear encoder |
+| `transformer` | Enhanced multi-task | Self-attention mechanisms |
+| `cross` | Cross-attention multi-task | Inter-task information exchange |
 | `hierarchical` | Multi-level processing | Hierarchical feature extraction |
+
+### Phoneme-Only Models
+
+| Model | Description | Features |
+|-------|-------------|----------|
+| `phoneme_simple` | Baseline phoneme-only | Wav2Vec2 + Linear encoder |
+| `phoneme_transformer` | Enhanced phoneme-only | Self-attention mechanisms |
 
 ## Training
 
-### Basic Training Commands
+### Multi-Task Training Commands
 
 ```bash
 # Default simple model
@@ -70,6 +89,16 @@ python train.py --config model_type=cross
 
 # Hierarchical model
 python train.py --config model_type=hierarchical
+```
+
+### Phoneme-Only Training Commands
+
+```bash
+# Simple phoneme-only model
+python phoneme_train.py --config model_type=simple
+
+# Transformer phoneme-only model
+python phoneme_train.py --config model_type=transformer
 ```
 
 ### Parameter Configuration
@@ -97,7 +126,7 @@ python train.py \
 
 ## Evaluation
 
-### Single Model Evaluation
+### Multi-Task Model Evaluation
 
 ```bash
 # Automatic model type detection
@@ -107,6 +136,19 @@ python eval.py --model_checkpoint experiments/transformer_20250604_0834/checkpoi
 python eval.py \
   --model_checkpoint path/to/model.pth \
   --model_type cross \
+  --save_predictions
+```
+
+### Phoneme-Only Model Evaluation
+
+```bash
+# Automatic model type detection
+python phoneme_eval.py --model_checkpoint experiments/phoneme_transformer_20250604_0834/checkpoints/best_phoneme.pth
+
+# Explicit model type specification
+python phoneme_eval.py \
+  --model_checkpoint path/to/model.pth \
+  --model_type transformer \
   --save_predictions
 ```
 
