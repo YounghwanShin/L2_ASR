@@ -1,5 +1,5 @@
 /data
-/__pycache__
 env
 /results
 /experiments
+*__pycache__

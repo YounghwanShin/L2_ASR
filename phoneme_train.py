@@ -244,8 +244,19 @@ def main():
                 attr_type = type(getattr(config, key))
                 setattr(config, key, attr_type(value))
     
-    config.experiment_name = f"phoneme_{config.model_type}_{config.experiment_name.split('_', 1)[-1]}"
     config.__post_init__()
+    
+    if config.experiment_name and '_' in config.experiment_name:
+        timestamp_part = config.experiment_name.split('_', 1)[-1]
+        config.experiment_name = f"phoneme_{config.model_type}_{timestamp_part}"
+    else:
+        config.experiment_name = f"phoneme_{config.model_type}_{config.experiment_name}"
+    
+    config.experiment_dir = os.path.join(config.base_experiment_dir, config.experiment_name)
+    config.checkpoint_dir = os.path.join(config.experiment_dir, 'checkpoints')
+    config.log_dir = os.path.join(config.experiment_dir, 'logs')
+    config.result_dir = os.path.join(config.experiment_dir, 'results')
+    config.output_dir = config.checkpoint_dir
     
     seed_everything(config.seed)
     setup_experiment_dirs(config)
