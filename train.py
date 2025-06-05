@@ -20,16 +20,16 @@ logger = logging.getLogger(__name__)
 
 def get_model_class(model_type):
     if model_type == 'simple':
-        from model import SimpleMultiTaskModel, MultiTaskLoss
+        from models.model import SimpleMultiTaskModel, MultiTaskLoss
         return SimpleMultiTaskModel, MultiTaskLoss
     elif model_type == 'transformer':
-        from model_transformer import TransformerMultiTaskModel, MultiTaskLoss
+        from models.model_transformer import TransformerMultiTaskModel, MultiTaskLoss
         return TransformerMultiTaskModel, MultiTaskLoss
     elif model_type == 'cross':
-        from model_cross import CrossAttentionMultiTaskModel, MultiTaskLoss
+        from models.model_cross import CrossAttentionMultiTaskModel, MultiTaskLoss
         return CrossAttentionMultiTaskModel, MultiTaskLoss
     elif model_type == 'hierarchical':
-        from model_hierarchical import HierarchicalMultiTaskModel, MultiTaskLoss
+        from models.model_hierarchical import HierarchicalMultiTaskModel, MultiTaskLoss
         return HierarchicalMultiTaskModel, MultiTaskLoss
     else:
         raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer, cross, hierarchical")

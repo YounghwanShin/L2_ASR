@@ -12,16 +12,16 @@ from evaluate import evaluate_error_detection, evaluate_phoneme_recognition
 
 def get_model_class(model_type):
     if model_type == 'simple':
-        from model import SimpleMultiTaskModel
+        from models.model import SimpleMultiTaskModel
         return SimpleMultiTaskModel
     elif model_type == 'transformer':
-        from model_transformer import TransformerMultiTaskModel
+        from models.model_transformer import TransformerMultiTaskModel
         return TransformerMultiTaskModel
     elif model_type == 'cross':
-        from model_cross import CrossAttentionMultiTaskModel
+        from models.model_cross import CrossAttentionMultiTaskModel
         return CrossAttentionMultiTaskModel
     elif model_type == 'hierarchical':
-        from model_hierarchical import HierarchicalMultiTaskModel
+        from models.model_hierarchical import HierarchicalMultiTaskModel
         return HierarchicalMultiTaskModel
     else:
         raise ValueError(f"Unknown model type: {model_type}")
