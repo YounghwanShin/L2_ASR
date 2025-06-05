@@ -53,21 +53,28 @@ def remove_sil_tokens(sequences):
 
 def rm_parallel_sil_batch(canos, percs):
     canos_out, percs_out = [], []
-    assert len(canos) == len(percs)
+    assert len(canos) == len(percs), "Batch sizes must match"
     for cano, perc in zip(canos, percs):
-        cano, perc = rm_parallel_sil(cano, perc)
-        canos_out.append(cano)
-        percs_out.append(perc)
+        cano_filtered, perc_filtered = rm_parallel_sil(cano, perc)
+        canos_out.append(cano_filtered)
+        percs_out.append(perc_filtered)
     return canos_out, percs_out
 
-def rm_parallel_sil(canos, percs):
+def rm_parallel_sil(cano, perc):
+    if not cano or not perc:
+        return cano, perc
+        
+    min_len = min(len(cano), len(perc))
     canos_out, percs_out = [], []
-    assert len(canos) == len(percs)
-    for cano, perc in zip(canos, percs):
-        if (cano==perc and cano=="sil"):
-            continue
-        canos_out.append(cano)
-        percs_out.append(perc)
+    
+    for i in range(min_len):
+        if not (cano[i] == perc[i] and cano[i] == "sil"):
+            canos_out.append(cano[i])
+            percs_out.append(perc[i])
+    
+    canos_out.extend(cano[min_len:])
+    percs_out.extend(perc[min_len:])
+    
     return canos_out, percs_out
 
 def extract_alignment(a, b, gap_token="sil"):

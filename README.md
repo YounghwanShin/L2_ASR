@@ -20,10 +20,10 @@ python train.py --config model_type=transformer
 python train.py --config model_type=cross
 python train.py --config model_type=hierarchical
 
-# Simultaneous training with specific model 실험 2번
+# Simultaneous training with specific model
 python train.py --config model_type=transformer,simultaneous_training=True
 
-# Phoneme-only model training 실험 3, 4번
+# Phoneme-only model training 실험 2번
 python phoneme_train.py --config model_type=simple
 python phoneme_train.py --config model_type=transformer
 

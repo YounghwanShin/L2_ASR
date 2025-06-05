@@ -18,9 +18,9 @@ class Config:
     
     model_type = 'simple'
     
-    batch_size = 16
-    eval_batch_size = 16
-    num_epochs = 40
+    batch_size = 32
+    eval_batch_size = 32
+    num_epochs = 50
     gradient_accumulation = 2
     
     main_lr = 3e-4
