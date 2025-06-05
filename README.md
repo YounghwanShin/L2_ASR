@@ -9,13 +9,19 @@ This repository contains a comprehensive system for evaluating second language p
 ## Quick Start
 
 ```bash
-# Multi-task model training
+# Multi-task model training (alternating mode - default)
 python train.py
+
+# Multi-task model training (simultaneous mode)
+python train.py --config simultaneous_training=True
 
 # Specific multi-task model training
 python train.py --config model_type=transformer
 python train.py --config model_type=cross
 python train.py --config model_type=hierarchical
+
+# Simultaneous training with specific model
+python train.py --config model_type=transformer,simultaneous_training=True
 
 # Phoneme-only model training
 python phoneme_train.py --config model_type=simple
@@ -78,14 +84,17 @@ project/
 ### Multi-Task Training Commands
 
 ```bash
-# Default simple model
+# Default simple model (alternating training)
 python train.py
+
+# Simultaneous training
+python train.py --config simultaneous_training=True
 
 # Transformer model
 python train.py --config model_type=transformer
 
-# Cross-attention model
-python train.py --config model_type=cross
+# Cross-attention model with simultaneous training
+python train.py --config model_type=cross,simultaneous_training=True
 
 # Hierarchical model
 python train.py --config model_type=hierarchical
@@ -104,11 +113,17 @@ python phoneme_train.py --config model_type=transformer
 ### Parameter Configuration
 
 ```bash
+# Training mode selection
+python train.py --config simultaneous_training=True
+
 # Batch size and epoch adjustment
 python train.py --config model_type=transformer,batch_size=16,num_epochs=50
 
 # Learning rate configuration
 python train.py --config model_type=cross,main_lr=2e-4,wav2vec_lr=2e-5
+
+# Combined parameters
+python train.py --config model_type=hierarchical,simultaneous_training=True,batch_size=16
 
 # Custom experiment naming
 python train.py --config model_type=hierarchical,experiment_name=custom_experiment
