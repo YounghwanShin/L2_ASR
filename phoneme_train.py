@@ -144,9 +144,6 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             
             total_loss += accumulated_loss.item() * gradient_accumulation
         
-        del waveforms, audio_lengths, phoneme_labels, phoneme_label_lengths
-        del attention_mask, outputs, phoneme_loss, accumulated_loss
-        
         if (batch_idx + 1) % 100 == 0:
             torch.cuda.empty_cache()
         
@@ -193,9 +190,6 @@ def validate_epoch(model, dataloader, criterion, device):
             )
             
             total_loss += phoneme_loss.item()
-            
-            del waveforms, audio_lengths, phoneme_labels, phoneme_label_lengths
-            del attention_mask, outputs, phoneme_loss
             
             progress_bar.set_postfix({'Val_Loss': total_loss / (batch_idx + 1)})
     
