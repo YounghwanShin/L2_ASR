@@ -18,7 +18,7 @@ class Config:
     
     model_type = 'simple'
     
-    batch_size = 32
+    batch_size = 16
     eval_batch_size = 32
     num_epochs = 50
     gradient_accumulation = 2
@@ -64,7 +64,7 @@ class Config:
             'hidden_dim': 1024,
             'num_layers': 2,
             'num_heads': 8,
-            'cross_layers': 1,
+            'cross_attention_dim': 512,
             'dropout': 0.1
         },
         'hierarchical': {
