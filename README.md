@@ -149,8 +149,7 @@ python eval.py --model_checkpoint experiments/transformer_20250604_0834/checkpoi
 
 # Explicit model type specification
 python eval.py \
-  --model_checkpoint path/to/model.pth \
-  --model_type transformer \
+  --model_checkpoint experiments/ours_trm/checkpoints/best_phoneme.pth \
   --save_predictions
 ```
 
@@ -162,8 +161,7 @@ python phoneme_eval.py --model_checkpoint experiments/phoneme_transformer_202506
 
 # Explicit model type specification
 python phoneme_eval.py \
-  --model_checkpoint path/to/model.pth \
-  --model_type transformer \
+  --model_checkpoint experiments/phoneme_trm/checkpoints/best_phoneme.pth \
   --save_predictions
 ```
 
