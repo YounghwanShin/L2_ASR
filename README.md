@@ -150,7 +150,7 @@ python eval.py --model_checkpoint experiments/transformer_20250604_0834/checkpoi
 # Explicit model type specification
 python eval.py \
   --model_checkpoint path/to/model.pth \
-  --model_type cross \
+  --model_type transformer \
   --save_predictions
 ```
 

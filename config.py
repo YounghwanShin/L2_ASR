@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime
 from dataclasses import dataclass
+from pytz import timezone
 
 @dataclass
 class Config:
@@ -77,7 +78,7 @@ class Config:
     
     def __post_init__(self):
         if self.experiment_name is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            timestamp = datetime.now(timezone('Asia/Seoul')).strftime("%Y%m%d_%H%M")
             self.experiment_name = f"{self.model_type}_{timestamp}"
         
         self.experiment_dir = os.path.join(self.base_experiment_dir, self.experiment_name)
