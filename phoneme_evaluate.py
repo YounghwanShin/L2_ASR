@@ -211,6 +211,68 @@ def calculate_mpd_f1(all_predictions, all_targets, all_canonical, all_perceived,
     
     return mpd_f1
 
+def calculate_mispronunciation_metrics(all_predictions, all_canonical, all_perceived, id_to_phoneme):
+    pred_phonemes = convert_ids_to_phonemes(all_predictions, id_to_phoneme)
+    canonical_phonemes = convert_ids_to_phonemes(all_canonical, id_to_phoneme)
+    perceived_phonemes = convert_ids_to_phonemes(all_perceived, id_to_phoneme)
+    
+    pred_phonemes = remove_sil_tokens(pred_phonemes)
+    canonical_phonemes = remove_sil_tokens(canonical_phonemes)
+    perceived_phonemes = remove_sil_tokens(perceived_phonemes)
+    
+    total_ta, total_fr, total_fa, total_tr = 0, 0, 0, 0
+    
+    for pred, canonical, perceived in zip(pred_phonemes, canonical_phonemes, perceived_phonemes):
+        if len(canonical) == 0 or len(perceived) == 0 or len(pred) == 0:
+            continue
+            
+        max_len = max(len(canonical), len(perceived), len(pred))
+        
+        canonical_padded = canonical + ['<pad>'] * (max_len - len(canonical))
+        perceived_padded = perceived + ['<pad>'] * (max_len - len(perceived))
+        pred_padded = pred + ['<pad>'] * (max_len - len(pred))
+        
+        for c_phone, p_phone, pred_phone in zip(canonical_padded, perceived_padded, pred_padded):
+            if c_phone == '<pad>' or p_phone == '<pad>' or pred_phone == '<pad>':
+                continue
+                
+            is_correct = (c_phone == p_phone)
+            pred_correct = (c_phone == pred_phone)
+            
+            if is_correct and pred_correct:
+                total_ta += 1
+            elif is_correct and not pred_correct:
+                total_fr += 1
+            elif not is_correct and pred_correct:
+                total_fa += 1
+            elif not is_correct and not pred_correct:
+                total_tr += 1
+    
+    if (total_tr + total_fa) > 0:
+        recall = total_tr / (total_tr + total_fa)
+    else:
+        recall = 0.0
+        
+    if (total_tr + total_fr) > 0:
+        precision = total_tr / (total_tr + total_fr)
+    else:
+        precision = 0.0
+        
+    if (precision + recall) > 0:
+        f1_score = 2.0 * precision * recall / (precision + recall)
+    else:
+        f1_score = 0.0
+    
+    return {
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1_score,
+        'ta': total_ta,
+        'fr': total_fr,
+        'fa': total_fa,
+        'tr': total_tr
+    }
+
 def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     model.eval()
     all_predictions, all_targets, all_canonical, all_perceived, all_ids = [], [], [], [], []
@@ -292,12 +354,25 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
     if all_canonical and all_perceived:
         mpd_f1 = calculate_mpd_f1(all_predictions, all_targets, all_canonical, all_perceived, all_ids, id_to_phoneme)
     
+    misp_metrics = {'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'ta': 0, 'fr': 0, 'fa': 0, 'tr': 0}
+    if all_canonical and all_perceived:
+        misp_metrics = calculate_mispronunciation_metrics(all_predictions, all_canonical, all_perceived, id_to_phoneme)
+    
     return {
         'per': float(per),
         'mpd_f1': float(mpd_f1),
+        'mispronunciation_precision': float(misp_metrics['precision']),
+        'mispronunciation_recall': float(misp_metrics['recall']),
+        'mispronunciation_f1': float(misp_metrics['f1_score']),
         'total_phonemes': int(total_phonemes),
         'total_errors': int(total_errors),
         'insertions': int(total_insertions),
         'deletions': int(total_deletions),
-        'substitutions': int(total_substitutions)
+        'substitutions': int(total_substitutions),
+        'confusion_matrix': {
+            'true_acceptance': int(misp_metrics['ta']),
+            'false_rejection': int(misp_metrics['fr']),
+            'false_acceptance': int(misp_metrics['fa']),
+            'true_rejection': int(misp_metrics['tr'])
+        }
     }

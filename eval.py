@@ -197,10 +197,23 @@ def main():
     logger.info(f"Deletions: {phoneme_recognition_results['deletions']}")
     logger.info(f"Substitutions: {phoneme_recognition_results['substitutions']}")
     
+    logger.info("\n--- MISPRONUNCIATION DETECTION METRICS ---")
+    logger.info(f"Precision: {phoneme_recognition_results['mispronunciation_precision']:.4f}")
+    logger.info(f"Recall: {phoneme_recognition_results['mispronunciation_recall']:.4f}")
+    logger.info(f"F1-Score: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
+    
+    logger.info("\n--- CONFUSION MATRIX ---")
+    cm = phoneme_recognition_results['confusion_matrix']
+    logger.info(f"True Acceptance (TA): {cm['true_acceptance']}")
+    logger.info(f"False Rejection (FR): {cm['false_rejection']}")
+    logger.info(f"False Acceptance (FA): {cm['false_acceptance']}")
+    logger.info(f"True Rejection (TR): {cm['true_rejection']}")
+    
     logger.info("\n--- SUMMARY ---")
     logger.info(f"Overall Error Detection Performance: {error_detection_results['weighted_f1']:.4f} (Weighted F1)")
     logger.info(f"Overall Phoneme Recognition Performance: {1.0 - phoneme_recognition_results['per']:.4f} (Accuracy)")
-    logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mpd_f1']:.4f}")
+    logger.info(f"Original MPD F1: {phoneme_recognition_results['mpd_f1']:.4f}")
+    logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
     
     final_results = {
         'model_type': model_type,
@@ -219,11 +232,15 @@ def main():
             'per': phoneme_recognition_results['per'],
             'accuracy': 1.0 - phoneme_recognition_results['per'],
             'mpd_f1': phoneme_recognition_results['mpd_f1'],
+            'mispronunciation_precision': phoneme_recognition_results['mispronunciation_precision'],
+            'mispronunciation_recall': phoneme_recognition_results['mispronunciation_recall'],
+            'mispronunciation_f1': phoneme_recognition_results['mispronunciation_f1'],
             'total_phonemes': phoneme_recognition_results['total_phonemes'],
             'total_errors': phoneme_recognition_results['total_errors'],
             'insertions': phoneme_recognition_results['insertions'],
             'deletions': phoneme_recognition_results['deletions'],
-            'substitutions': phoneme_recognition_results['substitutions']
+            'substitutions': phoneme_recognition_results['substitutions'],
+            'confusion_matrix': phoneme_recognition_results['confusion_matrix']
         }
     }
     

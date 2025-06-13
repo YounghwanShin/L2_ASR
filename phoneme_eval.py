@@ -184,22 +184,40 @@ def main():
     if 'avg_edit_distance' in phoneme_recognition_results:
         logger.info(f"Average Edit Distance: {phoneme_recognition_results['avg_edit_distance']:.4f}")
     
+    logger.info("\n--- MISPRONUNCIATION DETECTION METRICS ---")
+    logger.info(f"Precision: {phoneme_recognition_results['mispronunciation_precision']:.4f}")
+    logger.info(f"Recall: {phoneme_recognition_results['mispronunciation_recall']:.4f}")
+    logger.info(f"F1-Score: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
+    
+    logger.info("\n--- CONFUSION MATRIX ---")
+    cm = phoneme_recognition_results['confusion_matrix']
+    logger.info(f"True Acceptance (TA): {cm['true_acceptance']}")
+    logger.info(f"False Rejection (FR): {cm['false_rejection']}")
+    logger.info(f"False Acceptance (FA): {cm['false_acceptance']}")
+    logger.info(f"True Rejection (TR): {cm['true_rejection']}")
+    
     logger.info("\n--- SUMMARY ---")
     logger.info(f"Overall Phoneme Recognition Performance: {1.0 - phoneme_recognition_results['per']:.4f} (Accuracy)")
     if 'mpd_f1' in phoneme_recognition_results:
-        logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mpd_f1']:.4f}")
+        logger.info(f"Original MPD F1: {phoneme_recognition_results['mpd_f1']:.4f}")
+    logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
     
     final_results = {
         'model_type': f"phoneme_{model_type}",
         'checkpoint_path': args.model_checkpoint,
         'phoneme_recognition': {
             'per': phoneme_recognition_results['per'],
-            'accuracy': 1.0 - phoneme_recognition_results['per']
+            'accuracy': 1.0 - phoneme_recognition_results['per'],
+            'mpd_f1': phoneme_recognition_results['mpd_f1'],
+            'mispronunciation_precision': phoneme_recognition_results['mispronunciation_precision'],
+            'mispronunciation_recall': phoneme_recognition_results['mispronunciation_recall'],
+            'mispronunciation_f1': phoneme_recognition_results['mispronunciation_f1'],
+            'confusion_matrix': phoneme_recognition_results['confusion_matrix']
         }
     }
     
     for key in ['total_phonemes', 'total_errors', 'insertions', 'deletions', 'substitutions', 
-                'mpd_f1', 'sequence_accuracy', 'token_accuracy', 'avg_edit_distance']:
+                'sequence_accuracy', 'token_accuracy', 'avg_edit_distance']:
         if key in phoneme_recognition_results:
             final_results['phoneme_recognition'][key] = phoneme_recognition_results[key]
     

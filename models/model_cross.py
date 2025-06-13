@@ -20,6 +20,12 @@ class TaskSpecificEncoder(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
         
+        self._init_weights()
+        
+    def _init_weights(self):
+        nn.init.xavier_normal_(self.input_projection.weight)
+        nn.init.constant_(self.input_projection.bias, 0)
+        
     def forward(self, x, attention_mask=None):
         x = self.input_projection(x)
         x = self.dropout(x)
@@ -30,38 +36,45 @@ class TaskSpecificEncoder(nn.Module):
 class CrossAttentionModule(nn.Module):
     def __init__(self, hidden_dim, cross_attention_dim=512, num_heads=8, dropout=0.1):
         super().__init__()
+        self.layer_norm1 = nn.LayerNorm(hidden_dim)
+        self.layer_norm2 = nn.LayerNorm(hidden_dim)
+        
         self.cross_attention = nn.MultiheadAttention(
             embed_dim=hidden_dim,
             num_heads=num_heads,
             dropout=dropout,
             batch_first=True
         )
-        self.cross_projection = nn.Linear(hidden_dim, cross_attention_dim)
-        self.output_projection = nn.Linear(cross_attention_dim, hidden_dim)
-        self.layer_norm1 = nn.LayerNorm(hidden_dim)
-        self.layer_norm2 = nn.LayerNorm(hidden_dim)
-        self.dropout = nn.Dropout(dropout)
         
         self.feed_forward = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.Linear(hidden_dim, hidden_dim * 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 4, hidden_dim)
+            nn.Linear(hidden_dim * 2, hidden_dim)
         )
+        
+        self.dropout = nn.Dropout(dropout)
+        self._init_weights()
+        
+    def _init_weights(self):
+        for module in self.feed_forward:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_normal_(module.weight)
+                nn.init.constant_(module.bias, 0)
         
     def forward(self, query, key_value, attention_mask=None):
         residual = query
+        query = self.layer_norm1(query)
         
-        cross_out, _ = self.cross_attention(query, key_value, key_value)
+        cross_out, _ = self.cross_attention(query, key_value, key_value, attn_mask=attention_mask)
+        cross_out = self.dropout(cross_out)
+        query = residual + cross_out
         
-        cross_projected = self.cross_projection(cross_out)
-        cross_projected = self.dropout(cross_projected)
-        cross_out = self.output_projection(cross_projected)
-        
-        query = self.layer_norm1(residual + cross_out)
-        
+        residual = query
+        query = self.layer_norm2(query)
         ff_out = self.feed_forward(query)
-        query = self.layer_norm2(query + self.dropout(ff_out))
+        ff_out = self.dropout(ff_out)
+        query = residual + ff_out
         
         return query
 
@@ -71,7 +84,14 @@ class ErrorDetectionHead(nn.Module):
         self.pre_classifier = nn.Linear(input_dim, input_dim // 2)
         self.classifier = nn.Linear(input_dim // 2, num_error_types)
         self.dropout = nn.Dropout(dropout)
+        self._init_weights()
         
+    def _init_weights(self):
+        nn.init.xavier_normal_(self.pre_classifier.weight)
+        nn.init.xavier_normal_(self.classifier.weight)
+        nn.init.constant_(self.pre_classifier.bias, 0)
+        nn.init.constant_(self.classifier.bias, 0)
+    
     def forward(self, x):
         x = self.dropout(x)
         x = F.relu(self.pre_classifier(x))
@@ -84,6 +104,13 @@ class PhonemeRecognitionHead(nn.Module):
         self.pre_classifier = nn.Linear(input_dim, input_dim // 2)
         self.classifier = nn.Linear(input_dim // 2, num_phonemes)
         self.dropout = nn.Dropout(dropout)
+        self._init_weights()
+        
+    def _init_weights(self):
+        nn.init.xavier_normal_(self.pre_classifier.weight)
+        nn.init.xavier_normal_(self.classifier.weight)
+        nn.init.constant_(self.pre_classifier.bias, 0)
+        nn.init.constant_(self.classifier.bias, 0)
         
     def forward(self, x):
         x = self.dropout(x)
