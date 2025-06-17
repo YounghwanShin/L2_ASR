@@ -66,7 +66,14 @@ class CrossAttentionModule(nn.Module):
         residual = query
         query = self.layer_norm1(query)
         
-        cross_out, _ = self.cross_attention(query, key_value, key_value, attn_mask=attention_mask)
+        key_padding_mask = None
+        if attention_mask is not None:
+            seq_len = key_value.size(1)
+            if attention_mask.size(1) != seq_len:
+                attention_mask = attention_mask[:, :seq_len]
+            key_padding_mask = (attention_mask == 0)
+        
+        cross_out, _ = self.cross_attention(query, key_value, key_value, key_padding_mask=key_padding_mask)
         cross_out = self.dropout(cross_out)
         query = residual + cross_out
         
