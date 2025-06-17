@@ -6,7 +6,7 @@ from pytz import timezone
 
 @dataclass
 class Config:
-    pretrained_model = "facebook/wav2vec2-base" #"facebook/wav2vec2-large-xlsr-53"
+    pretrained_model = "facebook/wav2vec2-large-xlsr-53" #"facebook/wav2vec2-large-xlsr-53"
     sampling_rate = 16000
     max_length = 320000
     
@@ -19,8 +19,8 @@ class Config:
     
     model_type = 'simple'
     
-    batch_size = 64         # 16
-    eval_batch_size = 64    # 16
+    batch_size = 16        # 16
+    eval_batch_size = 16    # 16
     num_epochs = 50
     gradient_accumulation = 2
     
@@ -29,8 +29,8 @@ class Config:
     scheduler_factor = 0.5
     scheduler_patience = 3
     
-    error_weight = 1.0
-    phoneme_weight = 1.0
+    error_weight = 0.1
+    phoneme_weight = 0.9
     
     save_best_error = True
     save_best_phoneme = True
@@ -52,7 +52,7 @@ class Config:
     
     model_configs = {
         'simple': {
-            'hidden_dim': 768,
+            'hidden_dim': 1024,
             'dropout': 0.1
         },
         'transformer': {
