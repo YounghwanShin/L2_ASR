@@ -28,8 +28,8 @@ class Config:
     scheduler_factor = 0.5
     scheduler_patience = 3
     
-    error_weight = 0.4
-    phoneme_weight = 0.6
+    error_weight = 0.5
+    phoneme_weight = 0.5
     
     save_best_error = True
     save_best_phoneme = True
@@ -69,7 +69,7 @@ class Config:
     }
     
     def __post_init__(self):
-        if self.experiment_name is None:
+        if self.experiment_name is None or not hasattr(self, '_last_model_type') or self._last_model_type != self.model_type:
             if hasattr(self, '_is_phoneme_model') and self._is_phoneme_model:
                 model_prefix = 'phoneme_simple' if self.model_type == 'simple' else f'phoneme_{self.model_type}'
                 self.experiment_name = model_prefix
@@ -78,6 +78,8 @@ class Config:
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
                 self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}"
+            
+            self._last_model_type = self.model_type
         
         self.experiment_dir = os.path.join(self.base_experiment_dir, self.experiment_name)
         self.checkpoint_dir = os.path.join(self.experiment_dir, 'checkpoints')
