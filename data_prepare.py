@@ -31,42 +31,12 @@ class MultiTaskDataset(Dataset):
                 self.valid_files.append(wav_file)
             elif task_mode == 'phoneme' and has_phoneme_labels:
                 self.valid_files.append(wav_file)
-        
-        if task_mode == 'both':
-            self._create_task_schedule()
-    
-    def _create_task_schedule(self):
-        self.task_schedule = []
-        
-        for wav_file in self.valid_files:
-            item = self.data[wav_file]
-            has_error = 'error_labels' in item and item['error_labels'].strip()
-            has_phoneme = 'perceived_train_target' in item and item['perceived_train_target'].strip()
-            
-            if has_error and has_phoneme:
-                if random.random() < self.error_task_ratio:
-                    self.task_schedule.append(('error', wav_file))
-                else:
-                    self.task_schedule.append(('phoneme', wav_file))
-            elif has_error:
-                self.task_schedule.append(('error', wav_file))
-            elif has_phoneme:
-                self.task_schedule.append(('phoneme', wav_file))
-        
-        random.shuffle(self.task_schedule)
     
     def __len__(self):
-        if self.task_mode == 'both':
-            return len(self.task_schedule)
         return len(self.valid_files)
     
     def __getitem__(self, idx):
-        if self.task_mode == 'both':
-            task, wav_file = self.task_schedule[idx]
-        else:
-            wav_file = self.valid_files[idx]
-            task = self.task_mode
-        
+        wav_file = self.valid_files[idx]
         item = self.data[wav_file]
         
         waveform, sample_rate = torchaudio.load(wav_file)
@@ -86,39 +56,36 @@ class MultiTaskDataset(Dataset):
         result = {
             'waveform': waveform,
             'audio_length': torch.tensor(waveform.shape[0], dtype=torch.long),
-            'task': task,
             'wav_file': wav_file
         }
         
-        if task == 'error' or self.task_mode == 'both':
-            if 'error_labels' in item and item['error_labels'].strip():
-                error_labels = item['error_labels'].split()
-                modified_labels = []
-                for label in error_labels:
-                    if label in self.error_mapping:
-                        modified_labels.append(self.error_mapping[label])
-                    else:
-                        modified_labels.append(0)
-                
-                result['error_labels'] = torch.tensor(modified_labels, dtype=torch.long)
-                result['error_length'] = torch.tensor(len(modified_labels), dtype=torch.long)
-            else:
-                result['error_labels'] = None
-                result['error_length'] = None
+        if 'error_labels' in item and item['error_labels'].strip():
+            error_labels = item['error_labels'].split()
+            modified_labels = []
+            for label in error_labels:
+                if label in self.error_mapping:
+                    modified_labels.append(self.error_mapping[label])
+                else:
+                    modified_labels.append(0)
+            
+            result['error_labels'] = torch.tensor(modified_labels, dtype=torch.long)
+            result['error_length'] = torch.tensor(len(modified_labels), dtype=torch.long)
+        else:
+            result['error_labels'] = None
+            result['error_length'] = None
         
-        if task == 'phoneme' or self.task_mode == 'both':
-            if 'perceived_train_target' in item and item['perceived_train_target'].strip():
-                phoneme_target = item['perceived_train_target']
-                phoneme_labels = []
-                for p in phoneme_target.split():
-                    if p in self.phoneme_to_id:
-                        phoneme_labels.append(self.phoneme_to_id[p])
-                
-                result['phoneme_labels'] = torch.tensor(phoneme_labels, dtype=torch.long)
-                result['phoneme_length'] = torch.tensor(len(phoneme_labels), dtype=torch.long)
-            else:
-                result['phoneme_labels'] = None
-                result['phoneme_length'] = None
+        if 'perceived_train_target' in item and item['perceived_train_target'].strip():
+            phoneme_target = item['perceived_train_target']
+            phoneme_labels = []
+            for p in phoneme_target.split():
+                if p in self.phoneme_to_id:
+                    phoneme_labels.append(self.phoneme_to_id[p])
+            
+            result['phoneme_labels'] = torch.tensor(phoneme_labels, dtype=torch.long)
+            result['phoneme_length'] = torch.tensor(len(phoneme_labels), dtype=torch.long)
+        else:
+            result['phoneme_labels'] = None
+            result['phoneme_length'] = None
                 
         return result
 
@@ -185,50 +152,6 @@ class EvaluationDataset(Dataset):
             torch.tensor(len(canonical_ids), dtype=torch.long),
             wav_file
         )
-
-def multitask_collate_fn(batch):
-    tasks = {}
-    
-    for sample in batch:
-        task = sample['task']
-        if task not in tasks:
-            tasks[task] = []
-        tasks[task].append(sample)
-    
-    result = {}
-    
-    for task, samples in tasks.items():
-        waveforms = [sample['waveform'] for sample in samples]
-        max_len = max(w.shape[0] for w in waveforms)
-        padded_waveforms = torch.stack([
-            torch.nn.functional.pad(w, (0, max_len - w.shape[0]))
-            for w in waveforms
-        ])
-        
-        audio_lengths = torch.tensor([sample['audio_length'] for sample in samples])
-        
-        if task == 'error':
-            labels = [sample['error_labels'] for sample in samples]
-            lengths = torch.tensor([sample['error_length'] for sample in samples])
-        else:
-            labels = [sample['phoneme_labels'] for sample in samples]
-            lengths = torch.tensor([sample['phoneme_length'] for sample in samples])
-        
-        max_label_len = max(l.shape[0] for l in labels)
-        padded_labels = torch.stack([
-            torch.nn.functional.pad(l, (0, max_label_len - l.shape[0]), value=0)
-            for l in labels
-        ])
-        
-        result[task] = {
-            'waveforms': padded_waveforms,
-            'audio_lengths': audio_lengths,
-            'labels': padded_labels,
-            'label_lengths': lengths,
-            'wav_files': [sample['wav_file'] for sample in samples]
-        }
-    
-    return result
 
 def simultaneous_multitask_collate_fn(batch):
     valid_samples = [item for item in batch if item['error_labels'] is not None or item['phoneme_labels'] is not None]

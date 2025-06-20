@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from config import Config
-from data_prepare import MultiTaskDataset, EvaluationDataset, multitask_collate_fn, evaluation_collate_fn, simultaneous_multitask_collate_fn
+from data_prepare import MultiTaskDataset, EvaluationDataset, evaluation_collate_fn, simultaneous_multitask_collate_fn
 from evaluate import evaluate_error_detection, evaluate_phoneme_recognition, get_wav2vec2_output_lengths_official, decode_ctc
 
 logger = logging.getLogger(__name__)
@@ -32,14 +32,11 @@ def get_model_class(model_type):
     elif model_type == 'transformer':
         from models.model_transformer import TransformerMultiTaskModel, MultiTaskLoss
         return TransformerMultiTaskModel, MultiTaskLoss
-    elif model_type == 'cross':
-        from models.model_cross import CrossAttentionMultiTaskModel, MultiTaskLoss
-        return CrossAttentionMultiTaskModel, MultiTaskLoss
     elif model_type == 'hierarchical':
         from models.model_hierarchical import HierarchicalMultiTaskModel, MultiTaskLoss
         return HierarchicalMultiTaskModel, MultiTaskLoss
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer, cross, hierarchical")
+        raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer, hierarchical")
 
 def setup_experiment_dirs(config):
     os.makedirs(config.checkpoint_dir, exist_ok=True)
@@ -127,7 +124,7 @@ def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error
                 break
 
 def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer, 
-                device, epoch, scaler, gradient_accumulation=1, simultaneous_training=False, config=None):
+                device, epoch, scaler, gradient_accumulation=1, config=None):
     model.train()
     if config and config.wav2vec2_specaug:
         enable_wav2vec2_specaug(model, True)
@@ -146,140 +143,86 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
         
         accumulated_loss = 0.0
         
-        if simultaneous_training:
-            waveforms = batch_data['waveforms'].to(device)
-            audio_lengths = batch_data['audio_lengths'].to(device)
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-            
-            with torch.amp.autocast('cuda'):
-                outputs = model(waveforms, attention_mask=attention_mask, task='both')
-                
-                error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
-                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
-                
-                has_error = any(el is not None for el in batch_data['error_labels'])
-                has_phoneme = any(pl is not None for pl in batch_data['phoneme_labels'])
-                
-                batch_error_labels = None
-                batch_error_lengths = None
-                batch_phoneme_labels = None
-                batch_phoneme_lengths = None
-                
-                if has_error:
-                    valid_error_indices = [i for i, el in enumerate(batch_data['error_labels']) if el is not None]
-                    if valid_error_indices:
-                        error_labels = [batch_data['error_labels'][i] for i in valid_error_indices]
-                        error_lengths = [batch_data['error_lengths'][i] for i in valid_error_indices]
-                        
-                        max_error_len = max(l.shape[0] for l in error_labels)
-                        batch_error_labels = torch.stack([
-                            torch.nn.functional.pad(l, (0, max_error_len - l.shape[0]), value=0)
-                            for l in error_labels
-                        ]).to(device)
-                        batch_error_lengths = torch.stack(error_lengths).to(device)
-                        
-                        error_outputs = {
-                            'error_logits': outputs['error_logits'][valid_error_indices]
-                        }
-                        error_input_lengths_filtered = error_input_lengths[valid_error_indices]
-                
-                if has_phoneme:
-                    valid_phoneme_indices = [i for i, pl in enumerate(batch_data['phoneme_labels']) if pl is not None]
-                    if valid_phoneme_indices:
-                        phoneme_labels = [batch_data['phoneme_labels'][i] for i in valid_phoneme_indices]
-                        phoneme_lengths = [batch_data['phoneme_lengths'][i] for i in valid_phoneme_indices]
-                        
-                        max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
-                        batch_phoneme_labels = torch.stack([
-                            torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
-                            for l in phoneme_labels
-                        ]).to(device)
-                        batch_phoneme_lengths = torch.stack(phoneme_lengths).to(device)
-                        
-                        phoneme_outputs = {
-                            'phoneme_logits': outputs['phoneme_logits'][valid_phoneme_indices]
-                        }
-                        phoneme_input_lengths_filtered = phoneme_input_lengths[valid_phoneme_indices]
-                
-                combined_outputs = {}
-                if has_error and batch_error_labels is not None:
-                    combined_outputs.update(error_outputs)
-                if has_phoneme and batch_phoneme_labels is not None:
-                    combined_outputs.update(phoneme_outputs)
-                
-                if combined_outputs:
-                    loss, loss_dict = criterion(
-                        combined_outputs,
-                        error_targets=batch_error_labels,
-                        phoneme_targets=batch_phoneme_labels,
-                        error_input_lengths=error_input_lengths_filtered if has_error and batch_error_labels is not None else None,
-                        phoneme_input_lengths=phoneme_input_lengths_filtered if has_phoneme and batch_phoneme_labels is not None else None,
-                        error_target_lengths=batch_error_lengths,
-                        phoneme_target_lengths=batch_phoneme_lengths
-                    )
-                    
-                    accumulated_loss = loss / gradient_accumulation
-                    if 'error_loss' in loss_dict:
-                        error_loss_sum += loss_dict['error_loss']
-                        error_count += 1
-                    if 'phoneme_loss' in loss_dict:
-                        phoneme_loss_sum += loss_dict['phoneme_loss']
-                        phoneme_count += 1
+        waveforms = batch_data['waveforms'].to(device)
+        audio_lengths = batch_data['audio_lengths'].to(device)
         
-        else:
-            if 'error' in batch_data:
-                data = batch_data['error']
-                waveforms = data['waveforms'].to(device)
-                audio_lengths = data['audio_lengths'].to(device)
-                error_labels = data['labels'].to(device)
-                error_label_lengths = data['label_lengths'].to(device)
-                
-                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-                wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-                attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-                
-                with torch.amp.autocast('cuda'):
-                    outputs = model(waveforms, attention_mask=attention_mask, task='error')
-                    input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
-                    
-                    error_loss, error_loss_dict = criterion(
-                        outputs, 
-                        error_targets=error_labels,
-                        error_input_lengths=input_lengths,
-                        error_target_lengths=error_label_lengths
-                    )
-                    
-                    accumulated_loss += error_loss / gradient_accumulation
-                    error_loss_sum += error_loss_dict.get('error_loss', 0.0)
-                    error_count += 1
+        input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+        wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
+        attention_mask = make_attn_mask(waveforms, wav_lens_norm)
+        
+        with torch.amp.autocast('cuda'):
+            outputs = model(waveforms, attention_mask=attention_mask, task='both')
             
-            if 'phoneme' in batch_data:
-                data = batch_data['phoneme']
-                waveforms = data['waveforms'].to(device)
-                audio_lengths = data['audio_lengths'].to(device)
-                phoneme_labels = data['labels'].to(device)
-                phoneme_label_lengths = data['label_lengths'].to(device)
-                
-                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-                wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-                attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-                
-                with torch.amp.autocast('cuda'):
-                    outputs = model(waveforms, attention_mask=attention_mask, task='phoneme')
-                    input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
+            error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
+            phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
+            
+            has_error = any(el is not None for el in batch_data['error_labels'])
+            has_phoneme = any(pl is not None for pl in batch_data['phoneme_labels'])
+            
+            batch_error_labels = None
+            batch_error_lengths = None
+            batch_phoneme_labels = None
+            batch_phoneme_lengths = None
+            
+            if has_error:
+                valid_error_indices = [i for i, el in enumerate(batch_data['error_labels']) if el is not None]
+                if valid_error_indices:
+                    error_labels = [batch_data['error_labels'][i] for i in valid_error_indices]
+                    error_lengths = [batch_data['error_lengths'][i] for i in valid_error_indices]
                     
-                    phoneme_loss, phoneme_loss_dict = criterion(
-                        outputs,
-                        phoneme_targets=phoneme_labels,
-                        phoneme_input_lengths=input_lengths,
-                        phoneme_target_lengths=phoneme_label_lengths
-                    )
+                    max_error_len = max(l.shape[0] for l in error_labels)
+                    batch_error_labels = torch.stack([
+                        torch.nn.functional.pad(l, (0, max_error_len - l.shape[0]), value=0)
+                        for l in error_labels
+                    ]).to(device)
+                    batch_error_lengths = torch.stack(error_lengths).to(device)
                     
-                    accumulated_loss += phoneme_loss / gradient_accumulation
-                    phoneme_loss_sum += phoneme_loss_dict.get('phoneme_loss', 0.0)
+                    error_outputs = {
+                        'error_logits': outputs['error_logits'][valid_error_indices]
+                    }
+                    error_input_lengths_filtered = error_input_lengths[valid_error_indices]
+            
+            if has_phoneme:
+                valid_phoneme_indices = [i for i, pl in enumerate(batch_data['phoneme_labels']) if pl is not None]
+                if valid_phoneme_indices:
+                    phoneme_labels = [batch_data['phoneme_labels'][i] for i in valid_phoneme_indices]
+                    phoneme_lengths = [batch_data['phoneme_lengths'][i] for i in valid_phoneme_indices]
+                    
+                    max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
+                    batch_phoneme_labels = torch.stack([
+                        torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
+                        for l in phoneme_labels
+                    ]).to(device)
+                    batch_phoneme_lengths = torch.stack(phoneme_lengths).to(device)
+                    
+                    phoneme_outputs = {
+                        'phoneme_logits': outputs['phoneme_logits'][valid_phoneme_indices]
+                    }
+                    phoneme_input_lengths_filtered = phoneme_input_lengths[valid_phoneme_indices]
+            
+            combined_outputs = {}
+            if has_error and batch_error_labels is not None:
+                combined_outputs.update(error_outputs)
+            if has_phoneme and batch_phoneme_labels is not None:
+                combined_outputs.update(phoneme_outputs)
+            
+            if combined_outputs:
+                loss, loss_dict = criterion(
+                    combined_outputs,
+                    error_targets=batch_error_labels,
+                    phoneme_targets=batch_phoneme_labels,
+                    error_input_lengths=error_input_lengths_filtered if has_error and batch_error_labels is not None else None,
+                    phoneme_input_lengths=phoneme_input_lengths_filtered if has_phoneme and batch_phoneme_labels is not None else None,
+                    error_target_lengths=batch_error_lengths,
+                    phoneme_target_lengths=batch_phoneme_lengths
+                )
+                
+                accumulated_loss = loss / gradient_accumulation
+                if 'error_loss' in loss_dict:
+                    error_loss_sum += loss_dict['error_loss']
+                    error_count += 1
+                if 'phoneme_loss' in loss_dict:
+                    phoneme_loss_sum += loss_dict['phoneme_loss']
                     phoneme_count += 1
         
         if accumulated_loss > 0:
@@ -310,7 +253,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
     torch.cuda.empty_cache()
     return total_loss / (len(dataloader) // gradient_accumulation)
 
-def validate_epoch(model, dataloader, criterion, device, simultaneous_training=False):
+def validate_epoch(model, dataloader, criterion, device):
     model.eval()
     enable_wav2vec2_specaug(model, False)
     total_loss = 0.0
@@ -324,125 +267,79 @@ def validate_epoch(model, dataloader, criterion, device, simultaneous_training=F
             
             accumulated_loss = 0.0
             
-            if simultaneous_training:
-                waveforms = batch_data['waveforms'].to(device)
-                audio_lengths = batch_data['audio_lengths'].to(device)
-                
-                input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-                wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-                attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-                
-                outputs = model(waveforms, attention_mask=attention_mask, task='both')
-                
-                error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
-                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
-                
-                has_error = any(el is not None for el in batch_data['error_labels'])
-                has_phoneme = any(pl is not None for pl in batch_data['phoneme_labels'])
-                
-                batch_error_labels = None
-                batch_error_lengths = None
-                batch_phoneme_labels = None
-                batch_phoneme_lengths = None
-                
-                if has_error:
-                    valid_error_indices = [i for i, el in enumerate(batch_data['error_labels']) if el is not None]
-                    if valid_error_indices:
-                        error_labels = [batch_data['error_labels'][i] for i in valid_error_indices]
-                        error_lengths = [batch_data['error_lengths'][i] for i in valid_error_indices]
-                        
-                        max_error_len = max(l.shape[0] for l in error_labels)
-                        batch_error_labels = torch.stack([
-                            torch.nn.functional.pad(l, (0, max_error_len - l.shape[0]), value=0)
-                            for l in error_labels
-                        ]).to(device)
-                        batch_error_lengths = torch.stack(error_lengths).to(device)
-                        
-                        error_outputs = {
-                            'error_logits': outputs['error_logits'][valid_error_indices]
-                        }
-                        error_input_lengths_filtered = error_input_lengths[valid_error_indices]
-                
-                if has_phoneme:
-                    valid_phoneme_indices = [i for i, pl in enumerate(batch_data['phoneme_labels']) if pl is not None]
-                    if valid_phoneme_indices:
-                        phoneme_labels = [batch_data['phoneme_labels'][i] for i in valid_phoneme_indices]
-                        phoneme_lengths = [batch_data['phoneme_lengths'][i] for i in valid_phoneme_indices]
-                        
-                        max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
-                        batch_phoneme_labels = torch.stack([
-                            torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
-                            for l in phoneme_labels
-                        ]).to(device)
-                        batch_phoneme_lengths = torch.stack(phoneme_lengths).to(device)
-                        
-                        phoneme_outputs = {
-                            'phoneme_logits': outputs['phoneme_logits'][valid_phoneme_indices]
-                        }
-                        phoneme_input_lengths_filtered = phoneme_input_lengths[valid_phoneme_indices]
-                
-                combined_outputs = {}
-                if has_error and batch_error_labels is not None:
-                    combined_outputs.update(error_outputs)
-                if has_phoneme and batch_phoneme_labels is not None:
-                    combined_outputs.update(phoneme_outputs)
-                
-                if combined_outputs:
-                    loss, _ = criterion(
-                        combined_outputs,
-                        error_targets=batch_error_labels,
-                        phoneme_targets=batch_phoneme_labels,
-                        error_input_lengths=error_input_lengths_filtered if has_error and batch_error_labels is not None else None,
-                        phoneme_input_lengths=phoneme_input_lengths_filtered if has_phoneme and batch_phoneme_labels is not None else None,
-                        error_target_lengths=batch_error_lengths,
-                        phoneme_target_lengths=batch_phoneme_lengths
-                    )
-                    accumulated_loss = loss
+            waveforms = batch_data['waveforms'].to(device)
+            audio_lengths = batch_data['audio_lengths'].to(device)
             
-            else:
-                if 'error' in batch_data:
-                    data = batch_data['error']
-                    waveforms = data['waveforms'].to(device)
-                    audio_lengths = data['audio_lengths'].to(device)
-                    error_labels = data['labels'].to(device)
-                    error_label_lengths = data['label_lengths'].to(device)
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
+            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
+            
+            outputs = model(waveforms, attention_mask=attention_mask, task='both')
+            
+            error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
+            phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
+            
+            has_error = any(el is not None for el in batch_data['error_labels'])
+            has_phoneme = any(pl is not None for pl in batch_data['phoneme_labels'])
+            
+            batch_error_labels = None
+            batch_error_lengths = None
+            batch_phoneme_labels = None
+            batch_phoneme_lengths = None
+            
+            if has_error:
+                valid_error_indices = [i for i, el in enumerate(batch_data['error_labels']) if el is not None]
+                if valid_error_indices:
+                    error_labels = [batch_data['error_labels'][i] for i in valid_error_indices]
+                    error_lengths = [batch_data['error_lengths'][i] for i in valid_error_indices]
                     
-                    input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-                    wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-                    attention_mask = make_attn_mask(waveforms, wav_lens_norm)
+                    max_error_len = max(l.shape[0] for l in error_labels)
+                    batch_error_labels = torch.stack([
+                        torch.nn.functional.pad(l, (0, max_error_len - l.shape[0]), value=0)
+                        for l in error_labels
+                    ]).to(device)
+                    batch_error_lengths = torch.stack(error_lengths).to(device)
                     
-                    outputs = model(waveforms, attention_mask=attention_mask, task='error')
-                    input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
+                    error_outputs = {
+                        'error_logits': outputs['error_logits'][valid_error_indices]
+                    }
+                    error_input_lengths_filtered = error_input_lengths[valid_error_indices]
+            
+            if has_phoneme:
+                valid_phoneme_indices = [i for i, pl in enumerate(batch_data['phoneme_labels']) if pl is not None]
+                if valid_phoneme_indices:
+                    phoneme_labels = [batch_data['phoneme_labels'][i] for i in valid_phoneme_indices]
+                    phoneme_lengths = [batch_data['phoneme_lengths'][i] for i in valid_phoneme_indices]
                     
-                    error_loss, _ = criterion(
-                        outputs,
-                        error_targets=error_labels,
-                        error_input_lengths=input_lengths,
-                        error_target_lengths=error_label_lengths
-                    )
-                    accumulated_loss += error_loss
-                
-                if 'phoneme' in batch_data:
-                    data = batch_data['phoneme']
-                    waveforms = data['waveforms'].to(device)
-                    audio_lengths = data['audio_lengths'].to(device)
-                    phoneme_labels = data['labels'].to(device)
-                    phoneme_label_lengths = data['label_lengths'].to(device)
+                    max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
+                    batch_phoneme_labels = torch.stack([
+                        torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
+                        for l in phoneme_labels
+                    ]).to(device)
+                    batch_phoneme_lengths = torch.stack(phoneme_lengths).to(device)
                     
-                    input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-                    wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-                    attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-                    
-                    outputs = model(waveforms, attention_mask=attention_mask, task='phoneme')
-                    input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
-                    
-                    phoneme_loss, _ = criterion(
-                        outputs,
-                        phoneme_targets=phoneme_labels,
-                        phoneme_input_lengths=input_lengths,
-                        phoneme_target_lengths=phoneme_label_lengths
-                    )
-                    accumulated_loss += phoneme_loss
+                    phoneme_outputs = {
+                        'phoneme_logits': outputs['phoneme_logits'][valid_phoneme_indices]
+                    }
+                    phoneme_input_lengths_filtered = phoneme_input_lengths[valid_phoneme_indices]
+            
+            combined_outputs = {}
+            if has_error and batch_error_labels is not None:
+                combined_outputs.update(error_outputs)
+            if has_phoneme and batch_phoneme_labels is not None:
+                combined_outputs.update(phoneme_outputs)
+            
+            if combined_outputs:
+                loss, _ = criterion(
+                    combined_outputs,
+                    error_targets=batch_error_labels,
+                    phoneme_targets=batch_phoneme_labels,
+                    error_input_lengths=error_input_lengths_filtered if has_error and batch_error_labels is not None else None,
+                    phoneme_input_lengths=phoneme_input_lengths_filtered if has_phoneme and batch_phoneme_labels is not None else None,
+                    error_target_lengths=batch_error_lengths,
+                    phoneme_target_lengths=batch_phoneme_lengths
+                )
+                accumulated_loss = loss
             
             total_loss += accumulated_loss.item() if accumulated_loss > 0 else 0
             progress_bar.set_postfix({'Val_Loss': total_loss / (batch_idx + 1)})
@@ -570,11 +467,11 @@ def main():
     
     train_dataloader = DataLoader(
         train_dataset, batch_size=config.batch_size, shuffle=True, 
-        collate_fn=simultaneous_multitask_collate_fn if config.simultaneous_training else multitask_collate_fn
+        collate_fn=simultaneous_multitask_collate_fn
     )
     val_dataloader = DataLoader(
         val_dataset, batch_size=config.batch_size, shuffle=False,
-        collate_fn=simultaneous_multitask_collate_fn if config.simultaneous_training else multitask_collate_fn
+        collate_fn=simultaneous_multitask_collate_fn
     )
     
     eval_dataset = EvaluationDataset(
@@ -599,10 +496,10 @@ def main():
     for epoch in range(1, config.num_epochs + 1):
         train_loss = train_epoch(
             model, train_dataloader, criterion, wav2vec_optimizer, main_optimizer,
-            config.device, epoch, scaler, config.gradient_accumulation, config.simultaneous_training, config
+            config.device, epoch, scaler, config.gradient_accumulation, config
         )
         
-        val_loss = validate_epoch(model, val_dataloader, criterion, config.device, config.simultaneous_training)
+        val_loss = validate_epoch(model, val_dataloader, criterion, config.device)
         
         scheduler.step(val_loss)
         

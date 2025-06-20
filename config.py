@@ -6,7 +6,7 @@ from pytz import timezone
 
 @dataclass
 class Config:
-    pretrained_model = "facebook/wav2vec2-large-xlsr-53" #"facebook/wav2vec2-large-xlsr-53"
+    pretrained_model = "facebook/wav2vec2-large-xlsr-53"
     sampling_rate = 16000
     max_length = 320000
     
@@ -15,12 +15,11 @@ class Config:
     
     task_mode = 'both'
     error_task_ratio = 0.5
-    simultaneous_training = False
     
     model_type = 'simple'
     
-    batch_size = 16        # 16
-    eval_batch_size = 16    # 16
+    batch_size = 16
+    eval_batch_size = 16
     num_epochs = 50
     gradient_accumulation = 2
     
@@ -61,13 +60,6 @@ class Config:
             'num_heads': 8,
             'dropout': 0.1
         },
-        'cross': {
-            'hidden_dim': 1024,
-            'num_layers': 2,
-            'num_heads': 8,
-            'cross_attention_dim': 512,
-            'dropout': 0.1
-        },
         'hierarchical': {
             'hidden_dim': 1024,
             'num_layers': 2,
@@ -78,8 +70,10 @@ class Config:
     
     def __post_init__(self):
         if self.experiment_name is None:
-            timestamp = datetime.now(timezone('Asia/Seoul')).strftime("%Y%m%d_%H%M")
-            self.experiment_name = f"{self.model_type}_{timestamp}"
+            model_prefix = 'simple' if self.model_type == 'simple' else 'trm' if self.model_type == 'transformer' else self.model_type
+            error_ratio = str(int(self.error_weight * 10)).zfill(2)
+            phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
+            self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}"
         
         self.experiment_dir = os.path.join(self.base_experiment_dir, self.experiment_name)
         self.checkpoint_dir = os.path.join(self.experiment_dir, 'checkpoints')
