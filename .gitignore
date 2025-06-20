@@ -3,3 +3,4 @@ env
 /results
 /experiments
 *__pycache__
+/evaluation_results
