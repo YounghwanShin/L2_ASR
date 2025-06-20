@@ -40,22 +40,24 @@ def get_phoneme_model_class(model_type):
     else:
         raise ValueError(f"Unknown phoneme model type: {model_type}. Available: simple, transformer")
 
-def setup_experiment_dirs(config):
+def setup_experiment_dirs(config, resume=False):
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     os.makedirs(config.log_dir, exist_ok=True)
     os.makedirs(config.result_dir, exist_ok=True)
     
     config_path = os.path.join(config.experiment_dir, 'config.json')
-    config.save_config(config_path)
+    if not resume:
+        config.save_config(config_path)
     
     log_file = os.path.join(config.log_dir, 'training.log')
+    file_mode = 'a' if resume else 'w'
     
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%m/%d/%Y %H:%M:%S',
         handlers=[
-            logging.FileHandler(log_file),
+            logging.FileHandler(log_file, mode=file_mode),
             logging.StreamHandler()
         ]
     )
@@ -235,6 +237,25 @@ def save_checkpoint(model, wav2vec_opt, main_opt, scheduler, epoch, val_loss, tr
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(checkpoint, path)
 
+def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, scheduler, device):
+    logger.info(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    model.load_state_dict(checkpoint['model_state_dict'])
+    wav2vec_optimizer.load_state_dict(checkpoint['wav2vec_optimizer_state_dict'])
+    main_optimizer.load_state_dict(checkpoint['main_optimizer_state_dict'])
+    
+    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
+    start_epoch = checkpoint['epoch'] + 1
+    best_metrics = checkpoint.get('metrics', {})
+    
+    logger.info(f"Resumed from epoch {checkpoint['epoch']}")
+    logger.info(f"Previous metrics: {best_metrics}")
+    
+    return start_epoch, best_metrics
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, help='Override config values in format key=value')
@@ -243,6 +264,8 @@ def main():
     parser.add_argument('--eval_data', type=str, help='Override evaluation data path')
     parser.add_argument('--phoneme_map', type=str, help='Override phoneme map path')
     parser.add_argument('--output_dir', type=str, help='Override output directory')
+    parser.add_argument('--resume', type=str, help='Resume training from checkpoint path')
+    parser.add_argument('--experiment_name', type=str, help='Override experiment name')
     
     args = parser.parse_args()
     
@@ -262,6 +285,12 @@ def main():
     if args.output_dir:
         config.output_dir = args.output_dir
     
+    if args.experiment_name:
+        config.experiment_name = args.experiment_name
+    elif args.resume:
+        resume_exp_dir = os.path.dirname(os.path.dirname(args.resume))
+        config.experiment_name = os.path.basename(resume_exp_dir)
+    
     if args.config:
         for override in args.config.split(','):
             key, value = override.split('=')
@@ -269,13 +298,12 @@ def main():
                 attr_type = type(getattr(config, key))
                 setattr(config, key, attr_type(value))
     
-    config.__post_init__()
-    
-    if config.experiment_name and '_' in config.experiment_name:
-        timestamp_part = config.experiment_name.split('_', 1)[-1]
-        config.experiment_name = f"phoneme_{config.model_type}_{timestamp_part}"
-    else:
-        config.experiment_name = f"phoneme_{config.model_type}_{config.experiment_name}"
+    if config.experiment_name is None:
+        model_prefix = 'phoneme_simple' if config.model_type == 'simple' else f'phoneme_{config.model_type}'
+        config.experiment_name = model_prefix
+    elif not config.experiment_name.startswith('phoneme_'):
+        model_prefix = 'phoneme_simple' if config.model_type == 'simple' else f'phoneme_{config.model_type}'
+        config.experiment_name = model_prefix
     
     config.experiment_dir = os.path.join(config.base_experiment_dir, config.experiment_name)
     config.checkpoint_dir = os.path.join(config.experiment_dir, 'checkpoints')
@@ -284,7 +312,7 @@ def main():
     config.output_dir = config.checkpoint_dir
     
     seed_everything(config.seed)
-    setup_experiment_dirs(config)
+    setup_experiment_dirs(config, resume=bool(args.resume))
     
     with open(config.phoneme_map, 'r') as f:
         phoneme_to_id = json.load(f)
@@ -355,13 +383,33 @@ def main():
     
     best_val_loss = float('inf')
     best_phoneme_accuracy = 0.0
+    start_epoch = 1
     
-    logger.info(f"Starting phoneme-only training with model type: {config.model_type}")
-    logger.info(f"Experiment: {config.experiment_name}")
-    logger.info(f"Starting training for {config.num_epochs} epochs")
-    logger.info(f"SpecAugment enabled: {config.wav2vec2_specaug}")
+    if args.resume:
+        start_epoch, resume_metrics = load_checkpoint(
+            args.resume, model, wav2vec_optimizer, main_optimizer, scheduler, config.device
+        )
+        if 'phoneme_accuracy' in resume_metrics:
+            best_phoneme_accuracy = resume_metrics['phoneme_accuracy']
+        
+        checkpoint = torch.load(args.resume, map_location=config.device)
+        if 'val_loss' in checkpoint:
+            best_val_loss = checkpoint['val_loss']
+        
+        logger.info("=" * 50)
+        logger.info("RESUMING PHONEME TRAINING")
+        logger.info("=" * 50)
+        logger.info(f"Resuming from epoch {start_epoch}")
+        logger.info(f"Best phoneme accuracy so far: {best_phoneme_accuracy:.4f}")
+        logger.info(f"Best validation loss so far: {best_val_loss:.4f}")
+        logger.info("=" * 50)
+    else:
+        logger.info(f"Starting phoneme-only training with model type: {config.model_type}")
+        logger.info(f"Experiment: {config.experiment_name}")
+        logger.info(f"Starting training for {config.num_epochs} epochs")
+        logger.info(f"SpecAugment enabled: {config.wav2vec2_specaug}")
     
-    for epoch in range(1, config.num_epochs + 1):
+    for epoch in range(start_epoch, config.num_epochs + 1):
         train_loss = train_epoch(
             model, train_dataloader, criterion, wav2vec_optimizer, main_optimizer,
             config.device, epoch, scaler, config.gradient_accumulation, config
@@ -390,16 +438,15 @@ def main():
         
         current_phoneme_accuracy = 1.0 - phoneme_recognition_results['per']
         
-        metrics = {
-            'phoneme_accuracy': current_phoneme_accuracy,
-            'per': phoneme_recognition_results['per']
-        }
-        
-        if 'mpd_f1' in phoneme_recognition_results:
-            metrics['mpd_f1'] = phoneme_recognition_results['mpd_f1']
-        
         if current_phoneme_accuracy > best_phoneme_accuracy:
             best_phoneme_accuracy = current_phoneme_accuracy
+            metrics = {
+                'phoneme_accuracy': best_phoneme_accuracy,
+                'per': phoneme_recognition_results['per']
+            }
+            if 'mpd_f1' in phoneme_recognition_results:
+                metrics['mpd_f1'] = phoneme_recognition_results['mpd_f1']
+            
             model_path = os.path.join(config.output_dir, 'best_phoneme.pth')
             save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
                           epoch, val_loss, train_loss, metrics, model_path)
@@ -407,16 +454,37 @@ def main():
         
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            metrics = {
+                'phoneme_accuracy': best_phoneme_accuracy,
+                'per': phoneme_recognition_results['per']
+            }
+            if 'mpd_f1' in phoneme_recognition_results:
+                metrics['mpd_f1'] = phoneme_recognition_results['mpd_f1']
+            
             model_path = os.path.join(config.output_dir, 'best_loss.pth')
             save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
                           epoch, val_loss, train_loss, metrics, model_path)
             logger.info(f"New best validation loss: {best_val_loss:.4f}")
         
+        latest_metrics = {
+            'phoneme_accuracy': best_phoneme_accuracy,
+            'per': phoneme_recognition_results['per']
+        }
+        if 'mpd_f1' in phoneme_recognition_results:
+            latest_metrics['mpd_f1'] = phoneme_recognition_results['mpd_f1']
+        
+        latest_path = os.path.join(config.output_dir, 'latest.pth')
+        save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
+                      epoch, val_loss, train_loss, latest_metrics, latest_path)
+        
         torch.cuda.empty_cache()
     
     final_metrics = {
         'best_phoneme_accuracy': best_phoneme_accuracy,
-        'best_val_loss': best_val_loss
+        'best_val_loss': best_val_loss,
+        'completed_epochs': config.num_epochs,
+        'model_type': f"phoneme_{config.model_type}",
+        'experiment_name': config.experiment_name
     }
     
     metrics_path = os.path.join(config.result_dir, 'final_metrics.json')
@@ -425,6 +493,7 @@ def main():
     
     logger.info("Phoneme-only training completed!")
     logger.info(f"Best Phoneme Accuracy: {best_phoneme_accuracy:.4f}")
+    logger.info(f"Final metrics saved to: {metrics_path}")
 
 if __name__ == "__main__":
     main()

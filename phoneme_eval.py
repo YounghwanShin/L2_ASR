@@ -57,7 +57,7 @@ def infer_model_type_from_path(checkpoint_path):
             return 'transformer'
         elif 'simple' in part:
             return 'simple'
-        elif 'transformer' in part:
+        elif 'transformer' in part or 'trm' in part:
             return 'transformer'
     return 'simple'
 
@@ -177,12 +177,6 @@ def main():
         logger.info(f"Substitutions: {phoneme_recognition_results['substitutions']}")
     if 'mpd_f1' in phoneme_recognition_results:
         logger.info(f"MPD F1 Score: {phoneme_recognition_results['mpd_f1']:.4f}")
-    if 'sequence_accuracy' in phoneme_recognition_results:
-        logger.info(f"Sequence Accuracy: {phoneme_recognition_results['sequence_accuracy']:.4f}")
-    if 'token_accuracy' in phoneme_recognition_results:
-        logger.info(f"Token Accuracy: {phoneme_recognition_results['token_accuracy']:.4f}")
-    if 'avg_edit_distance' in phoneme_recognition_results:
-        logger.info(f"Average Edit Distance: {phoneme_recognition_results['avg_edit_distance']:.4f}")
     
     logger.info("\n--- MISPRONUNCIATION DETECTION METRICS ---")
     logger.info(f"Precision: {phoneme_recognition_results['mispronunciation_precision']:.4f}")
@@ -216,8 +210,7 @@ def main():
         }
     }
     
-    for key in ['total_phonemes', 'total_errors', 'insertions', 'deletions', 'substitutions', 
-                'sequence_accuracy', 'token_accuracy', 'avg_edit_distance']:
+    for key in ['total_phonemes', 'total_errors', 'insertions', 'deletions', 'substitutions']:
         if key in phoneme_recognition_results:
             final_results['phoneme_recognition'][key] = phoneme_recognition_results[key]
     
