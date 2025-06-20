@@ -54,6 +54,73 @@ def infer_model_type_from_path(checkpoint_path):
             return 'hierarchical'
     return 'simple'
 
+def get_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error_type_names, num_samples=5):
+    model.eval()
+    sample_predictions = []
+    samples_collected = 0
+    
+    with torch.no_grad():
+        for batch_data in eval_dataloader:
+            if samples_collected >= num_samples:
+                break
+                
+            (waveforms, error_labels, perceived_phoneme_ids, canonical_phoneme_ids, 
+             audio_lengths, error_label_lengths, perceived_lengths, canonical_lengths, wav_files) = batch_data
+            
+            waveforms = waveforms.to(device)
+            audio_lengths = audio_lengths.to(device)
+            
+            from evaluate import make_attn_mask, get_wav2vec2_output_lengths_official, decode_ctc
+            
+            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
+            attention_mask = make_attn_mask(waveforms, audio_lengths.float() / waveforms.shape[1])
+            
+            outputs = model(waveforms, attention_mask, task='both')
+            
+            error_logits = outputs['error_logits']
+            phoneme_logits = outputs['phoneme_logits']
+            
+            error_input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
+            phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
+            
+            error_log_probs = torch.log_softmax(error_logits, dim=-1)
+            phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
+            
+            error_predictions = decode_ctc(error_log_probs, error_input_lengths)
+            phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
+            
+            for i in range(min(waveforms.shape[0], num_samples - samples_collected)):
+                error_actual = [error_type_names.get(int(label), str(label)) 
+                              for label in error_labels[i][:error_label_lengths[i]]]
+                error_pred = [error_type_names.get(int(pred), str(pred)) 
+                            for pred in error_predictions[i]]
+                
+                phoneme_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
+                                for pid in perceived_phoneme_ids[i][:perceived_lengths[i]]]
+                phoneme_pred = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
+                              for pid in phoneme_predictions[i]]
+                
+                canonical_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
+                                  for pid in canonical_phoneme_ids[i][:canonical_lengths[i]]]
+                
+                sample_predictions.append({
+                    'file': wav_files[i],
+                    'error_actual': error_actual,
+                    'error_predicted': error_pred,
+                    'phoneme_actual': phoneme_actual,
+                    'phoneme_predicted': phoneme_pred,
+                    'canonical_phonemes': canonical_actual
+                })
+                
+                samples_collected += 1
+                if samples_collected >= num_samples:
+                    break
+            
+            if samples_collected >= num_samples:
+                break
+    
+    return sample_predictions
+
 def remove_module_prefix(state_dict):
     new_state_dict = {}
     for key, value in state_dict.items():
@@ -208,53 +275,61 @@ def main():
     logger.info(f"Original MPD F1: {phoneme_recognition_results['mpd_f1']:.4f}")
     logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
     
-    final_results = {
+    logger.info("Collecting sample predictions...")
+    sample_predictions = get_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error_type_names)
+    
+    experiment_dir_name = os.path.basename(os.path.dirname(os.path.dirname(args.model_checkpoint)))
+    
+    config_info = {
         'model_type': model_type,
         'checkpoint_path': args.model_checkpoint,
-        'error_detection': {
-            'sequence_accuracy': error_detection_results['sequence_accuracy'],
-            'token_accuracy': error_detection_results['token_accuracy'],
-            'avg_edit_distance': error_detection_results['avg_edit_distance'],
-            'weighted_f1': error_detection_results['weighted_f1'],
-            'macro_f1': error_detection_results['macro_f1'],
-            'total_sequences': error_detection_results['total_sequences'],
-            'total_tokens': error_detection_results['total_tokens'],
-            'class_metrics': error_detection_results['class_metrics']
-        },
-        'phoneme_recognition': {
-            'per': phoneme_recognition_results['per'],
-            'accuracy': 1.0 - phoneme_recognition_results['per'],
-            'mpd_f1': phoneme_recognition_results['mpd_f1'],
-            'mispronunciation_precision': phoneme_recognition_results['mispronunciation_precision'],
-            'mispronunciation_recall': phoneme_recognition_results['mispronunciation_recall'],
-            'mispronunciation_f1': phoneme_recognition_results['mispronunciation_f1'],
-            'total_phonemes': phoneme_recognition_results['total_phonemes'],
-            'total_errors': phoneme_recognition_results['total_errors'],
-            'insertions': phoneme_recognition_results['insertions'],
-            'deletions': phoneme_recognition_results['deletions'],
-            'substitutions': phoneme_recognition_results['substitutions'],
-            'confusion_matrix': phoneme_recognition_results['confusion_matrix']
+        'experiment_name': experiment_dir_name,
+        'evaluation_date': __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'model_config': config.model_configs.get(model_type, {})
+    }
+    
+    final_results = {
+        'config': config_info,
+        'sample_predictions': sample_predictions,
+        'evaluation_results': {
+            'error_detection': {
+                'sequence_accuracy': error_detection_results['sequence_accuracy'],
+                'token_accuracy': error_detection_results['token_accuracy'],
+                'avg_edit_distance': error_detection_results['avg_edit_distance'],
+                'weighted_f1': error_detection_results['weighted_f1'],
+                'macro_f1': error_detection_results['macro_f1'],
+                'total_sequences': error_detection_results['total_sequences'],
+                'total_tokens': error_detection_results['total_tokens'],
+                'class_metrics': error_detection_results['class_metrics']
+            },
+            'phoneme_recognition': {
+                'per': phoneme_recognition_results['per'],
+                'accuracy': 1.0 - phoneme_recognition_results['per'],
+                'mpd_f1': phoneme_recognition_results['mpd_f1'],
+                'mispronunciation_precision': phoneme_recognition_results['mispronunciation_precision'],
+                'mispronunciation_recall': phoneme_recognition_results['mispronunciation_recall'],
+                'mispronunciation_f1': phoneme_recognition_results['mispronunciation_f1'],
+                'total_phonemes': phoneme_recognition_results['total_phonemes'],
+                'total_errors': phoneme_recognition_results['total_errors'],
+                'insertions': phoneme_recognition_results['insertions'],
+                'deletions': phoneme_recognition_results['deletions'],
+                'substitutions': phoneme_recognition_results['substitutions'],
+                'confusion_matrix': phoneme_recognition_results['confusion_matrix']
+            }
         }
     }
     
-    if args.save_predictions:
-        output_dir = os.path.dirname(args.model_checkpoint)
-        results_path = os.path.join(output_dir, 'evaluation_results.json')
-        
-        with open(results_path, 'w') as f:
-            json.dump(final_results, f, indent=2)
-        
-        logger.info(f"Results saved to: {results_path}")
-        
-        if 'predictions' in error_detection_results:
-            predictions_path = os.path.join(output_dir, 'predictions.json')
-            predictions_data = {
-                'error_predictions': error_detection_results['predictions'],
-                'phoneme_predictions': phoneme_recognition_results.get('predictions', [])
-            }
-            with open(predictions_path, 'w') as f:
-                json.dump(predictions_data, f, indent=2)
-            logger.info(f"Predictions saved to: {predictions_path}")
+    evaluation_results_dir = 'evaluation_results'
+    os.makedirs(evaluation_results_dir, exist_ok=True)
+    
+    results_filename = f"{experiment_dir_name}_eval_results.json"
+    results_path = os.path.join(evaluation_results_dir, results_filename)
+    
+    with open(results_path, 'w') as f:
+        json.dump(final_results, f, indent=2)
+    
+    logger.info(f"\nComplete evaluation results saved to: {results_path}")
+    logger.info(f"Results include: config, {len(sample_predictions)} sample predictions, and full evaluation metrics")
 
 if __name__ == "__main__":
     main()
