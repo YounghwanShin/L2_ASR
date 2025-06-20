@@ -29,8 +29,8 @@ class Config:
     scheduler_factor = 0.5
     scheduler_patience = 3
     
-    error_weight = 0.1
-    phoneme_weight = 0.9
+    error_weight = 0.4
+    phoneme_weight = 0.6
     
     save_best_error = True
     save_best_phoneme = True
