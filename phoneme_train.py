@@ -40,6 +40,34 @@ def get_phoneme_model_class(model_type):
     else:
         raise ValueError(f"Unknown phoneme model type: {model_type}. Available: simple, transformer")
 
+def detect_phoneme_model_type_from_checkpoint(checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+    
+    def remove_module_prefix(state_dict):
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith('module.'):
+                new_key = key[7:]
+            else:
+                new_key = key
+            new_state_dict[new_key] = value
+        return new_state_dict
+    
+    state_dict = remove_module_prefix(state_dict)
+    keys = list(state_dict.keys())
+    
+    if any('transformer_encoder' in key for key in keys):
+        return 'transformer'
+    elif any('shared_encoder' in key for key in keys):
+        return 'simple'
+    else:
+        return 'simple'
+
 def setup_experiment_dirs(config, resume=False):
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     os.makedirs(config.log_dir, exist_ok=True)
@@ -291,6 +319,11 @@ def main():
         resume_exp_dir = os.path.dirname(os.path.dirname(args.resume))
         config.experiment_name = os.path.basename(resume_exp_dir)
     
+    if args.resume:
+        detected_model_type = detect_phoneme_model_type_from_checkpoint(args.resume)
+        config.model_type = detected_model_type
+        logger.info(f"Auto-detected model type from checkpoint: {detected_model_type}")
+    
     if args.config:
         for override in args.config.split(','):
             key, value = override.split('=')
@@ -298,7 +331,12 @@ def main():
                 attr_type = type(getattr(config, key))
                 setattr(config, key, attr_type(value))
     
-    if config.experiment_name is None:
+    if args.experiment_name:
+        config.experiment_name = args.experiment_name
+    elif args.resume:
+        resume_exp_dir = os.path.dirname(os.path.dirname(args.resume))
+        config.experiment_name = os.path.basename(resume_exp_dir)
+    elif config.experiment_name is None:
         model_prefix = 'phoneme_simple' if config.model_type == 'simple' else f'phoneme_{config.model_type}'
         config.experiment_name = model_prefix
     elif not config.experiment_name.startswith('phoneme_'):

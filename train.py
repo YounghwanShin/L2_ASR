@@ -38,6 +38,36 @@ def get_model_class(model_type):
     else:
         raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer, hierarchical")
 
+def detect_model_type_from_checkpoint(checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+    
+    def remove_module_prefix(state_dict):
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith('module.'):
+                new_key = key[7:]
+            else:
+                new_key = key
+            new_state_dict[new_key] = value
+        return new_state_dict
+    
+    state_dict = remove_module_prefix(state_dict)
+    keys = list(state_dict.keys())
+    
+    if any('transformer_encoder' in key for key in keys):
+        return 'transformer'
+    elif any('hierarchical' in key for key in keys):
+        return 'hierarchical'
+    elif any('shared_encoder' in key for key in keys):
+        return 'simple'
+    else:
+        return 'simple'
+
 def setup_experiment_dirs(config, resume=False):
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     os.makedirs(config.log_dir, exist_ok=True)
@@ -419,6 +449,11 @@ def main():
         config.phoneme_map = args.phoneme_map
     if args.output_dir:
         config.output_dir = args.output_dir
+    
+    if args.resume:
+        detected_model_type = detect_model_type_from_checkpoint(args.resume)
+        config.model_type = detected_model_type
+        logger.info(f"Auto-detected model type from checkpoint: {detected_model_type}")
     
     if args.experiment_name:
         config.experiment_name = args.experiment_name

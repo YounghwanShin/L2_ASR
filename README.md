@@ -50,7 +50,7 @@ python phoneme_train.py --config model_type=transformer
 
 ```bash
 # Multi-task 모델 resume
-python train.py --resume experiments/simple0406/checkpoints/best_phoneme.pth
+python train.py --resume experiments/trm_0109/checkpoints/best_phoneme.pth
 
 # Phoneme 모델 resume
 python phoneme_train.py --resume experiments/phoneme_simple/checkpoints/latest.pth
