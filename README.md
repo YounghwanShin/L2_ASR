@@ -50,7 +50,7 @@ python phoneme_train.py --config model_type=transformer
 
 ```bash
 # Multi-task 모델 resume
-python train.py --resume experiments/trm_0109/checkpoints/best_phoneme.pth
+python train.py --resume experiments/simple0406/checkpoints/best_phoneme.pth
 
 # Phoneme 모델 resume
 python phoneme_train.py --resume experiments/phoneme_simple/checkpoints/latest.pth
@@ -62,14 +62,45 @@ python train.py --resume path/to/checkpoint.pth --experiment_name custom_name
 ### 4. 모델 평가
 
 ```bash
-# Multi-task 모델 평가
+# Multi-task 모델 평가 (자동으로 evaluation_results/에 저장)
 python eval.py --model_checkpoint experiments/trm0406/checkpoints/best_phoneme.pth
 
 # Phoneme 모델 평가  
 python phoneme_eval.py --model_checkpoint experiments/phoneme_transformer/checkpoints/best_phoneme.pth
 
-# 예측 결과 저장
+# 기존 방식으로 체크포인트 디렉토리에 저장
 python eval.py --model_checkpoint path/to/model.pth --save_predictions
+```
+
+## 평가 결과
+
+평가 결과는 `evaluation_results/` 디렉토리에 자동 저장됩니다:
+
+- `trm0406_eval_results.json`: Transformer 모델 평가 결과
+- `phoneme_simple_eval_results.json`: Phoneme-only Simple 모델 결과
+
+각 JSON 파일 구조:
+```json
+{
+  "config": {
+    "model_type": "transformer",
+    "experiment_name": "trm0406",
+    "evaluation_date": "2025-06-20 15:30:00"
+  },
+  "sample_predictions": [
+    {
+      "file": "sample1.wav",
+      "error_actual": ["correct", "incorrect"],
+      "error_predicted": ["correct", "correct"],
+      "phoneme_actual": ["ae", "n", "d"],
+      "phoneme_predicted": ["ae", "n", "t"]
+    }
+  ],
+  "evaluation_results": {
+    "error_detection": {...},
+    "phoneme_recognition": {...}
+  }
+}
 ```
 
 ## 실험 결과
@@ -111,7 +142,7 @@ experiments/simple0406/
 # 1. 기본 모델 학습
 python train.py
 
-# 2. 결과 확인
+# 2. 결과 확인 (evaluation_results/simple0406_eval_results.json에 저장)
 python eval.py --model_checkpoint experiments/simple0406/checkpoints/best_phoneme.pth
 
 # 3. Phoneme 전용 모델 비교
@@ -120,4 +151,7 @@ python phoneme_eval.py --model_checkpoint experiments/phoneme_simple/checkpoints
 
 # 4. 학습 중단 후 재개
 python train.py --resume experiments/simple0406/checkpoints/latest.pth
+
+# 5. 결과 비교 (evaluation_results/ 디렉토리에서 확인)
+ls evaluation_results/
 ```
