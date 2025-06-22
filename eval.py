@@ -5,6 +5,8 @@ import logging
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from datetime import datetime
+import pytz
 
 from config import Config
 from data_prepare import EvaluationDataset, evaluation_collate_fn
@@ -284,7 +286,7 @@ def main():
         'model_type': model_type,
         'checkpoint_path': args.model_checkpoint,
         'experiment_name': experiment_dir_name,
-        'evaluation_date': __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'evaluation_date': datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S'),
         'model_config': config.model_configs.get(model_type, {})
     }
     

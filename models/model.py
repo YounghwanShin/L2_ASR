@@ -3,6 +3,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import Wav2Vec2Model, Wav2Vec2Config
 
+class FocalCTCLoss(nn.Module):
+    def __init__(self, alpha=1.0, gamma=2.0, blank=0, reduction='mean', zero_infinity=True):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.ctc_loss = nn.CTCLoss(blank=blank, reduction='none', zero_infinity=zero_infinity)
+        self.reduction = reduction
+        
+    def forward(self, log_probs, targets, input_lengths, target_lengths):
+        ctc_losses = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
+        
+        p_t = torch.exp(-ctc_losses)
+        focal_weights = self.alpha * (1 - p_t) ** self.gamma
+        focal_losses = focal_weights * ctc_losses
+        
+        if self.reduction == 'mean':
+            return focal_losses.mean()
+        elif self.reduction == 'sum':
+            return focal_losses.sum()
+        else:
+            return focal_losses
+
 class SimpleEncoder(nn.Module):
     def __init__(self, input_dim, hidden_dim, dropout=0.1):
         super().__init__()
@@ -82,12 +104,12 @@ class SimpleMultiTaskModel(nn.Module):
         return outputs
 
 class MultiTaskLoss(nn.Module):
-    def __init__(self, error_weight=1.0, phoneme_weight=1.0):
+    def __init__(self, error_weight=1.0, phoneme_weight=1.0, focal_alpha=1.0, focal_gamma=2.0):
         super().__init__()
         self.error_weight = error_weight
         self.phoneme_weight = phoneme_weight
-        self.error_criterion = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
-        self.phoneme_criterion = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
+        self.error_criterion = FocalCTCLoss(alpha=focal_alpha, gamma=focal_gamma, blank=0, reduction='mean', zero_infinity=True)
+        self.phoneme_criterion = FocalCTCLoss(alpha=focal_alpha, gamma=focal_gamma, blank=0, reduction='mean', zero_infinity=True)
         
     def forward(self, outputs, error_targets=None, phoneme_targets=None,
                 error_input_lengths=None, phoneme_input_lengths=None,

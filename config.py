@@ -31,6 +31,9 @@ class Config:
     error_weight = 0.5
     phoneme_weight = 0.5
     
+    focal_alpha = 0.25
+    focal_gamma = 2.0
+    
     save_best_error = True
     save_best_phoneme = True
     save_best_loss = True
@@ -70,14 +73,16 @@ class Config:
     
     def __post_init__(self):
         if self.experiment_name is None or not hasattr(self, '_last_model_type') or self._last_model_type != self.model_type:
+            current_date = datetime.now(timezone('Asia/Seoul')).strftime('%Y%m%d')
+            
             if hasattr(self, '_is_phoneme_model') and self._is_phoneme_model:
                 model_prefix = 'phoneme_simple' if self.model_type == 'simple' else f'phoneme_{self.model_type}'
-                self.experiment_name = model_prefix
+                self.experiment_name = f"{model_prefix}_{current_date}"
             else:
                 model_prefix = 'simple' if self.model_type == 'simple' else 'trm' if self.model_type == 'transformer' else self.model_type
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
-                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}"
+                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_{current_date}"
             
             self._last_model_type = self.model_type
         

@@ -5,6 +5,8 @@ import logging
 import random
 import numpy as np
 from tqdm import tqdm
+from datetime import datetime
+import pytz
 
 import torch
 import torch.nn as nn
@@ -396,7 +398,8 @@ def save_checkpoint(model, wav2vec_opt, main_opt, scheduler, epoch, val_loss, tr
         'main_optimizer_state_dict': main_opt.state_dict(),
         'val_loss': val_loss,
         'train_loss': train_loss,
-        'metrics': metrics
+        'metrics': metrics,
+        'saved_time': datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S')
     }
     
     if scheduler is not None:
@@ -420,6 +423,8 @@ def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, s
     best_metrics = checkpoint.get('metrics', {})
     
     logger.info(f"Resumed from epoch {checkpoint['epoch']}")
+    if 'saved_time' in checkpoint:
+        logger.info(f"Checkpoint saved at: {checkpoint['saved_time']}")
     logger.info(f"Previous metrics: {best_metrics}")
     
     return start_epoch, best_metrics
@@ -494,7 +499,9 @@ def main():
     
     criterion = loss_class(
         error_weight=config.error_weight,
-        phoneme_weight=config.phoneme_weight
+        phoneme_weight=config.phoneme_weight,
+        focal_alpha=config.focal_alpha,
+        focal_gamma=config.focal_gamma
     )
     
     wav2vec_params = []
@@ -579,6 +586,7 @@ def main():
         logger.info(f"Experiment: {config.experiment_name}")
         logger.info(f"Starting training for {config.num_epochs} epochs")
         logger.info(f"SpecAugment enabled: {config.wav2vec2_specaug}")
+        logger.info(f"Using Focal Loss with default parameters")
     
     for epoch in range(start_epoch, config.num_epochs + 1):
         train_loss = train_epoch(
