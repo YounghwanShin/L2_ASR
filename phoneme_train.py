@@ -98,7 +98,7 @@ def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, num_s
                 break
                 
             (waveforms, perceived_phoneme_ids, canonical_phoneme_ids, 
-             audio_lengths, perceived_lengths, canonical_lengths, wav_files) = batch_data
+             audio_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
             
             waveforms = waveforms.to(device)
             audio_lengths = audio_lengths.to(device)
