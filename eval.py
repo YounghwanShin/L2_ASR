@@ -19,9 +19,6 @@ def get_model_class(model_type):
     elif model_type == 'transformer':
         from models.model_transformer import TransformerMultiTaskModel
         return TransformerMultiTaskModel
-    elif model_type == 'hierarchical':
-        from models.model_hierarchical import HierarchicalMultiTaskModel
-        return HierarchicalMultiTaskModel
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -38,8 +35,6 @@ def detect_model_type_from_checkpoint(checkpoint_path):
     
     if any('transformer_encoder' in key for key in keys):
         return 'transformer'
-    elif any('hierarchical' in key for key in keys):
-        return 'hierarchical'
     elif any('shared_encoder' in key for key in keys):
         return 'simple'
     else:
@@ -52,8 +47,6 @@ def infer_model_type_from_path(checkpoint_path):
             return 'simple'
         elif 'transformer' in part or 'trm' in part:
             return 'transformer'
-        elif 'hierarchical' in part:
-            return 'hierarchical'
     return 'simple'
 
 def get_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error_type_names, num_samples=5):
@@ -138,7 +131,7 @@ def main():
     parser.add_argument('--model_checkpoint', type=str, required=True, help='Path to model checkpoint')
     parser.add_argument('--eval_data', type=str, help='Override evaluation data path')
     parser.add_argument('--phoneme_map', type=str, help='Override phoneme map path')
-    parser.add_argument('--model_type', type=str, help='Force model type (simple/transformer/hierarchical)')
+    parser.add_argument('--model_type', type=str, help='Force model type (simple/transformer)')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for evaluation')
     parser.add_argument('--save_predictions', action='store_true', help='Save detailed predictions')
     

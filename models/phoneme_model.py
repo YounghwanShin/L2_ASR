@@ -3,6 +3,29 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import Wav2Vec2Model, Wav2Vec2Config
 
+class FocalCTCLoss(nn.Module):
+    def __init__(self, alpha=1.0, gamma=2.0, blank=0, reduction='mean', zero_infinity=True):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.ctc_loss = nn.CTCLoss(blank=blank, reduction='none', zero_infinity=zero_infinity)
+        self.reduction = reduction
+        
+    def forward(self, log_probs, targets, input_lengths, target_lengths):
+        ctc_losses = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
+        ctc_losses = torch.clamp(ctc_losses, min=1e-6)
+        p_t = torch.exp(-ctc_losses)
+        p_t = torch.clamp(p_t, min=1e-6, max=1.0)
+        focal_weights = self.alpha * (1 - p_t) ** self.gamma
+        focal_losses = focal_weights * ctc_losses
+        
+        if self.reduction == 'mean':
+            return focal_losses.mean()
+        elif self.reduction == 'sum':
+            return focal_losses.sum()
+        else:
+            return focal_losses
+
 class SimpleEncoder(nn.Module):
     def __init__(self, input_dim, hidden_dim, dropout=0.1):
         super().__init__()
@@ -62,9 +85,9 @@ class SimplePhonemeModel(nn.Module):
         return {'phoneme_logits': phoneme_logits}
 
 class PhonemeLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, focal_alpha=1.0, focal_gamma=2.0):
         super().__init__()
-        self.phoneme_criterion = nn.CTCLoss(blank=0, reduction='mean', zero_infinity=True)
+        self.phoneme_criterion = FocalCTCLoss(alpha=focal_alpha, gamma=focal_gamma, blank=0, reduction='mean', zero_infinity=True)
         
     def forward(self, outputs, phoneme_targets, phoneme_input_lengths, phoneme_target_lengths):
         phoneme_log_probs = torch.log_softmax(outputs['phoneme_logits'], dim=-1)

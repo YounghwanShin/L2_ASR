@@ -25,8 +25,6 @@ class Config:
     
     main_lr = 3e-4
     wav2vec_lr = 1e-5
-    scheduler_factor = 0.5
-    scheduler_patience = 3
     
     error_weight = 0.5
     phoneme_weight = 0.5
@@ -58,12 +56,6 @@ class Config:
             'dropout': 0.1
         },
         'transformer': {
-            'hidden_dim': 1024,
-            'num_layers': 2,
-            'num_heads': 8,
-            'dropout': 0.1
-        },
-        'hierarchical': {
             'hidden_dim': 1024,
             'num_layers': 2,
             'num_heads': 8,

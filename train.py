@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from config import Config
 from data_prepare import MultiTaskDataset, EvaluationDataset, evaluation_collate_fn, simultaneous_multitask_collate_fn
@@ -34,11 +33,8 @@ def get_model_class(model_type):
     elif model_type == 'transformer':
         from models.model_transformer import TransformerMultiTaskModel, MultiTaskLoss
         return TransformerMultiTaskModel, MultiTaskLoss
-    elif model_type == 'hierarchical':
-        from models.model_hierarchical import HierarchicalMultiTaskModel, MultiTaskLoss
-        return HierarchicalMultiTaskModel, MultiTaskLoss
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer, hierarchical")
+        raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer")
 
 def detect_model_type_from_checkpoint(checkpoint_path):
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
@@ -63,8 +59,6 @@ def detect_model_type_from_checkpoint(checkpoint_path):
     
     if any('transformer_encoder' in key for key in keys):
         return 'transformer'
-    elif any('hierarchical' in key for key in keys):
-        return 'hierarchical'
     elif any('shared_encoder' in key for key in keys):
         return 'simple'
     else:
@@ -390,7 +384,7 @@ def seed_everything(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def save_checkpoint(model, wav2vec_opt, main_opt, scheduler, epoch, val_loss, train_loss, metrics, path):
+def save_checkpoint(model, wav2vec_opt, main_opt, epoch, val_loss, train_loss, metrics, path):
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -402,22 +396,16 @@ def save_checkpoint(model, wav2vec_opt, main_opt, scheduler, epoch, val_loss, tr
         'saved_time': datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S')
     }
     
-    if scheduler is not None:
-        checkpoint['scheduler_state_dict'] = scheduler.state_dict()
-    
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(checkpoint, path)
 
-def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, scheduler, device):
+def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, device):
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
     model.load_state_dict(checkpoint['model_state_dict'])
     wav2vec_optimizer.load_state_dict(checkpoint['wav2vec_optimizer_state_dict'])
     main_optimizer.load_state_dict(checkpoint['main_optimizer_state_dict'])
-    
-    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     
     start_epoch = checkpoint['epoch'] + 1
     best_metrics = checkpoint.get('metrics', {})
@@ -518,8 +506,6 @@ def main():
     
     scaler = torch.amp.GradScaler('cuda')
     
-    scheduler = ReduceLROnPlateau(main_optimizer, mode='min', factor=config.scheduler_factor, patience=config.scheduler_patience)
-    
     train_dataset = MultiTaskDataset(
         config.train_data, phoneme_to_id, 
         max_length=config.max_length,
@@ -562,7 +548,7 @@ def main():
     
     if args.resume:
         start_epoch, resume_metrics = load_checkpoint(
-            args.resume, model, wav2vec_optimizer, main_optimizer, scheduler, config.device
+            args.resume, model, wav2vec_optimizer, main_optimizer, config.device
         )
         if 'error_accuracy' in resume_metrics:
             best_error_accuracy = resume_metrics['error_accuracy']
@@ -595,8 +581,6 @@ def main():
         )
         
         val_loss = validate_epoch(model, val_dataloader, criterion, config.device)
-        
-        scheduler.step(val_loss)
         
         logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
         
@@ -632,7 +616,7 @@ def main():
                 'per': phoneme_recognition_results['per']
             }
             model_path = os.path.join(config.output_dir, 'best_error.pth')
-            save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
+            save_checkpoint(model, wav2vec_optimizer, main_optimizer, 
                           epoch, val_loss, train_loss, metrics, model_path)
             logger.info(f"New best error accuracy: {best_error_accuracy:.4f}")
             
@@ -644,7 +628,7 @@ def main():
                 'per': phoneme_recognition_results['per']
             }
             model_path = os.path.join(config.output_dir, 'best_phoneme.pth')
-            save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
+            save_checkpoint(model, wav2vec_optimizer, main_optimizer, 
                           epoch, val_loss, train_loss, metrics, model_path)
             logger.info(f"New best phoneme accuracy: {best_phoneme_accuracy:.4f} (PER: {phoneme_recognition_results['per']:.4f})")
         
@@ -656,7 +640,7 @@ def main():
                 'per': phoneme_recognition_results['per']
             }
             model_path = os.path.join(config.output_dir, 'best_loss.pth')
-            save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
+            save_checkpoint(model, wav2vec_optimizer, main_optimizer, 
                           epoch, val_loss, train_loss, metrics, model_path)
             logger.info(f"New best validation loss: {best_val_loss:.4f}")
         
@@ -666,7 +650,7 @@ def main():
             'per': phoneme_recognition_results['per']
         }
         latest_path = os.path.join(config.output_dir, 'latest.pth')
-        save_checkpoint(model, wav2vec_optimizer, main_optimizer, scheduler, 
+        save_checkpoint(model, wav2vec_optimizer, main_optimizer, 
                       epoch, val_loss, train_loss, latest_metrics, latest_path)
         
         torch.cuda.empty_cache()
