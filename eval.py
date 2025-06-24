@@ -245,7 +245,6 @@ def main():
     logger.info("\n--- PHONEME RECOGNITION RESULTS ---")
     logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
     logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
-    logger.info(f"MPD F1 Score: {phoneme_recognition_results['mpd_f1']:.4f}")
     logger.info(f"Total Phonemes: {phoneme_recognition_results['total_phonemes']}")
     logger.info(f"Total Errors: {phoneme_recognition_results['total_errors']}")
     logger.info(f"Insertions: {phoneme_recognition_results['insertions']}")
@@ -267,11 +266,7 @@ def main():
     logger.info("\n--- SUMMARY ---")
     logger.info(f"Overall Error Detection Performance: {error_detection_results['weighted_f1']:.4f} (Weighted F1)")
     logger.info(f"Overall Phoneme Recognition Performance: {1.0 - phoneme_recognition_results['per']:.4f} (Accuracy)")
-    logger.info(f"Original MPD F1: {phoneme_recognition_results['mpd_f1']:.4f}")
     logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
-    
-    logger.info("Collecting sample predictions...")
-    sample_predictions = get_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error_type_names)
     
     experiment_dir_name = os.path.basename(os.path.dirname(os.path.dirname(args.model_checkpoint)))
     
@@ -283,9 +278,18 @@ def main():
         'model_config': config.model_configs.get(model_type, {})
     }
     
+    logger.info("\n--- BY COUNTRY RESULTS ---")
+    for country in sorted(error_detection_results.get('by_country', {}).keys()):
+        logger.info(f"\n{country}:")
+        error_country = error_detection_results['by_country'][country]
+        phoneme_country = phoneme_recognition_results['by_country'][country]
+        logger.info(f"  Error Token Accuracy: {error_country['token_accuracy']:.4f}")
+        logger.info(f"  Error Weighted F1: {error_country['weighted_f1']:.4f}")
+        logger.info(f"  Phoneme Accuracy: {1.0 - phoneme_country['per']:.4f}")
+        logger.info(f"  Mispronunciation F1: {phoneme_country['mispronunciation_f1']:.4f}")
+    
     final_results = {
         'config': config_info,
-        'sample_predictions': sample_predictions,
         'evaluation_results': {
             'error_detection': {
                 'sequence_accuracy': error_detection_results['sequence_accuracy'],
@@ -295,12 +299,12 @@ def main():
                 'macro_f1': error_detection_results['macro_f1'],
                 'total_sequences': error_detection_results['total_sequences'],
                 'total_tokens': error_detection_results['total_tokens'],
-                'class_metrics': error_detection_results['class_metrics']
+                'class_metrics': error_detection_results['class_metrics'],
+                'by_country': error_detection_results.get('by_country', {})
             },
             'phoneme_recognition': {
                 'per': phoneme_recognition_results['per'],
                 'accuracy': 1.0 - phoneme_recognition_results['per'],
-                'mpd_f1': phoneme_recognition_results['mpd_f1'],
                 'mispronunciation_precision': phoneme_recognition_results['mispronunciation_precision'],
                 'mispronunciation_recall': phoneme_recognition_results['mispronunciation_recall'],
                 'mispronunciation_f1': phoneme_recognition_results['mispronunciation_f1'],
@@ -309,7 +313,8 @@ def main():
                 'insertions': phoneme_recognition_results['insertions'],
                 'deletions': phoneme_recognition_results['deletions'],
                 'substitutions': phoneme_recognition_results['substitutions'],
-                'confusion_matrix': phoneme_recognition_results['confusion_matrix']
+                'confusion_matrix': phoneme_recognition_results['confusion_matrix'],
+                'by_country': phoneme_recognition_results.get('by_country', {})
             }
         }
     }
@@ -324,7 +329,7 @@ def main():
         json.dump(final_results, f, indent=2)
     
     logger.info(f"\nComplete evaluation results saved to: {results_path}")
-    logger.info(f"Results include: config, {len(sample_predictions)} sample predictions, and full evaluation metrics")
+    logger.info(f"Results include: config and full evaluation metrics with country breakdown")
 
 if __name__ == "__main__":
     main()

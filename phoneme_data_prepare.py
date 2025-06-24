@@ -107,6 +107,8 @@ class PhonemeEvaluationDataset(Dataset):
             if p in self.phoneme_to_id
         ]
         
+        spk_id = item.get('spk_id', 'UNKNOWN')
+        
         return (
             waveform,
             torch.tensor(perceived_ids, dtype=torch.long),
@@ -114,7 +116,8 @@ class PhonemeEvaluationDataset(Dataset):
             torch.tensor(waveform.shape[0], dtype=torch.long),
             torch.tensor(len(perceived_ids), dtype=torch.long),
             torch.tensor(len(canonical_ids), dtype=torch.long),
-            wav_file
+            wav_file,
+            spk_id
         )
 
 def phoneme_collate_fn(batch):
@@ -150,7 +153,7 @@ def phoneme_collate_fn(batch):
 
 def phoneme_evaluation_collate_fn(batch):
     (waveforms, perceived_phoneme_ids, canonical_phoneme_ids,
-     audio_lengths, perceived_lengths, canonical_lengths, wav_files) = zip(*batch)
+     audio_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = zip(*batch)
     
     def pad_tensors(tensors, pad_value=0):
         max_len = max(tensor.shape[0] for tensor in tensors)
@@ -172,5 +175,6 @@ def phoneme_evaluation_collate_fn(batch):
         torch.tensor(audio_lengths),
         torch.tensor(perceived_lengths),
         torch.tensor(canonical_lengths),
-        wav_files
+        wav_files,
+        spk_ids
     )

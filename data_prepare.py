@@ -141,6 +141,8 @@ class EvaluationDataset(Dataset):
             else:
                 error_ids.append(0)
         
+        spk_id = item.get('spk_id', 'UNKNOWN')
+        
         return (
             waveform,
             torch.tensor(error_ids, dtype=torch.long),
@@ -150,7 +152,8 @@ class EvaluationDataset(Dataset):
             torch.tensor(len(error_ids), dtype=torch.long),
             torch.tensor(len(perceived_ids), dtype=torch.long),
             torch.tensor(len(canonical_ids), dtype=torch.long),
-            wav_file
+            wav_file,
+            spk_id
         )
 
 def simultaneous_multitask_collate_fn(batch):
@@ -200,7 +203,7 @@ def simultaneous_multitask_collate_fn(batch):
 
 def evaluation_collate_fn(batch):
     (waveforms, error_ids, perceived_phoneme_ids, canonical_phoneme_ids,
-     audio_lengths, error_lengths, perceived_lengths, canonical_lengths, wav_files) = zip(*batch)
+     audio_lengths, error_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = zip(*batch)
     
     def pad_tensors(tensors, pad_value=0):
         max_len = max(tensor.shape[0] for tensor in tensors)
@@ -224,5 +227,6 @@ def evaluation_collate_fn(batch):
         torch.tensor(error_lengths),
         torch.tensor(perceived_lengths),
         torch.tensor(canonical_lengths),
-        wav_files
+        wav_files,
+        spk_ids
     )

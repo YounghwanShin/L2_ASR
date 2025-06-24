@@ -46,60 +46,6 @@ def detect_phoneme_model_type_from_checkpoint(checkpoint_path):
     elif any('shared_encoder' in key for key in keys):
         return 'simple'
 
-def get_phoneme_sample_predictions(model, eval_dataloader, device, id_to_phoneme, num_samples=5):
-    model.eval()
-    sample_predictions = []
-    samples_collected = 0
-    
-    with torch.no_grad():
-        for batch_data in eval_dataloader:
-            if samples_collected >= num_samples:
-                break
-                
-            (waveforms, perceived_phoneme_ids, canonical_phoneme_ids, 
-             audio_lengths, perceived_lengths, canonical_lengths, wav_files) = batch_data
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            from phoneme_evaluate import make_attn_mask, get_wav2vec2_output_lengths_official, decode_ctc
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-            
-            outputs = model(waveforms, attention_mask)
-            phoneme_logits = outputs['phoneme_logits']
-            
-            phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-            phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
-            
-            for i in range(min(waveforms.shape[0], num_samples - samples_collected)):
-                phoneme_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                for pid in perceived_phoneme_ids[i][:perceived_lengths[i]]]
-                phoneme_pred = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                              for pid in phoneme_predictions[i]]
-                
-                canonical_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                  for pid in canonical_phoneme_ids[i][:canonical_lengths[i]]]
-                
-                sample_predictions.append({
-                    'file': wav_files[i],
-                    'phoneme_actual': phoneme_actual,
-                    'phoneme_predicted': phoneme_pred,
-                    'canonical_phonemes': canonical_actual
-                })
-                
-                samples_collected += 1
-                if samples_collected >= num_samples:
-                    break
-            
-            if samples_collected >= num_samples:
-                break
-    
-    return sample_predictions
-
 def infer_model_type_from_path(checkpoint_path):
     path_parts = checkpoint_path.split('/')
     for part in path_parts:
@@ -227,8 +173,6 @@ def main():
         logger.info(f"Deletions: {phoneme_recognition_results['deletions']}")
     if 'substitutions' in phoneme_recognition_results:
         logger.info(f"Substitutions: {phoneme_recognition_results['substitutions']}")
-    if 'mpd_f1' in phoneme_recognition_results:
-        logger.info(f"MPD F1 Score: {phoneme_recognition_results['mpd_f1']:.4f}")
     
     logger.info("\n--- MISPRONUNCIATION DETECTION METRICS ---")
     logger.info(f"Precision: {phoneme_recognition_results['mispronunciation_precision']:.4f}")
@@ -244,12 +188,14 @@ def main():
     
     logger.info("\n--- SUMMARY ---")
     logger.info(f"Overall Phoneme Recognition Performance: {1.0 - phoneme_recognition_results['per']:.4f} (Accuracy)")
-    if 'mpd_f1' in phoneme_recognition_results:
-        logger.info(f"Original MPD F1: {phoneme_recognition_results['mpd_f1']:.4f}")
     logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
     
-    logger.info("Collecting sample predictions...")
-    sample_predictions = get_phoneme_sample_predictions(model, eval_dataloader, device, id_to_phoneme)
+    logger.info("\n--- BY COUNTRY RESULTS ---")
+    for country in sorted(phoneme_recognition_results.get('by_country', {}).keys()):
+        logger.info(f"\n{country}:")
+        phoneme_country = phoneme_recognition_results['by_country'][country]
+        logger.info(f"  Phoneme Accuracy: {1.0 - phoneme_country['per']:.4f}")
+        logger.info(f"  Mispronunciation F1: {phoneme_country['mispronunciation_f1']:.4f}")
     
     experiment_dir_name = os.path.basename(os.path.dirname(os.path.dirname(args.model_checkpoint)))
     
@@ -263,16 +209,15 @@ def main():
     
     final_results = {
         'config': config_info,
-        'sample_predictions': sample_predictions,
         'evaluation_results': {
             'phoneme_recognition': {
                 'per': phoneme_recognition_results['per'],
                 'accuracy': 1.0 - phoneme_recognition_results['per'],
-                'mpd_f1': phoneme_recognition_results['mpd_f1'],
                 'mispronunciation_precision': phoneme_recognition_results['mispronunciation_precision'],
                 'mispronunciation_recall': phoneme_recognition_results['mispronunciation_recall'],
                 'mispronunciation_f1': phoneme_recognition_results['mispronunciation_f1'],
-                'confusion_matrix': phoneme_recognition_results['confusion_matrix']
+                'confusion_matrix': phoneme_recognition_results['confusion_matrix'],
+                'by_country': phoneme_recognition_results.get('by_country', {})
             }
         }
     }
@@ -291,7 +236,7 @@ def main():
         json.dump(final_results, f, indent=2)
     
     logger.info(f"\nComplete evaluation results saved to: {results_path}")
-    logger.info(f"Results include: config, {len(sample_predictions)} sample predictions, and full evaluation metrics")
+    logger.info(f"Results include: config and full evaluation metrics with country breakdown")
 
 if __name__ == "__main__":
     main()
