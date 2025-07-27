@@ -1,189 +1,154 @@
-# L2 발음 오류 탐지 및 음소 인식
+# Multi-task L2 Pronunciation Assessment
 
-이 프로젝트는 L2(제2언어) 학습자의 발음 오류를 탐지하고 음소를 인식하는 이중 wav2vec2 모델을 구현합니다. 모델은 2단계에 걸쳐 학습되며, 첫 번째 단계에서는 오류 탐지를, 두 번째 단계에서는 음소 인식을 수행합니다.
+다중 과제 학습 기반 L2 발음 평가 모델
 
-## 주요 특징
+## 설치
 
-- **이중 wav2vec2 아키텍처**: 오류 탐지와 음소 인식을 위한 병렬 처리
-- **2단계 학습 프로세스**: 
-  - 1단계: 발음 오류 탐지 (deletion, substitution, insertion, correct)
-  - 2단계: 오류 정보를 활용한 정확한 음소 인식
-- **CTC 손실 함수**: 시퀀스 정렬 문제 해결
-- **어댑터 기반 아키텍처**: 효율적인 모델 튜닝
-
-## 설치 방법
-
-### 1. 저장소 클론
 ```bash
-git clone https://github.com/your-username/l2-pronunciation-error-detection.git
-cd l2-pronunciation-error-detection
-```
-
-### 2. 가상 환경 설정
-
-#### venv 사용 (Python 기본)
-```bash
-# 가상 환경 생성
-python3 -m venv l2-pronunciation-env
-
-# 가상 환경 활성화 (Linux/Mac)
-source l2-pronunciation-env/bin/activate
-
-# 가상 환경 활성화 (Windows)
-l2-pronunciation-env\Scripts\activate
-```
-
-#### Conda 사용 (선택사항)
-```bash
-# 새로운 conda 환경 생성
-conda create -n l2-pronunciation python=3.9
-
-# conda 환경 활성화
-conda activate l2-pronunciation
-```
-
-### 3. 필요 패키지 설치
-```bash
-# 가상 환경이 활성화된 상태에서 실행
 pip install -r requirements.txt
 ```
 
-### 4. 데이터 다운로드
+## 데이터 준비
 
-프로젝트에 필요한 L2Arctic 데이터셋과 기타 데이터 파일을 다운로드합니다:
+```
+data/
+├── train_labels.json
+├── val_labels.json  
+├── test_labels.json
+└── phoneme_map.json
+```
+
+## 기본 사용법
+
+### 1. Multi-task 모델 학습
 
 ```bash
-python download.py
+# 기본 학습 (Simple 모델)
+python train.py
+
+# Transformer 모델
+python train.py --config model_type=transformer
+
+# 가중치 조정
+python train.py --config error_weight=0.5,phoneme_weight=0.5
 ```
 
-이 스크립트는 다음을 다운로드합니다:
-- L2Arctic 데이터셋 (24개 폴더)
-- 오류 레이블 파일들 (7개 파일)
-- 음소 인식 관련 데이터
-
-## 모델 구조
-
-```
-DualWav2VecWithErrorAwarePhonemeRecognition
-├── FrozenWav2VecWithAdapter (첫 번째 wav2vec2)
-│   ├── Frozen Wav2Vec2 Model
-│   └── Bottleneck Adapter
-├── LearnableWav2Vec (두 번째 wav2vec2)
-├── FeatureFusion (특징 융합)
-├── ErrorDetectionHead (오류 탐지)
-├── PhonemeRecognitionHead (음소 인식)
-└── ErrorAwarePhonemeDecoder (오류 인식 결합)
-```
-
-## 학습 방법
-
-### 1단계: 오류 탐지 학습
+### 2. Phoneme-only 모델 학습
 
 ```bash
-python train.py --stage 1 --num_epochs 50 --batch_size 16 --learning_rate 6e-6 
+# Simple Phoneme 모델
+python phoneme_train.py
+
+# Transformer Phoneme 모델
+python phoneme_train.py --config model_type=transformer
 ```
 
-### 2단계: 음소 인식 학습
+### 3. 학습 이어서 하기
 
 ```bash
-python train.py --stage 2 --num_epochs 50 --batch_size 16 --learning_rate 6e-6 \
-    --model_checkpoint models/best_error_detection.pth
+# Multi-task 모델 resume
+python train.py --resume experiments/simple0406/checkpoints/best_phoneme.pth
+
+# Phoneme 모델 resume
+python phoneme_train.py --resume experiments/phoneme_simple/checkpoints/latest.pth
+
+# 실험명 직접 지정하여 resume
+python train.py --resume path/to/checkpoint.pth --experiment_name custom_name
 ```
 
-### 주요 학습 인자
-
-#### 필수 인자:
-- `--stage`: 학습 단계 (1: 오류 탐지, 2: 음소 인식)
-
-#### 데이터 관련 인자:
-- `--error_train_data`: 오류 탐지 학습 데이터 경로 (기본값: `data/errors_train.json`)
-- `--error_val_data`: 오류 탐지 검증 데이터 경로 (기본값: `data/errors_val.json`)
-- `--phoneme_train_data`: 음소 인식 학습 데이터 경로 (기본값: `data/perceived_train.json`)
-- `--phoneme_val_data`: 음소 인식 검증 데이터 경로 (기본값: `data/perceived_val.json`)
-- `--phoneme_map`: 음소-ID 매핑 파일 경로 (기본값: `data/phoneme_to_id.json`)
-- `--max_audio_length`: 최대 오디오 길이(샘플 단위) 제한 (기본값: None)
-
-#### 모델 관련 인자:
-- `--pretrained_model`: 사전학습된 wav2vec2 모델 이름 (기본값: `facebook/wav2vec2-base-960h`)
-- `--hidden_dim`: 은닉층 차원 크기 (기본값: 768)
-- `--num_phonemes`: 음소 수 (기본값: 42)
-- `--adapter_dim_ratio`: 어댑터 차원 비율 (기본값: 0.25)
-- `--unfreeze_top_percent`: 상위 레이어 언프리징 비율 (기본값: 0.5)
-- `--error_influence_weight`: 오류 영향 가중치 (기본값: 0.2)
-
-#### 학습 관련 인자:
-- `--batch_size`: 배치 크기 (기본값: 8)
-- `--learning_rate`: 학습률 (기본값: 5e-5)
-- `--num_epochs`: 학습 에폭 수 (기본값: 10)
-- `--seed`: 랜덤 시드 (기본값: 42)
-- `--device`: 사용할 장치 (기본값: cuda 사용 가능시 cuda, 아니면 cpu)
-- `--max_grad_norm`: 그라디언트 클리핑을 위한 최대 노름값 (기본값: 0.5)
-
-#### 출력 관련 인자:
-- `--output_dir`: 모델 체크포인트 저장 디렉토리 (기본값: `models/`)
-- `--result_dir`: 결과 로그 저장 디렉토리 (기본값: `results/`)
-- `--model_checkpoint`: 로드할 사전 학습된 모델 체크포인트 경로 (기본값: None)
-
-## 프로젝트 구조
-
-```
-l2-pronunciation-error-detection/
-├── model.py                  # 모델 아키텍처 정의
-├── train.py                  # 학습 스크립트
-├── download.py              # 데이터 다운로드 스크립트
-├── requirements.txt         # 필요 패키지 목록
-├── .gitignore              # Git 제외 파일 목록
-├── README.md               # 프로젝트 설명서
-│
-├── data/                   # 데이터 디렉토리
-│   ├── l2arctic_dataset/   # L2Arctic 데이터셋
-│   ├── errors_train.json   # 오류 탐지 학습 데이터
-│   ├── errors_val.json     # 오류 탐지 검증 데이터
-│   ├── perceived_train.json # 음소 인식 학습 데이터
-│   ├── perceived_val.json  # 음소 인식 검증 데이터
-│   └── phoneme_to_id.json  # 음소-ID 매핑
-│
-├── models/                 # 모델 체크포인트
-│   ├── best_error_detection.pth
-│   ├── best_phoneme_recognition.pth
-│   ├── last_error_detection.pth
-│   └── last_phoneme_recognition.pth
-│
-└── results/                # 학습 결과 로그
-    ├── train_stage1.log
-    ├── train_stage2.log
-    ├── hyperparams_stage1.json
-    ├── hyperparams_stage2.json
-    ├── error_detection_epoch*.json
-    └── phoneme_recognition_epoch*.json
-```
-
-## 오류 유형
-
-모델은 다음 4가지 오류 유형을 탐지합니다:
-
-1. **Deletion (D)**: 발음해야 할 음소가 누락된 경우
-2. **Substitution (S)**: 의도된 음소와 다른 음소로 발음된 경우
-3. **Insertion (A)**: 추가적인 음소가 삽입된 경우
-4. **Correct (C)**: 정확하게 발음된 경우
-
-## GPU/CPU 설정
+### 4. 모델 평가
 
 ```bash
-# GPU 사용 (CUDA가 설치된 경우)
-python train.py --stage 1 --device cuda
+# Multi-task 모델 평가 (자동으로 evaluation_results/에 저장)
+python eval.py --model_checkpoint experiments/trm0406/checkpoints/best_phoneme.pth
 
-# CPU 사용
-python train.py --stage 1 --device cpu
+# Phoneme 모델 평가  
+python phoneme_eval.py --model_checkpoint experiments/phoneme_transformer/checkpoints/best_phoneme.pth
 
-# 자동 선택 (기본값)
-python train.py --stage 1
+# 기존 방식으로 체크포인트 디렉토리에 저장
+python eval.py --model_checkpoint path/to/model.pth --save_predictions
 ```
 
-## 학습 모니터링
+## 평가 결과
 
-학습 진행 상황은 다음 위치에서 확인할 수 있습니다
+평가 결과는 `evaluation_results/` 디렉토리에 자동 저장됩니다:
 
-- **콘솔 출력**: 각 에폭의 손실값과 진행률
-- **로그 파일**: `results/train_stage*.log`
-- **에폭별 결과**: `results/*_epoch*.json`
+- `trm0406_eval_results.json`: Transformer 모델 평가 결과
+- `phoneme_simple_eval_results.json`: Phoneme-only Simple 모델 결과
+
+각 JSON 파일 구조:
+```json
+{
+  "config": {
+    "model_type": "transformer",
+    "experiment_name": "trm0406",
+    "evaluation_date": "2025-06-20 15:30:00"
+  },
+  "sample_predictions": [
+    {
+      "file": "sample1.wav",
+      "error_actual": ["correct", "incorrect"],
+      "error_predicted": ["correct", "correct"],
+      "phoneme_actual": ["ae", "n", "d"],
+      "phoneme_predicted": ["ae", "n", "t"]
+    }
+  ],
+  "evaluation_results": {
+    "error_detection": {...},
+    "phoneme_recognition": {...}
+  }
+}
+```
+
+## 실험 결과
+
+학습된 모델은 `experiments/` 에 자동으로 저장됩니다:
+
+- `simple0406/`: Simple 모델, error=0.4, phoneme=0.6
+- `trm0505/`: Transformer 모델, error=0.5, phoneme=0.5  
+- `phoneme_simple/`: Phoneme-only Simple 모델
+- `phoneme_transformer/`: Phoneme-only Transformer 모델
+
+각 폴더 구조:
+```
+experiments/simple0406/
+├── checkpoints/
+│   ├── best_error.pth
+│   ├── best_phoneme.pth
+│   ├── best_loss.pth
+│   └── latest.pth
+├── logs/training.log
+└── results/final_metrics.json
+```
+
+## 주요 옵션
+
+| 옵션 | 설명 | 기본값 |
+|------|------|-------|
+| `model_type` | simple, transformer, hierarchical | simple |
+| `error_weight` | Error detection 가중치 | 0.4 |
+| `phoneme_weight` | Phoneme recognition 가중치 | 0.6 |
+| `batch_size` | 배치 크기 | 16 |
+| `num_epochs` | 에포크 수 | 50 |
+| `--resume` | 체크포인트에서 이어서 학습 | - |
+| `--experiment_name` | 실험명 직접 지정 | auto |
+
+## 빠른 시작
+
+```bash
+# 1. 기본 모델 학습
+python train.py
+
+# 2. 결과 확인 (evaluation_results/simple0406_eval_results.json에 저장)
+python eval.py --model_checkpoint experiments/simple0406/checkpoints/best_phoneme.pth
+
+# 3. Phoneme 전용 모델 비교
+python phoneme_train.py
+python phoneme_eval.py --model_checkpoint experiments/phoneme_simple/checkpoints/best_phoneme.pth
+
+# 4. 학습 중단 후 재개
+python train.py --resume experiments/simple0406/checkpoints/latest.pth
+
+# 5. 결과 비교 (evaluation_results/ 디렉토리에서 확인)
+ls evaluation_results/
+```
