@@ -24,28 +24,17 @@ class FocalCTCLoss(nn.Module):
         else:
             return focal_losses
 
-class LogCoshLengthLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input_lengths, target_lengths):
-        diff = input_lengths - target_lengths
-        length_losses = torch.mean(torch.log(torch.cosh(diff)))
-        return length_losses
-
 class MultiTaskLoss(nn.Module):
-    def __init__(self, error_weight=1.0, phoneme_weight=1.0, focal_alpha=1.0, focal_gamma=2.0, length_weight=1.0):
+    def __init__(self, error_weight=1.0, phoneme_weight=1.0, focal_alpha=1.0, focal_gamma=2.0):
         super().__init__()
         self.error_weight = error_weight
         self.phoneme_weight = phoneme_weight
-        self.length_weight = length_weight
         self.error_criterion = FocalCTCLoss(alpha=focal_alpha, gamma=focal_gamma, blank=0, reduction='mean', zero_infinity=True)
         self.phoneme_criterion = FocalCTCLoss(alpha=focal_alpha, gamma=focal_gamma, blank=0, reduction='mean', zero_infinity=True)
-        self.length_criterion = LogCoshLengthLoss()
         
-    def forward(self, outputs, error_targets=None, phoneme_targets=None, length_targets=None,
-                error_input_lengths=None, phoneme_input_lengths=None, input_length=None,
-                error_target_lengths=None, phoneme_target_lengths=None, target_length=None):
+    def forward(self, outputs, error_targets=None, phoneme_targets=None,
+                error_input_lengths=None, phoneme_input_lengths=None,
+                error_target_lengths=None, phoneme_target_lengths=None):
         
         total_loss = 0.0
         loss_dict = {}
@@ -73,18 +62,18 @@ class MultiTaskLoss(nn.Module):
             weighted_phoneme_loss = self.phoneme_weight * phoneme_loss
             total_loss += weighted_phoneme_loss
             loss_dict['phoneme_loss'] = phoneme_loss.item()
-        
-        if 'length_logits' in outputs and length_targets is not None:
-            length_loss = self.length_criterion(
-                input_length,
-                target_length
-            )
-            weighted_length_loss = self.length_weight * length_loss
-            total_loss += weighted_length_loss
-            loss_dict['length_loss'] = length_loss.item()
             
         loss_dict['total_loss'] = total_loss.item()
         return total_loss, loss_dict
+
+class LogCoshLengthLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input_lengths, target_lengths):
+        diff = input_lengths - target_lengths
+        length_losses = torch.mean(torch.log(torch.cosh(diff)))
+        return length_losses
 
 class PhonemeLoss(nn.Module):
     def __init__(self, focal_alpha=1.0, focal_gamma=2.0):
