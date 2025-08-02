@@ -16,11 +16,11 @@ def make_attn_mask(wavs, wav_lens):
 
 def get_model_class(model_type):
     if model_type == 'simple':
-        from models.model import SimpleMultiTaskModel
+        from models.multitask_model import SimpleMultiTaskModel
         from models.loss_functions import MultiTaskLoss
         return SimpleMultiTaskModel, MultiTaskLoss
     elif model_type == 'transformer':
-        from models.model_transformer import TransformerMultiTaskModel
+        from models.multitask_model_transformer import TransformerMultiTaskModel
         from models.loss_functions import MultiTaskLoss
         return TransformerMultiTaskModel, MultiTaskLoss
     else:
