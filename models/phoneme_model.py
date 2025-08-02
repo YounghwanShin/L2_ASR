@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import Wav2Vec2Config
 
-from utils import PhonemeRecognitionHead, Wav2VecEncoder, SimpleEncoder
+from models.utils_models import PhonemeRecognitionHead, Wav2VecEncoder, SimpleEncoder
 
 class SimplePhonemeModel(nn.Module):
     def __init__(self, 

@@ -1,7 +1,7 @@
 import torch.nn as nn
 from transformers import Wav2Vec2Config
 
-from utils import ErrorDetectionHead, PhonemeRecognitionHead, Wav2VecEncoder, SimpleEncoder
+from models.utils_models import ErrorDetectionHead, PhonemeRecognitionHead, Wav2VecEncoder, SimpleEncoder
 
 class SimpleMultiTaskModel(nn.Module):
     def __init__(self, 

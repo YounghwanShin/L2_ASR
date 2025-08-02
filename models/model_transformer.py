@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import Wav2Vec2Config
 
-from utils import ErrorDetectionHead, PhonemeRecognitionHead, Wav2VecEncoder, TransformerEncoder
+from models.utils_models import ErrorDetectionHead, PhonemeRecognitionHead, Wav2VecEncoder, TransformerEncoder
 
 class TransformerMultiTaskModel(nn.Module):
     def __init__(self, 
