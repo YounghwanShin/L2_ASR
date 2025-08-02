@@ -420,7 +420,8 @@ def main():
         error_weight=config.error_weight,
         phoneme_weight=config.phoneme_weight,
         focal_alpha=config.focal_alpha,
-        focal_gamma=config.focal_gamma
+        focal_gamma=config.focal_gamma,
+        length_weight=config.length_weight
     )
     
     wav2vec_params = []
