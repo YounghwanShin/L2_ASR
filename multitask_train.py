@@ -14,72 +14,21 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from config import Config
-from utils import make_attn_mask, get_model_class, detect_model_type_from_checkpoint, setup_experiment_dirs, enable_wav2vec2_specaug, get_wav2vec2_output_lengths_official, decode_ctc
+from utils import (
+    make_attn_mask,
+    get_model_class,
+    detect_model_type_from_checkpoint,
+    setup_experiment_dirs,
+    enable_wav2vec2_specaug,
+    get_wav2vec2_output_lengths_official,
+    show_sample_predictions,
+    decode_ctc,
+)
 from models.loss_functions import LogCoshLengthLoss
 from data_prepare import BaseDataset, collate_fn
 from multitask_eval import evaluate_error_detection, evaluate_phoneme_recognition
 
 logger = logging.getLogger(__name__)
-
-def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error_type_names, num_samples=3):
-    model.eval()
-    enable_wav2vec2_specaug(model, False)
-    samples_shown = 0
-    
-    with torch.no_grad():
-        for batch_data in eval_dataloader:
-            if samples_shown >= num_samples:
-                break
-                
-            (waveforms, error_labels, perceived_phoneme_ids, canonical_phoneme_ids, 
-             audio_lengths, error_label_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            max_len = input_lengths.max().item()
-            attention_mask = make_attn_mask(waveforms, audio_lengths.float() / waveforms.shape[1])
-            
-            outputs = model(waveforms, attention_mask, task='both')
-            
-            error_logits = outputs['error_logits']
-            phoneme_logits = outputs['phoneme_logits']
-            
-            error_input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
-            phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-            
-            error_log_probs = torch.log_softmax(error_logits, dim=-1)
-            phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            
-            error_predictions = decode_ctc(error_log_probs, error_input_lengths)
-            phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
-            
-            for i in range(min(waveforms.shape[0], num_samples - samples_shown)):
-                logger.info(f"\n--- Multi-task Sample {samples_shown + 1} ---")
-                logger.info(f"File: {wav_files[i]}")
-                
-                error_actual = [error_type_names.get(int(label), str(label)) 
-                              for label in error_labels[i][:error_label_lengths[i]]]
-                error_pred = [error_type_names.get(int(pred), str(pred)) 
-                            for pred in error_predictions[i]]
-                
-                phoneme_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                for pid in perceived_phoneme_ids[i][:perceived_lengths[i]]]
-                phoneme_pred = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                              for pid in phoneme_predictions[i]]
-                
-                logger.info(f"Error Actual:    {' '.join(error_actual)}")
-                logger.info(f"Error Predicted: {' '.join(error_pred)}")
-                logger.info(f"Phoneme Actual:    {' '.join(phoneme_actual)}")
-                logger.info(f"Phoneme Predicted: {' '.join(phoneme_pred)}")
-                
-                samples_shown += 1
-                if samples_shown >= num_samples:
-                    break
-            
-            if samples_shown >= num_samples:
-                break
 
 def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer, 
                 device, epoch, scaler, gradient_accumulation=1, config=None):
@@ -176,20 +125,26 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 )
 
             length_loss = 0.0
-            if batch_phoneme_lengths is not None:
+            if has_phoneme:
+                phoneme_logits = outputs['phoneme_logits']
+                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
+                phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
+                phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
+                pred_lengths = torch.tensor([len(seq) for seq in phoneme_predictions], device=device)
+                
                 length_loss = LogCoshLengthLoss()(
-                    phoneme_input_lengths_filtered.float(),
+                    pred_lengths.float(),
                     batch_phoneme_lengths.float()
                 )
                 loss = loss + config.length_weight * length_loss
         
-                accumulated_loss = loss / gradient_accumulation
-                if 'error_loss' in loss_dict:
-                    error_loss_sum += loss_dict['error_loss']
-                    error_count += 1
-                if 'phoneme_loss' in loss_dict:
-                    phoneme_loss_sum += loss_dict['phoneme_loss']
-                    phoneme_count += 1
+            accumulated_loss = loss / gradient_accumulation
+            if 'error_loss' in loss_dict:
+                error_loss_sum += loss_dict['error_loss']
+                error_count += 1
+            if 'phoneme_loss' in loss_dict:
+                phoneme_loss_sum += loss_dict['phoneme_loss']
+                phoneme_count += 1
         
         if accumulated_loss > 0:
             scaler.scale(accumulated_loss).backward()
@@ -219,7 +174,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
     torch.cuda.empty_cache()
     return total_loss / (len(dataloader) // gradient_accumulation)
 
-def validate_epoch(model, dataloader, criterion, device):
+def validate_epoch(model, dataloader, criterion, device, config):
     model.eval()
     enable_wav2vec2_specaug(model, False)
     total_loss = 0.0
@@ -305,7 +260,21 @@ def validate_epoch(model, dataloader, criterion, device):
                     error_target_lengths=batch_error_lengths,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
-                accumulated_loss = loss
+
+            if has_phoneme:
+                phoneme_logits = outputs['phoneme_logits']
+                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
+                phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
+                phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
+                pred_lengths = torch.tensor([len(seq) for seq in phoneme_predictions], device=device)
+                
+                length_loss = LogCoshLengthLoss()(
+                    pred_lengths.float(),
+                    batch_phoneme_lengths.float()
+                )
+                loss = loss + config.length_weight * length_loss
+
+            accumulated_loss = loss
             
             total_loss += accumulated_loss.item() if accumulated_loss > 0 else 0
             progress_bar.set_postfix({'Val_Loss': total_loss / (batch_idx + 1)})
@@ -449,7 +418,7 @@ def main():
         config.train_data, phoneme_to_id, 
         max_length=config.max_length,
         sampling_rate=config.sampling_rate,
-        task_mode=config.task_mode['multitask_train'],
+        task_mode=config.task_mode['multi_train'],
         error_task_ratio=config.error_task_ratio
     )
     
@@ -457,28 +426,28 @@ def main():
         config.val_data, phoneme_to_id, 
         max_length=config.max_length,
         sampling_rate=config.sampling_rate,
-        task_mode=config.task_mode['multitask_train'],
+        task_mode=config.task_mode['multi_train'],
         error_task_ratio=config.error_task_ratio
     )
     
     train_dataloader = DataLoader(
         train_dataset, batch_size=config.batch_size, shuffle=True, 
-        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multitask_train'])
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multi_train'])
     )
     val_dataloader = DataLoader(
         val_dataset, batch_size=config.batch_size, shuffle=False,
-        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multitask_train'])
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multi_train'])
     )
     
     eval_dataset = BaseDataset(
         config.eval_data, phoneme_to_id,
-        task_mode=config.task_mode['multitask_eval'],
+        task_mode=config.task_mode['multi_eval'],
         max_length=config.max_length,
         sampling_rate=config.sampling_rate
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multitask_eval'])
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multi_eval'])
     )
     
     best_val_loss = float('inf')
@@ -520,14 +489,14 @@ def main():
             config.device, epoch, scaler, config.gradient_accumulation, config
         )
         
-        val_loss = validate_epoch(model, val_dataloader, criterion, config.device)
+        val_loss = validate_epoch(model, val_dataloader, criterion, config.device, config)
         
         logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
         
         if epoch % 5 == 0 or epoch == 1:
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
-            show_sample_predictions(model, eval_dataloader, config.device, id_to_phoneme, error_type_names)
+            show_sample_predictions(model, eval_dataloader, config.device, id_to_phoneme, logger=logger, error_type_names=error_type_names)
         
         logger.info(f"Epoch {epoch}: Evaluating error detection...")
         error_detection_results = evaluate_error_detection(model, eval_dataloader, config.device, error_type_names)
