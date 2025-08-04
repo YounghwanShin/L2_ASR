@@ -1,5 +1,4 @@
 import torch.nn as nn
-import torch.nn.functional as F
 from transformers import Wav2Vec2Config
 
 from models.utils_models import ErrorDetectionHead, PhonemeRecognitionHead, Wav2VecEncoder, TransformerEncoder
@@ -26,17 +25,17 @@ class TransformerMultiTaskModel(nn.Module):
         self.error_head = ErrorDetectionHead(hidden_dim, num_error_types, dropout)
         self.phoneme_head = PhonemeRecognitionHead(hidden_dim, num_phonemes, dropout)
         
-    def forward(self, x, attention_mask=None, task='both'):
+    def forward(self, x, attention_mask=None, task_mode=''):
         features = self.encoder(x, attention_mask)
         
         enhanced_features = self.transformer_encoder(features, attention_mask)
         
         outputs = {}
         
-        if task in ['error', 'both']:
+        if task_mode.startswith('error', 'multi'):
             outputs['error_logits'] = self.error_head(enhanced_features)
             
-        if task in ['phoneme', 'both']:
+        if task_mode.startswith('phoneme', 'multi'):
             outputs['phoneme_logits'] = self.phoneme_head(enhanced_features)
             
         return outputs

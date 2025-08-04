@@ -21,16 +21,16 @@ class SimpleMultiTaskModel(nn.Module):
         self.error_head = ErrorDetectionHead(hidden_dim, num_error_types, dropout)
         self.phoneme_head = PhonemeRecognitionHead(hidden_dim, num_phonemes, dropout)
         
-    def forward(self, x, attention_mask=None, task='both'):
+    def forward(self, x, attention_mask=None, task_mode=''):
         features = self.encoder(x, attention_mask)
         shared_features = self.shared_encoder(features)
         
         outputs = {}
         
-        if task in ['error', 'both']:
+        if task_mode.startswith('error', 'multi'):
             outputs['error_logits'] = self.error_head(shared_features)
             
-        if task in ['phoneme', 'both']:
+        if task_mode.startswith('phoneme', 'multi'):
             outputs['phoneme_logits'] = self.phoneme_head(shared_features)
             
         return outputs
