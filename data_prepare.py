@@ -23,11 +23,11 @@ class BaseDataset(Dataset):
             
             if task_mode == 'multi_train' and (has_error_labels or has_phoneme_labels):
                 self.valid_files.append(wav_file)
-            elif task_mode == 'error' and has_error_labels:
+            elif task_mode == 'error_train' and has_error_labels:
                 self.valid_files.append(wav_file)
             elif task_mode == 'phoneme_train' and has_phoneme_labels:
                 self.valid_files.append(wav_file)
-            elif task_mode in ['multi_eval', 'phoneme_eval']:
+            elif task_mode.endswith('eval'):
                 self.valid_files.append(wav_file)
     
     def __len__(self):
