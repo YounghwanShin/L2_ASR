@@ -11,9 +11,16 @@ import pytz
 from collections import defaultdict
 
 from config import Config
-from utils import make_attn_mask, get_model_class, detect_model_type_from_checkpoint
-from utils_eval import get_wav2vec2_output_lengths_official, decode_ctc, _calculate_error_metrics, _calculate_phoneme_metrics
-from multitask_data_prepare import EvaluationDataset, evaluation_collate_fn
+from utils import (
+    make_attn_mask,
+    get_model_class,
+    detect_model_type_from_checkpoint,
+    get_wav2vec2_output_lengths_official,
+    decode_ctc,
+    _calculate_error_metrics,
+    _calculate_phoneme_metrics,
+)
+from data_prepare import BaseDataset, collate_fn
 
 logger = logging.getLogger(__name__)
 
@@ -304,14 +311,15 @@ def main():
     model = model.to(device)
     model.eval()
     
-    eval_dataset = EvaluationDataset(
+    eval_dataset = BaseDataset(
         config.eval_data, phoneme_to_id,
+        task_mode=config.task_mode['miltitask_eval'],
         max_length=config.max_length,
         sampling_rate=config.sampling_rate
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=evaluation_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multitask_eval'])
     )
     
     logger.info("Starting evaluation...")

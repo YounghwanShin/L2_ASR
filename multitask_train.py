@@ -14,10 +14,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from config import Config
-from utils import make_attn_mask, get_model_class, detect_model_type_from_checkpoint
-from utils_train import setup_experiment_dirs, enable_wav2vec2_specaug
-from utils_eval import get_wav2vec2_output_lengths_official, decode_ctc
-from multitask_data_prepare import MultiTaskDataset, EvaluationDataset, evaluation_collate_fn, simultaneous_multitask_collate_fn
+from utils import make_attn_mask, get_model_class, detect_model_type_from_checkpoint, setup_experiment_dirs, enable_wav2vec2_specaug, get_wav2vec2_output_lengths_official, decode_ctc
+from models.loss_functions import LogCoshLengthLoss
+from data_prepare import BaseDataset, collate_fn
 from multitask_eval import evaluate_error_detection, evaluate_phoneme_recognition
 
 logger = logging.getLogger(__name__)
@@ -175,7 +174,15 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     error_target_lengths=batch_error_lengths,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
-                
+
+            length_loss = 0.0
+            if batch_phoneme_lengths is not None:
+                length_loss = LogCoshLengthLoss()(
+                    phoneme_input_lengths_filtered.float(),
+                    batch_phoneme_lengths.float()
+                )
+                loss = loss + config.length_weight * length_loss
+        
                 accumulated_loss = loss / gradient_accumulation
                 if 'error_loss' in loss_dict:
                     error_loss_sum += loss_dict['error_loss']
@@ -438,39 +445,40 @@ def main():
     
     scaler = torch.amp.GradScaler('cuda')
     
-    train_dataset = MultiTaskDataset(
+    train_dataset = BaseDataset(
         config.train_data, phoneme_to_id, 
         max_length=config.max_length,
         sampling_rate=config.sampling_rate,
-        task_mode=config.task_mode,
+        task_mode=config.task_mode['multitask_train'],
         error_task_ratio=config.error_task_ratio
     )
     
-    val_dataset = MultiTaskDataset(
+    val_dataset = BaseDataset(
         config.val_data, phoneme_to_id, 
         max_length=config.max_length,
         sampling_rate=config.sampling_rate,
-        task_mode=config.task_mode,
+        task_mode=config.task_mode['multitask_train'],
         error_task_ratio=config.error_task_ratio
     )
     
     train_dataloader = DataLoader(
         train_dataset, batch_size=config.batch_size, shuffle=True, 
-        collate_fn=simultaneous_multitask_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multitask_train'])
     )
     val_dataloader = DataLoader(
         val_dataset, batch_size=config.batch_size, shuffle=False,
-        collate_fn=simultaneous_multitask_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multitask_train'])
     )
     
-    eval_dataset = EvaluationDataset(
+    eval_dataset = BaseDataset(
         config.eval_data, phoneme_to_id,
+        task_mode=config.task_mode['multitask_eval'],
         max_length=config.max_length,
         sampling_rate=config.sampling_rate
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=evaluation_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multitask_eval'])
     )
     
     best_val_loss = float('inf')

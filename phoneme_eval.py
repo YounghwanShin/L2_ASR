@@ -9,9 +9,15 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import Config
-from utils import make_attn_mask, get_phoneme_model_class, detect_phoneme_model_type_from_checkpoint
-from utils_eval import get_wav2vec2_output_lengths_official, decode_ctc, _calculate_phoneme_metrics
-from phoneme_data_prepare import PhonemeEvaluationDataset, phoneme_evaluation_collate_fn
+from utils import (
+    make_attn_mask,
+    get_phoneme_model_class,
+    detect_phoneme_model_type_from_checkpoint,
+    get_wav2vec2_output_lengths_official,
+    decode_ctc, 
+    _calculate_phoneme_metrics
+)
+from data_prepare import BaseDataset, collate_fn
 
 logger = logging.getLogger(__name__)
 
@@ -197,14 +203,15 @@ def main():
     model.eval()
     enable_wav2vec2_specaug(model, False)
     
-    eval_dataset = PhonemeEvaluationDataset(
+    eval_dataset = BaseDataset(
         config.eval_data, phoneme_to_id,
+        task_mode=config.task_mode['phoneme_eval'],
         max_length=config.max_length,
         sampling_rate=config.sampling_rate
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=phoneme_evaluation_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['phoneme_eval'])
     )
     
     logger.info("Starting phoneme-only evaluation...")

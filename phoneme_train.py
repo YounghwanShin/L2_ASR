@@ -12,10 +12,16 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from config import Config
-from utils import make_attn_mask, get_phoneme_model_class, detect_phoneme_model_type_from_checkpoint
-from utils_train import setup_experiment_dirs, enable_wav2vec2_specaug
-from utils_eval import get_wav2vec2_output_lengths_official, decode_ctc
-from phoneme_data_prepare import PhonemeDataset, PhonemeEvaluationDataset, phoneme_collate_fn, phoneme_evaluation_collate_fn
+from utils import (
+    make_attn_mask,
+    get_phoneme_model_class,
+    detect_phoneme_model_type_from_checkpoint,
+    setup_experiment_dirs,
+    enable_wav2vec2_specaug, 
+    get_wav2vec2_output_lengths_official,
+    decode_ctc,
+)
+from data_prepare import BaseDataset, collate_fn
 from phoneme_eval import evaluate_phoneme_recognition
 
 logger = logging.getLogger(__name__)
@@ -310,35 +316,38 @@ def main():
     
     scaler = torch.amp.GradScaler('cuda')
     
-    train_dataset = PhonemeDataset(
-        config.train_data, phoneme_to_id, 
+    train_dataset = BaseDataset(
+        config.train_data, phoneme_to_id,
+        task_mode=config.task_mode['phoneme_train'],
         max_length=config.max_length,
         sampling_rate=config.sampling_rate
     )
     
-    val_dataset = PhonemeDataset(
+    val_dataset = BaseDataset(
         config.val_data, phoneme_to_id, 
+        task_mode=config.task_mode['phoneme_train'],
         max_length=config.max_length,
         sampling_rate=config.sampling_rate
     )
     
     train_dataloader = DataLoader(
         train_dataset, batch_size=config.batch_size, shuffle=True, 
-        collate_fn=phoneme_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['phoneme_train'])
     )
     val_dataloader = DataLoader(
         val_dataset, batch_size=config.batch_size, shuffle=False,
-        collate_fn=phoneme_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['phoneme_train'])
     )
     
-    eval_dataset = PhonemeEvaluationDataset(
+    eval_dataset = BaseDataset(
         config.eval_data, phoneme_to_id,
+        task_mode=config.task_mode['phoneme_eval'],
         max_length=config.max_length,
         sampling_rate=config.sampling_rate
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=phoneme_evaluation_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['phoneme_eval'])
     )
     
     best_val_loss = float('inf')
