@@ -1,25 +1,6 @@
 import torch
-import numpy as np
-import logging
-from tqdm import tqdm
+from sklearn.metrics import classification_report, f1_score
 from speechbrain.utils.edit_distance import wer_details_for_batch
-from collections import defaultdict
-
-logger = logging.getLogger(__name__)
-
-EDIT_SYMBOLS = {
-    "eq": "=",
-    "ins": "I",
-    "del": "D",
-    "sub": "S",
-}
-
-def make_attn_mask(wavs, wav_lens):
-    abs_lens = (wav_lens * wavs.shape[1]).long()
-    attn_mask = wavs.new(wavs.shape).zero_().long()
-    for i in range(len(abs_lens)):
-        attn_mask[i, :abs_lens[i]] = 1
-    return attn_mask
 
 def get_wav2vec2_output_lengths_official(model, input_lengths):
     actual_model = model.module if hasattr(model, 'module') else model
@@ -114,83 +95,63 @@ def calculate_mispronunciation_metrics(all_predictions, all_canonical, all_perce
         'tr': total_tr
     }
 
-def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
-    model.eval()
-    all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids = [], [], [], [], [], []
+def _calculate_error_metrics(all_predictions, all_targets, all_ids, error_type_names):
+    wer_details = wer_details_for_batch(
+        ids=all_ids,
+        refs=all_targets,
+        hyps=all_predictions,
+        compute_alignments=True
+    )
     
-    with torch.no_grad():
-        progress_bar = tqdm(dataloader, desc='Phoneme Recognition Evaluation', dynamic_ncols=True)
-        
-        for batch_data in progress_bar:
-            if len(batch_data) == 8:
-                (waveforms, perceived_phoneme_ids, canonical_phoneme_ids, 
-                 audio_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            elif len(batch_data) == 10:
-                (waveforms, _, perceived_phoneme_ids, canonical_phoneme_ids, 
-                 audio_lengths, _, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            else:
-                raise ValueError(f"Unexpected batch format with {len(batch_data)} elements")
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-            
-            outputs = model(waveforms, attention_mask)
-            if 'phoneme_logits' in outputs:
-                phoneme_logits = outputs['phoneme_logits']
-            else:
-                raise ValueError("Model output does not contain 'phoneme_logits'")
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-            
-            log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
-            
-            batch_targets = [
-                perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(perceived_lengths)
-            ]
-            
-            batch_canonical = [
-                canonical_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(canonical_lengths)
-            ]
-            
-            batch_perceived = [
-                perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(perceived_lengths)
-            ]
-            
-            all_predictions.extend(batch_phoneme_preds)
-            all_targets.extend(batch_targets)
-            all_canonical.extend(batch_canonical)
-            all_perceived.extend(batch_perceived)
-            all_ids.extend(wav_files)
-            all_spk_ids.extend(spk_ids)
+    total_sequences = len(wer_details)
+    correct_sequences = sum(1 for detail in wer_details if detail['WER'] == 0.0)
     
-    results = _calculate_phoneme_metrics(all_predictions, all_targets, all_canonical, all_perceived, all_ids, id_to_phoneme)
+    total_tokens = sum(detail['num_ref_tokens'] for detail in wer_details)
+    total_errors = sum(detail['insertions'] + detail['deletions'] + detail['substitutions'] for detail in wer_details)
     
-    by_country_results = {}
-    country_data = defaultdict(lambda: {'predictions': [], 'targets': [], 'canonical': [], 'perceived': [], 'ids': []})
+    sequence_accuracy = correct_sequences / total_sequences if total_sequences > 0 else 0
+    token_accuracy = 1 - (total_errors / total_tokens) if total_tokens > 0 else 0
+    avg_edit_distance = total_errors / total_sequences if total_sequences > 0 else 0
     
-    for pred, target, canonical, perceived, id_val, spk_id in zip(all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids):
-        country_data[spk_id]['predictions'].append(pred)
-        country_data[spk_id]['targets'].append(target)
-        country_data[spk_id]['canonical'].append(canonical)
-        country_data[spk_id]['perceived'].append(perceived)
-        country_data[spk_id]['ids'].append(id_val)
+    flat_predictions = [token for pred in all_predictions for token in pred]
+    flat_targets = [token for target in all_targets for token in target]
     
-    for country, data in country_data.items():
-        by_country_results[country] = _calculate_phoneme_metrics(
-            data['predictions'], data['targets'], data['canonical'], 
-            data['perceived'], data['ids'], id_to_phoneme
-        )
+    weighted_f1 = macro_f1 = 0
+    class_metrics = {}
     
-    results['by_country'] = by_country_results
-    return results
+    if len(flat_predictions) > 0 and len(flat_targets) > 0:
+        try:
+            min_len = min(len(flat_predictions), len(flat_targets))
+            flat_predictions = flat_predictions[:min_len]
+            flat_targets = flat_targets[:min_len]
+            
+            weighted_f1 = f1_score(flat_targets, flat_predictions, average='weighted', zero_division=0)
+            macro_f1 = f1_score(flat_targets, flat_predictions, average='macro', zero_division=0)
+            
+            class_report = classification_report(flat_targets, flat_predictions, output_dict=True, zero_division=0)
+            
+            eval_error_types = {k: v for k, v in error_type_names.items() if k != 0}
+            for class_id, class_name in eval_error_types.items():
+                if str(class_id) in class_report:
+                    class_metrics[class_name] = {
+                        'precision': float(class_report[str(class_id)]['precision']),
+                        'recall': float(class_report[str(class_id)]['recall']),
+                        'f1': float(class_report[str(class_id)]['f1-score']),
+                        'support': int(class_report[str(class_id)]['support'])
+                    }
+        except Exception as e:
+            print(f"Error calculating class metrics: {e}")
+    
+    return {
+        'sequence_accuracy': float(sequence_accuracy),
+        'token_accuracy': float(token_accuracy),
+        'avg_edit_distance': float(avg_edit_distance),
+        'weighted_f1': float(weighted_f1),
+        'macro_f1': float(macro_f1),
+        'class_metrics': class_metrics,
+        'total_sequences': int(total_sequences),
+        'total_tokens': int(total_tokens)
+    }
 
 def _calculate_phoneme_metrics(all_predictions, all_targets, all_canonical, all_perceived, all_ids, id_to_phoneme):
     pred_phonemes = convert_ids_to_phonemes(all_predictions, id_to_phoneme)

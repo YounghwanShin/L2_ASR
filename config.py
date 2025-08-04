@@ -26,8 +26,9 @@ class Config:
     main_lr = 3e-4
     wav2vec_lr = 1e-5
     
-    error_weight = 0.5
-    phoneme_weight = 0.5
+    error_weight = 0.3
+    phoneme_weight = 0.4
+    length_weight = 0.3
     
     focal_alpha = 0.25
     focal_gamma = 2.0

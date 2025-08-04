@@ -29,9 +29,6 @@ python train.py
 # Transformer 모델
 python train.py --config model_type=transformer
 
-# Hierarchical 모델  
-python train.py --config model_type=hierarchical
-
 # 가중치 조정
 python train.py --config error_weight=0.5,phoneme_weight=0.5
 ```
