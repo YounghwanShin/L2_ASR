@@ -4,3 +4,4 @@ env
 /experiments
 *__pycache__
 /evaluation_results
+.DS_Store

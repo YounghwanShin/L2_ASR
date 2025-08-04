@@ -12,80 +12,13 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from config import Config
+from utils import make_attn_mask, get_phoneme_model_class, detect_phoneme_model_type_from_checkpoint
+from utils_train import setup_experiment_dirs, enable_wav2vec2_specaug
+from utils_eval import get_wav2vec2_output_lengths_official, decode_ctc
 from phoneme_data_prepare import PhonemeDataset, PhonemeEvaluationDataset, phoneme_collate_fn, phoneme_evaluation_collate_fn
-from phoneme_evaluate import evaluate_phoneme_recognition, get_wav2vec2_output_lengths_official, decode_ctc
+from phoneme_eval import evaluate_phoneme_recognition
 
 logger = logging.getLogger(__name__)
-
-def make_attn_mask(wavs, wav_lens):
-    abs_lens = (wav_lens * wavs.shape[1]).long()
-    attn_mask = wavs.new(wavs.shape).zero_().long()
-    for i in range(len(abs_lens)):
-        attn_mask[i, :abs_lens[i]] = 1
-    return attn_mask
-
-def enable_wav2vec2_specaug(model, enable=True):
-    actual_model = model.module if hasattr(model, 'module') else model
-    if hasattr(actual_model.encoder.wav2vec2, 'config'):
-        actual_model.encoder.wav2vec2.config.apply_spec_augment = enable
-
-def get_phoneme_model_class(model_type):
-    if model_type == 'simple':
-        from models.phoneme_model import SimplePhonemeModel, PhonemeLoss
-        return SimplePhonemeModel, PhonemeLoss
-    elif model_type == 'transformer':
-        from models.phoneme_model_transformer import TransformerPhonemeModel, PhonemeLoss
-        return TransformerPhonemeModel, PhonemeLoss
-    else:
-        raise ValueError(f"Unknown phoneme model type: {model_type}. Available: simple, transformer")
-
-def detect_phoneme_model_type_from_checkpoint(checkpoint_path):
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-    else:
-        state_dict = checkpoint
-    
-    def remove_module_prefix(state_dict):
-        new_state_dict = {}
-        for key, value in state_dict.items():
-            if key.startswith('module.'):
-                new_key = key[7:]
-            else:
-                new_key = key
-            new_state_dict[new_key] = value
-        return new_state_dict
-    
-    state_dict = remove_module_prefix(state_dict)
-    keys = list(state_dict.keys())
-    
-    if any('transformer_encoder' in key for key in keys):
-        return 'transformer'
-    elif any('shared_encoder' in key for key in keys):
-        return 'simple'
-
-def setup_experiment_dirs(config, resume=False):
-    os.makedirs(config.checkpoint_dir, exist_ok=True)
-    os.makedirs(config.log_dir, exist_ok=True)
-    os.makedirs(config.result_dir, exist_ok=True)
-    
-    config_path = os.path.join(config.experiment_dir, 'config.json')
-    if not resume:
-        config.save_config(config_path)
-    
-    log_file = os.path.join(config.log_dir, 'training.log')
-    file_mode = 'a' if resume else 'w'
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%m/%d/%Y %H:%M:%S',
-        handlers=[
-            logging.FileHandler(log_file, mode=file_mode),
-            logging.StreamHandler()
-        ]
-    )
 
 def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, num_samples=3):
     model.eval()
