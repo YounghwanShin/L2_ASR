@@ -19,58 +19,12 @@ from utils import (
     setup_experiment_dirs,
     enable_wav2vec2_specaug, 
     get_wav2vec2_output_lengths_official,
-    decode_ctc,
+    show_sample_predictions,
 )
 from data_prepare import BaseDataset, collate_fn
 from phoneme_eval import evaluate_phoneme_recognition
 
 logger = logging.getLogger(__name__)
-
-def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, num_samples=3):
-    model.eval()
-    enable_wav2vec2_specaug(model, False)
-    samples_shown = 0
-    
-    with torch.no_grad():
-        for batch_data in eval_dataloader:
-            if samples_shown >= num_samples:
-                break
-                
-            (waveforms, perceived_phoneme_ids, canonical_phoneme_ids, 
-             audio_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-            
-            outputs = model(waveforms, attention_mask)
-            phoneme_logits = outputs['phoneme_logits']
-            
-            phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-            phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
-            
-            for i in range(min(waveforms.shape[0], num_samples - samples_shown)):
-                logger.info(f"\n--- Phoneme Sample {samples_shown + 1} ---")
-                logger.info(f"File: {wav_files[i]}")
-                
-                phoneme_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                for pid in perceived_phoneme_ids[i][:perceived_lengths[i]]]
-                phoneme_pred = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                              for pid in phoneme_predictions[i]]
-                
-                logger.info(f"Phoneme Actual:    {' '.join(phoneme_actual)}")
-                logger.info(f"Phoneme Predicted: {' '.join(phoneme_pred)}")
-                
-                samples_shown += 1
-                if samples_shown >= num_samples:
-                    break
-            
-            if samples_shown >= num_samples:
-                break
 
 def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer, 
                 device, epoch, scaler, gradient_accumulation=1, config=None):
@@ -391,7 +345,7 @@ def main():
         if epoch % 5 == 0 or epoch == 1:
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
-            show_sample_predictions(model, eval_dataloader, config.device, id_to_phoneme)
+            show_sample_predictions(model, eval_dataloader, config.device, id_to_phoneme, logger=logger)
             torch.cuda.empty_cache()
         
         logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
