@@ -9,7 +9,7 @@ from speechbrain.utils.edit_distance import wer_details_for_batch
 EDIT_SYMBOLS = {
     "eq": "=",
     "ins": "I",
-    "del": "D", 
+    "del": "D",
     "sub": "S",
 }
 
@@ -155,10 +155,10 @@ def calculate_soft_length(log_probs):
     )
     
     preds_shift = torch.roll(soft_preds, shifts=1, dims=1)
-    change_mask = torch.log(torch.cosh(soft_preds - preds_shift))
-    change_mask[:, 0] = 1.0
-    
-    soft_length = (non_blank_probs * change_mask).sum(dim=1)
+    change_probs = (soft_preds - preds_shift) / 41.0
+
+    soft_length = (non_blank_probs * change_probs).sum(dim=1)
+
     return soft_length
 
 def show_sample_predictions(task_mode, model, eval_dataloader, device, id_to_phoneme, logger, error_type_names=None, num_samples=3):
