@@ -20,9 +20,9 @@ from utils import (
     enable_wav2vec2_specaug, 
     get_wav2vec2_output_lengths_official,
     show_sample_predictions,
+    evaluate_phoneme_recognition,
 )
 from data_prepare import BaseDataset, collate_fn
-from phoneme_eval import evaluate_phoneme_recognition
 
 logger = logging.getLogger(__name__)
 
@@ -345,11 +345,11 @@ def main():
         if epoch % 5 == 0 or epoch == 1:
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
-            show_sample_predictions(model, eval_dataloader, config.device, id_to_phoneme, logger=logger)
+            show_sample_predictions(task_mode=config.task_mode['phoneme_eval'], model=model, eval_dataloader=eval_dataloader, device=config.device, id_to_phoneme=id_to_phoneme, logger=logger)
             torch.cuda.empty_cache()
         
         logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
-        phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, config.device, id_to_phoneme)
+        phoneme_recognition_results = evaluate_phoneme_recognition(model=model, dataloader=eval_dataloader, device=config.device, task_mode=config.task_mode['phoneme_train'], id_to_phoneme=id_to_phoneme)
         torch.cuda.empty_cache()
         
         logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
