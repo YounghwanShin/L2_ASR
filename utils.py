@@ -157,7 +157,7 @@ def calculate_soft_length(outputs, config):
     preds_shift = torch.roll(soft_preds, shifts=1, dims=1)
 
     diff = soft_preds - preds_shift
-    diff = torch.clamp(diff, min=-50, max=50)
+    diff = torch.clamp(diff, min=-35, max=35)
     change_probs = torch.sigmoid(config.sigmoid_k * (diff - config.sigmoid_threshold))
 
     soft_length = (non_blank_probs * change_probs).sum(dim=1)
