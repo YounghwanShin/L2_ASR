@@ -2,230 +2,20 @@ import os
 import json
 import argparse
 import logging
-from tqdm import tqdm
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from datetime import datetime
 import pytz
-from collections import defaultdict
 
 from config import Config
-from utils import make_attn_mask, get_model_class, detect_model_type_from_checkpoint
-from utils_eval import get_wav2vec2_output_lengths_official, decode_ctc, _calculate_error_metrics, _calculate_phoneme_metrics
-from multitask_data_prepare import EvaluationDataset, evaluation_collate_fn
-
-logger = logging.getLogger(__name__)
-
-def clean_targets(error_labels, label_lengths):
-    return [labels[:length].cpu().numpy().tolist() for labels, length in zip(error_labels, label_lengths)]
-
-def evaluate_error_detection(model, dataloader, device, error_type_names=None):
-    if error_type_names is None:
-        error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
-    
-    model.eval()
-    all_predictions, all_targets, all_ids, all_spk_ids = [], [], [], []
-    
-    with torch.no_grad():
-        progress_bar = tqdm(dataloader, desc='Error Detection Evaluation', dynamic_ncols=True)
-        
-        for batch_data in progress_bar:
-            (waveforms, error_labels, _, _, audio_lengths, error_label_lengths, 
-             _, _, wav_files, spk_ids) = batch_data
-            
-            waveforms = waveforms.to(device)
-            error_labels = error_labels.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-            
-            outputs = model(waveforms, attention_mask, task='error')
-            error_logits = outputs['error_logits']
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
-            
-            log_probs = torch.log_softmax(error_logits, dim=-1)
-            predictions = decode_ctc(log_probs, input_lengths)
-            targets = clean_targets(error_labels, error_label_lengths)
-            
-            all_predictions.extend(predictions)
-            all_targets.extend(targets)
-            all_ids.extend(wav_files)
-            all_spk_ids.extend(spk_ids)
-    
-    results = _calculate_error_metrics(all_predictions, all_targets, all_ids, error_type_names)
-    
-    by_country_results = {}
-    country_data = defaultdict(lambda: {'predictions': [], 'targets': [], 'ids': []})
-    
-    for pred, target, id_val, spk_id in zip(all_predictions, all_targets, all_ids, all_spk_ids):
-        country_data[spk_id]['predictions'].append(pred)
-        country_data[spk_id]['targets'].append(target)
-        country_data[spk_id]['ids'].append(id_val)
-    
-    for country, data in country_data.items():
-        by_country_results[country] = _calculate_error_metrics(
-            data['predictions'], data['targets'], data['ids'], error_type_names
-        )
-    
-    results['by_country'] = by_country_results
-    return results
-
-def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
-    model.eval()
-    all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids = [], [], [], [], [], []
-    
-    with torch.no_grad():
-        progress_bar = tqdm(dataloader, desc='Phoneme Recognition Evaluation', dynamic_ncols=True)
-        
-        for batch_data in progress_bar:
-            (waveforms, _, perceived_phoneme_ids, canonical_phoneme_ids, 
-             audio_lengths, _, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
-            
-            outputs = model(waveforms, attention_mask, task='phoneme')
-            phoneme_logits = outputs['phoneme_logits']
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-            
-            log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
-            
-            batch_targets = [
-                perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(perceived_lengths)
-            ]
-            
-            batch_canonical = [
-                canonical_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(canonical_lengths)
-            ]
-            
-            batch_perceived = [
-                perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(perceived_lengths)
-            ]
-            
-            all_predictions.extend(batch_phoneme_preds)
-            all_targets.extend(batch_targets)
-            all_canonical.extend(batch_canonical)
-            all_perceived.extend(batch_perceived)
-            all_ids.extend(wav_files)
-            all_spk_ids.extend(spk_ids)
-    
-    results = _calculate_phoneme_metrics(all_predictions, all_targets, all_canonical, all_perceived, all_ids, id_to_phoneme)
-    
-    by_country_results = {}
-    country_data = defaultdict(lambda: {'predictions': [], 'targets': [], 'canonical': [], 'perceived': [], 'ids': []})
-    
-    for pred, target, canonical, perceived, id_val, spk_id in zip(all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids):
-        country_data[spk_id]['predictions'].append(pred)
-        country_data[spk_id]['targets'].append(target)
-        country_data[spk_id]['canonical'].append(canonical)
-        country_data[spk_id]['perceived'].append(perceived)
-        country_data[spk_id]['ids'].append(id_val)
-    
-    for country, data in country_data.items():
-        by_country_results[country] = _calculate_phoneme_metrics(
-            data['predictions'], data['targets'], data['canonical'], 
-            data['perceived'], data['ids'], id_to_phoneme
-        )
-    
-    results['by_country'] = by_country_results
-    return results
-
-def infer_model_type_from_path(checkpoint_path):
-    path_parts = checkpoint_path.split('/')
-    for part in path_parts:
-        if 'simple' in part:
-            return 'simple'
-        elif 'transformer' in part or 'trm' in part:
-            return 'transformer'
-    return 'simple'
-
-def get_sample_predictions(model, eval_dataloader, device, id_to_phoneme, error_type_names, num_samples=5):
-    model.eval()
-    sample_predictions = []
-    samples_collected = 0
-    
-    with torch.no_grad():
-        for batch_data in eval_dataloader:
-            if samples_collected >= num_samples:
-                break
-                
-            (waveforms, error_labels, perceived_phoneme_ids, canonical_phoneme_ids, 
-             audio_lengths, error_label_lengths, perceived_lengths, canonical_lengths, wav_files) = batch_data
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
-            
-            input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
-            attention_mask = make_attn_mask(waveforms, audio_lengths.float() / waveforms.shape[1])
-            
-            outputs = model(waveforms, attention_mask, task='both')
-            
-            error_logits = outputs['error_logits']
-            phoneme_logits = outputs['phoneme_logits']
-            
-            error_input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
-            phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-            
-            error_log_probs = torch.log_softmax(error_logits, dim=-1)
-            phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-            
-            error_predictions = decode_ctc(error_log_probs, error_input_lengths)
-            phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
-            
-            for i in range(min(waveforms.shape[0], num_samples - samples_collected)):
-                error_actual = [error_type_names.get(int(label), str(label)) 
-                              for label in error_labels[i][:error_label_lengths[i]]]
-                error_pred = [error_type_names.get(int(pred), str(pred)) 
-                            for pred in error_predictions[i]]
-                
-                phoneme_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                for pid in perceived_phoneme_ids[i][:perceived_lengths[i]]]
-                phoneme_pred = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                              for pid in phoneme_predictions[i]]
-                
-                canonical_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                  for pid in canonical_phoneme_ids[i][:canonical_lengths[i]]]
-                
-                sample_predictions.append({
-                    'file': wav_files[i],
-                    'error_actual': error_actual,
-                    'error_predicted': error_pred,
-                    'phoneme_actual': phoneme_actual,
-                    'phoneme_predicted': phoneme_pred,
-                    'canonical_phonemes': canonical_actual
-                })
-                
-                samples_collected += 1
-                if samples_collected >= num_samples:
-                    break
-            
-            if samples_collected >= num_samples:
-                break
-    
-    return sample_predictions
-
-def remove_module_prefix(state_dict):
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        if key.startswith('module.'):
-            new_key = key[7:]
-        else:
-            new_key = key
-        new_state_dict[new_key] = value
-    return new_state_dict
+from utils import (
+    get_model_class,
+    detect_model_type_from_checkpoint,
+    evaluate_error_detection,
+    evaluate_phoneme_recognition,
+    remove_module_prefix,
+)
+from data_prepare import BaseDataset, collate_fn
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate Multi-task L2 Pronunciation Model')
@@ -304,14 +94,15 @@ def main():
     model = model.to(device)
     model.eval()
     
-    eval_dataset = EvaluationDataset(
+    eval_dataset = BaseDataset(
         config.eval_data, phoneme_to_id,
+        task_mode=config.task_mode['multi_eval'],
         max_length=config.max_length,
         sampling_rate=config.sampling_rate
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=evaluation_collate_fn
+        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multi_eval'])
     )
     
     logger.info("Starting evaluation...")

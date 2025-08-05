@@ -13,7 +13,12 @@ class Config:
     num_phonemes = 42
     num_error_types = 3
     
-    task_mode = 'both'
+    task_mode = {'multi_train' : 'multi_train',
+                 'multi_eval' : 'multi_eval',
+                 'phoneme_train' : 'phoneme_train',
+                 'phoneme_eval' : 'phoneme_eval',
+                 'error_train' : 'error_train',
+                 'error_eval' : 'error_eval'}
     error_task_ratio = 0.5
     
     model_type = 'simple'
