@@ -108,10 +108,10 @@ def main():
     logger.info("Starting evaluation...")
     
     logger.info("Evaluating error detection...")
-    error_detection_results = evaluate_error_detection(model, eval_dataloader, device, error_type_names)
+    error_detection_results = evaluate_error_detection(model=model, dataloader=eval_dataloader, device=device, task_mode=config.task_mode['multi_eval'], error_type_names=error_type_names)
     
     logger.info("Evaluating phoneme recognition...")
-    phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, device, id_to_phoneme)
+    phoneme_recognition_results = evaluate_phoneme_recognition(model=model, dataloader=eval_dataloader, device=device, task_mode=config.task_mode['multi_eval'], id_to_phoneme=id_to_phoneme)
     
     logger.info("\n" + "="*80)
     logger.info("COMPLETE EVALUATION RESULTS")
