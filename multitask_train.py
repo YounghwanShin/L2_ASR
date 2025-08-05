@@ -23,10 +23,11 @@ from utils import (
     get_wav2vec2_output_lengths_official,
     calculate_soft_length,
     show_sample_predictions,
+    evaluate_error_detection,
+    evaluate_phoneme_recognition,
 )
 from models.loss_functions import LogCoshLengthLoss
 from data_prepare import BaseDataset, collate_fn
-from multitask_eval import evaluate_error_detection, evaluate_phoneme_recognition
 
 logger = logging.getLogger(__name__)
 
@@ -124,16 +125,37 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
 
+            length_logs_path = f"experiments/length_logs_epoch{epoch}.json"
+            os.makedirs('experiments', exist_ok=True)
             if has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits, config)
+                soft_length = torch.clamp(soft_length, min=5, max=80)
 
                 length_loss = LogCoshLengthLoss()(
                     soft_length,
                     batch_phoneme_lengths.float()
                 )
-                # print("soft_length min/max:", soft_length.min().item(), soft_length.max().item())
-                # print("batch_phoneme_lengths min/max:", batch_phoneme_lengths.min().item(), batch_phoneme_lengths.max().item())
+
+                length_dict = {
+                    'epoch_idx' : epoch,
+                    'batch_idx' : batch_idx,
+                    'soft_lengths' : [int(s) for s in soft_length.tolist()],
+                    'target_lengths' : batch_phoneme_lengths.tolist()
+                }
+                    
+                with open(length_logs_path, 'a') as f:
+                    json.dump(length_dict['epoch_idx'], f)
+                    f.write("\n")
+                    json.dump(length_dict['batch_idx'], f)
+                    f.write("\n")
+                    json.dump(length_dict['soft_lengths'], f)
+                    f.write("\n")
+                    json.dump(length_dict['target_lengths'], f)
+                    f.write("\n")
+                    json.dump([s - t for s, t in zip(length_dict['soft_lengths'], length_dict['target_lengths'])], f)
+                    f.write("\n\n")
+
                 loss = loss + (config.length_weight * length_loss)
 
             accumulated_loss = loss / gradient_accumulation
@@ -483,10 +505,10 @@ def main():
         if epoch % 5 == 0 or epoch == 1:
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
-            show_sample_predictions(model, eval_dataloader, config.device, id_to_phoneme, logger=logger, error_type_names=error_type_names)
+            show_sample_predictions(task_mode=config.task_mode['multi_eval'], model=model, eval_dataloader=eval_dataloader, device=config.device, id_to_phoneme=id_to_phoneme, logger=logger, error_type_names=error_type_names)
 
         logger.info(f"Epoch {epoch}: Evaluating error detection...")
-        error_detection_results = evaluate_error_detection(model, eval_dataloader, config.device, error_type_names)
+        error_detection_results = evaluate_error_detection(model=model, dataloader=eval_dataloader, device=config.device, task_mode=config.task_mode['multi_train'], error_type_names=error_type_names)
         logger.info(f"Error Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
         logger.info(f"Error Weighted F1: {error_detection_results['weighted_f1']:.4f}")
         for error_type, metrics in error_detection_results['class_metrics'].items():
@@ -494,7 +516,7 @@ def main():
                 logger.info(f"  {error_type}: Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1']:.4f}")
 
         logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
-        phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, config.device, id_to_phoneme)
+        phoneme_recognition_results = evaluate_phoneme_recognition(model=model, dataloader=eval_dataloader, device=config.device, task_mode=config.task_mode['multi_train'], id_to_phoneme=id_to_phoneme)
         logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
         logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
 
