@@ -156,8 +156,7 @@ def calculate_soft_length(outputs, config):
     
     preds_shift = torch.roll(soft_preds, shifts=1, dims=1)
 
-    diff = soft_preds - preds_shift
-    diff = torch.clamp(diff, min=-35, max=35)
+    diff = torch.abs(soft_preds - preds_shift)
     change_probs = torch.sigmoid(config.sigmoid_k * (diff - config.sigmoid_threshold))
 
     soft_length = (non_blank_probs * change_probs).sum(dim=1)
@@ -326,7 +325,7 @@ def calculate_mispronunciation_metrics(all_predictions, all_canonical, all_perce
 def clean_targets(error_labels, label_lengths):
     return [labels[:length].cpu().numpy().tolist() for labels, length in zip(error_labels, label_lengths)]
 
-def evaluate_error_detection(model, dataloader, device, error_type_names=None):
+def evaluate_error_detection(model, dataloader, device, task_mode='', error_type_names=None):
     if error_type_names is None:
         error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
@@ -347,7 +346,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
-            outputs = model(waveforms, attention_mask, task='error')
+            outputs = model(waveforms, attention_mask, task_mode=task_mode)
             error_logits = outputs['error_logits']
             
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
@@ -438,7 +437,7 @@ def _calculate_error_metrics(all_predictions, all_targets, all_ids, error_type_n
         'total_tokens': int(total_tokens)
     }
 
-def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
+def evaluate_phoneme_recognition(model, dataloader, device, task_mode=None, id_to_phoneme=None):
     model.eval()
     all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids = [], [], [], [], [], []
     
@@ -461,7 +460,7 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
-            outputs = model(waveforms, attention_mask)
+            outputs = model(waveforms, attention_mask, task_mode=task_mode)
             if 'phoneme_logits' in outputs:
                 phoneme_logits = outputs['phoneme_logits']
             else:
