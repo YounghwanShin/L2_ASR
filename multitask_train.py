@@ -125,7 +125,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
 
-            length_logs_path = f"experiments/length_logs_epoch{epoch}.json"
+            length_logs_path = f"experiments/length_logs/length_logs_epoch{epoch}.json"
             os.makedirs('experiments', exist_ok=True)
             if has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
