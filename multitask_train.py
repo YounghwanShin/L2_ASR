@@ -126,12 +126,14 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
 
             if has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
-                soft_length = calculate_soft_length(phoneme_logits)
+                soft_length = calculate_soft_length(phoneme_logits, config)
 
                 length_loss = LogCoshLengthLoss()(
                     soft_length,
                     batch_phoneme_lengths.float()
                 )
+                # print("soft_length min/max:", soft_length.min().item(), soft_length.max().item())
+                # print("batch_phoneme_lengths min/max:", batch_phoneme_lengths.min().item(), batch_phoneme_lengths.max().item())
                 loss = loss + (config.length_weight * length_loss)
 
             accumulated_loss = loss / gradient_accumulation
@@ -141,13 +143,12 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             if 'phoneme_loss' in loss_dict:
                 phoneme_loss_sum += loss_dict['phoneme_loss']
                 phoneme_count += 1
-            print(type(accumulated_loss))
 
         if accumulated_loss > 0:
             if scaler:
                 scaler.scale(accumulated_loss).backward()
             else:
-                accumulated_loss.requires_grad = True
+                accumulated_loss
                 accumulated_loss.backward()
 
         if (batch_idx + 1) % gradient_accumulation == 0:
