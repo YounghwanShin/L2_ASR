@@ -268,7 +268,7 @@ def validate_epoch(model, dataloader, criterion, device, config):
 
             if has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
-                soft_length = calculate_soft_length(phoneme_logits)
+                soft_length = calculate_soft_length(phoneme_logits, config)
 
                 length_loss = LogCoshLengthLoss()(
                     soft_length,
