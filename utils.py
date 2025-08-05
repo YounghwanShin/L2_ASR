@@ -155,7 +155,7 @@ def calculate_soft_length(log_probs):
     )
     
     preds_shift = torch.roll(soft_preds, shifts=1, dims=1)
-    change_probs = (soft_preds - preds_shift) / 41.0
+    change_probs = torch.tanh(soft_preds - preds_shift)**2
 
     soft_length = (non_blank_probs * change_probs).sum(dim=1)
 
