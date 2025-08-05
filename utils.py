@@ -145,6 +145,21 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
     
     return decoded_seqs
 
+def calculate_soft_length(log_probs):
+    probs = log_probs.exp()
+    non_blank_probs = 1.0 - probs[:, :, 0]
+    
+    phoneme_probs = probs[:, :, 1:]
+    soft_preds = torch.matmul(
+        phoneme_probs, torch.arange(1, phoneme_probs.size(-1) + 1, device=phoneme_probs.device, dtype=phoneme_probs.dtype)
+    )
+    
+    preds_shift = torch.roll(soft_preds, shifts=1, dims=1)
+    change_mask = torch.log(torch.cosh(soft_preds - preds_shift))
+    change_mask[:, 0] = 1.0
+    
+    soft_length = (non_blank_probs * change_mask).sum(dim=1)
+    return soft_length
 
 def show_sample_predictions(task_mode, model, eval_dataloader, device, id_to_phoneme, logger, error_type_names=None, num_samples=3):
     model.eval()

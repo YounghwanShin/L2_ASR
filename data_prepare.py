@@ -4,13 +4,14 @@ import torchaudio
 from torch.utils.data import Dataset
 
 class BaseDataset(Dataset):
-    def __init__(self, json_path, phoneme_to_id, task_mode, max_length=None, sampling_rate=16000):
+    def __init__(self, json_path, phoneme_to_id, task_mode, error_task_ratio=None, max_length=None, sampling_rate=16000):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
         
         self.wav_files = list(self.data.keys())
         self.phoneme_to_id = phoneme_to_id
         self.task_mode = task_mode
+        self.error_task_ratio = error_task_ratio
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         self.error_mapping = {'C': 2, 'I': 1}

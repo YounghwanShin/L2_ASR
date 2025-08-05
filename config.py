@@ -14,7 +14,7 @@ class Config:
     num_error_types = 3
     
     task_mode = {'multi_train' : 'multi_train',
-                 'milti_eval' : 'multi_eval',
+                 'multi_eval' : 'multi_eval',
                  'phoneme_train' : 'phoneme_train',
                  'phoneme_eval' : 'phoneme_eval',
                  'error_train' : 'error_train',

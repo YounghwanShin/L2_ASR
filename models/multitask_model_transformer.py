@@ -32,10 +32,10 @@ class TransformerMultiTaskModel(nn.Module):
         
         outputs = {}
         
-        if task_mode.startswith('error', 'multi'):
+        if task_mode.startswith(('error', 'multi')):
             outputs['error_logits'] = self.error_head(enhanced_features)
             
-        if task_mode.startswith('phoneme', 'multi'):
+        if task_mode.startswith(('phoneme', 'multi')):
             outputs['phoneme_logits'] = self.phoneme_head(enhanced_features)
             
         return outputs
