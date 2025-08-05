@@ -23,28 +23,12 @@ from utils import (
     get_wav2vec2_output_lengths_official,
     calculate_soft_length,
     show_sample_predictions,
-    decode_ctc,
 )
 from models.loss_functions import LogCoshLengthLoss
 from data_prepare import BaseDataset, collate_fn
 from multitask_eval import evaluate_error_detection, evaluate_phoneme_recognition
 
 logger = logging.getLogger(__name__)
-
-# ======================
-# Device 설정
-# ======================
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-    amp_dtype = "cuda"
-    scaler = torch.amp.GradScaler(device_type="cuda")
-else:
-    device = torch.device("cpu")
-    amp_dtype = "cpu"
-    scaler = None
-
-print("Using device:", device)
-
 
 def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 device, epoch, scaler, gradient_accumulation=1, config=None):
@@ -73,9 +57,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
         wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
         attention_mask = make_attn_mask(waveforms, wav_lens_norm)
 
-        # AMP 사용 (cuda일 때만)
-        autocast_ctx = torch.amp.autocast(device_type=amp_dtype) if amp_dtype == "cuda" else torch.no_grad()
-        with autocast_ctx:
+        with torch.amp.autocast('cuda'):
             outputs = model(waveforms, attention_mask=attention_mask, task_mode=config.task_mode['multi_train'])
 
             error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
@@ -142,7 +124,6 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
 
-            length_loss = 0.0
             if has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits)
@@ -151,7 +132,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     soft_length,
                     batch_phoneme_lengths.float()
                 )
-                loss = loss + config.length_weight * length_loss
+                loss = loss + (config.length_weight * length_loss)
 
             accumulated_loss = loss / gradient_accumulation
             if 'error_loss' in loss_dict:
@@ -160,11 +141,13 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             if 'phoneme_loss' in loss_dict:
                 phoneme_loss_sum += loss_dict['phoneme_loss']
                 phoneme_count += 1
+            print(type(accumulated_loss))
 
         if accumulated_loss > 0:
             if scaler:
                 scaler.scale(accumulated_loss).backward()
             else:
+                accumulated_loss.requires_grad = True
                 accumulated_loss.backward()
 
         if (batch_idx + 1) % gradient_accumulation == 0:
@@ -180,7 +163,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
 
             total_loss += accumulated_loss.item() * gradient_accumulation if accumulated_loss > 0 else 0
 
-        if (batch_idx + 1) % 100 == 0 and torch.cuda.is_available():
+        if (batch_idx + 1) % 100 == 0:
             torch.cuda.empty_cache()
 
         avg_total = total_loss / max(((batch_idx + 1) // gradient_accumulation), 1)
@@ -193,8 +176,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             'Phoneme': f'{avg_phoneme:.4f}'
         })
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
     return total_loss / (len(dataloader) // gradient_accumulation)
 
 
@@ -296,8 +278,7 @@ def validate_epoch(model, dataloader, criterion, device, config):
             total_loss += loss.item() if loss > 0 else 0
             progress_bar.set_postfix({'Val_Loss': total_loss / (batch_idx + 1)})
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
     return total_loss / len(dataloader)
 
 
@@ -404,7 +385,7 @@ def main():
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
 
-    model = model.to(device)
+    model = model.to(config.device)
 
     criterion = loss_class(
         error_weight=config.error_weight,
@@ -423,6 +404,8 @@ def main():
 
     wav2vec_optimizer = optim.AdamW(wav2vec_params, lr=config.wav2vec_lr)
     main_optimizer = optim.AdamW(main_params, lr=config.main_lr)
+
+    scaler = torch.amp.GradScaler('cuda')
 
     train_dataset = BaseDataset(
         config.train_data, phoneme_to_id,
@@ -464,13 +447,13 @@ def main():
 
     if args.resume:
         start_epoch, resume_metrics = load_checkpoint(
-            args.resume, model, wav2vec_optimizer, main_optimizer, device
+            args.resume, model, wav2vec_optimizer, main_optimizer, config.device
         )
         if 'error_accuracy' in resume_metrics:
             best_error_accuracy = resume_metrics['error_accuracy']
         if 'phoneme_accuracy' in resume_metrics:
             best_phoneme_accuracy = resume_metrics['phoneme_accuracy']
-        checkpoint = torch.load(args.resume, map_location=device)
+        checkpoint = torch.load(args.resume, map_location=config.device)
         if 'val_loss' in checkpoint:
             best_val_loss = checkpoint['val_loss']
         logger.info("=" * 50)
@@ -491,18 +474,18 @@ def main():
     for epoch in range(start_epoch, config.num_epochs + 1):
         train_loss = train_epoch(
             model, train_dataloader, criterion, wav2vec_optimizer, main_optimizer,
-            device, epoch, scaler, config.gradient_accumulation, config
+            config.device, epoch, scaler, config.gradient_accumulation, config
         )
-        val_loss = validate_epoch(model, val_dataloader, criterion, device, config)
+        val_loss = validate_epoch(model, val_dataloader, criterion, config.device, config)
         logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
         if epoch % 5 == 0 or epoch == 1:
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
-            show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, logger=logger, error_type_names=error_type_names)
+            show_sample_predictions(model, eval_dataloader, config.device, id_to_phoneme, logger=logger, error_type_names=error_type_names)
 
         logger.info(f"Epoch {epoch}: Evaluating error detection...")
-        error_detection_results = evaluate_error_detection(model, eval_dataloader, device, error_type_names)
+        error_detection_results = evaluate_error_detection(model, eval_dataloader, config.device, error_type_names)
         logger.info(f"Error Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
         logger.info(f"Error Weighted F1: {error_detection_results['weighted_f1']:.4f}")
         for error_type, metrics in error_detection_results['class_metrics'].items():
@@ -510,7 +493,7 @@ def main():
                 logger.info(f"  {error_type}: Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1']:.4f}")
 
         logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
-        phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, device, id_to_phoneme)
+        phoneme_recognition_results = evaluate_phoneme_recognition(model, eval_dataloader, config.device, id_to_phoneme)
         logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
         logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
 
