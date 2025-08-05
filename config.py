@@ -23,6 +23,9 @@ class Config:
     
     model_type = 'simple'
     
+    sigmoid_k = 20
+    sigmoid_threshold = 1.0
+
     batch_size = 16
     eval_batch_size = 16
     num_epochs = 50
