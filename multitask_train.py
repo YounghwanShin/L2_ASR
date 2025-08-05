@@ -126,7 +126,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 )
 
             length_logs_path = f"experiments/length_logs/length_logs_epoch{epoch}.json"
-            os.makedirs('experiments', exist_ok=True)
+            os.makedirs('experiments/length_logs', exist_ok=True)
             if has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits, config)
