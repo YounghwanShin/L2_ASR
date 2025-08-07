@@ -36,12 +36,16 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
     model.train()
     if config and config.wav2vec2_specaug:
         enable_wav2vec2_specaug(model, True)
+    
+    length_loss_fn = LogCoshLengthLoss()
 
     total_loss = 0.0
     error_loss_sum = 0.0
     phoneme_loss_sum = 0.0
+    length_loss_sum = 0.0
     error_count = 0
     phoneme_count = 0
+    length_count = 0.0
 
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch}')
 
@@ -132,10 +136,13 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 soft_length = calculate_soft_length(phoneme_logits, config)
                 soft_length = torch.clamp(soft_length, max=80)
 
-                length_loss = LogCoshLengthLoss()(
+                length_loss = length_loss_fn(
                     soft_length,
                     batch_phoneme_lengths.float()
                 )
+
+                length_loss_sum += length_loss
+                length_count += 1
 
                 soft_lengths = [int(s) for s in soft_length.tolist()]
                 target_lengths = batch_phoneme_lengths.tolist()
@@ -188,16 +195,17 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
         avg_total = total_loss / max(((batch_idx + 1) // gradient_accumulation), 1)
         avg_error = error_loss_sum / max(error_count, 1)
         avg_phoneme = phoneme_loss_sum / max(phoneme_count, 1)
+        avg_length = length_loss_sum / max(length_count, 1)
 
         progress_bar.set_postfix({
             'Total': f'{avg_total:.4f}',
             'Error': f'{avg_error:.4f}',
-            'Phoneme': f'{avg_phoneme:.4f}'
+            'Phoneme': f'{avg_phoneme:.4f}',
+            'Length': f'{avg_length:.4f}'
         })
 
     torch.cuda.empty_cache()
     return total_loss / (len(dataloader) // gradient_accumulation)
-
 
 def validate_epoch(model, dataloader, criterion, device, config):
     model.eval()
@@ -300,7 +308,6 @@ def validate_epoch(model, dataloader, criterion, device, config):
     torch.cuda.empty_cache()
     return total_loss / len(dataloader)
 
-
 def seed_everything(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -308,7 +315,6 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
 
 def save_checkpoint(model, wav2vec_opt, main_opt, epoch, val_loss, train_loss, metrics, path):
     checkpoint = {
@@ -324,7 +330,6 @@ def save_checkpoint(model, wav2vec_opt, main_opt, epoch, val_loss, train_loss, m
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(checkpoint, path)
 
-
 def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, device):
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -338,7 +343,6 @@ def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, d
         logger.info(f"Checkpoint saved at: {checkpoint['saved_time']}")
     logger.info(f"Previous metrics: {best_metrics}")
     return start_epoch, best_metrics
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -498,7 +502,8 @@ def main():
         val_loss = validate_epoch(model, val_dataloader, criterion, config.device, config)
         logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
-        if epoch % 5 == 0 or epoch == 1:
+        # if epoch % 5 == 0 or epoch == 1:
+        if True:
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
             show_sample_predictions(task_mode=config.task_mode['multi_eval'], model=model, eval_dataloader=eval_dataloader, device=config.device, id_to_phoneme=id_to_phoneme, logger=logger, error_type_names=error_type_names)
@@ -583,7 +588,6 @@ def main():
     logger.info(f"Best Error Accuracy: {best_error_accuracy:.4f}")
     logger.info(f"Best Phoneme Accuracy: {best_phoneme_accuracy:.4f}")
     logger.info(f"Final metrics saved to: {metrics_path}")
-
 
 if __name__ == "__main__":
     main()
