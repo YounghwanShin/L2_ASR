@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from config import Config
 from utils import (
     make_attn_mask,
-    get_model_class,
+    get_multitask_model_class,
     detect_model_type_from_checkpoint,
     setup_experiment_dirs,
     enable_wav2vec2_specaug,
@@ -124,37 +124,33 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     error_target_lengths=batch_error_lengths,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
-
-            length_logs_path = f"experiments/length_logs/length_logs_epoch{epoch}.json"
-            os.makedirs('experiments/length_logs', exist_ok=True)
+            
+            os.makedirs(config.length_logs_dir, exist_ok=True)
+            length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
             if has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits, config)
-                soft_length = torch.clamp(soft_length, min=5, max=80)
+                soft_length = torch.clamp(soft_length, max=80)
 
                 length_loss = LogCoshLengthLoss()(
                     soft_length,
                     batch_phoneme_lengths.float()
                 )
 
+                soft_lengths = [int(s) for s in soft_length.tolist()]
+                target_lengths = batch_phoneme_lengths.tolist()
+                length_diffs = [s - t for s, t in zip(soft_lengths, target_lengths)]
                 length_dict = {
-                    'epoch_idx' : epoch,
+                    'epoch_num' : epoch,
                     'batch_idx' : batch_idx,
-                    'soft_lengths' : [int(s) for s in soft_length.tolist()],
-                    'target_lengths' : batch_phoneme_lengths.tolist()
+                    'soft_lengths' : soft_lengths,
+                    'target_lengths' : target_lengths,
+                    'length_diffs' : length_diffs
                 }
                     
                 with open(length_logs_path, 'a') as f:
-                    json.dump(length_dict['epoch_idx'], f)
+                    json.dump(length_dict, f)
                     f.write("\n")
-                    json.dump(length_dict['batch_idx'], f)
-                    f.write("\n")
-                    json.dump(length_dict['soft_lengths'], f)
-                    f.write("\n")
-                    json.dump(length_dict['target_lengths'], f)
-                    f.write("\n")
-                    json.dump([s - t for s, t in zip(length_dict['soft_lengths'], length_dict['target_lengths'])], f)
-                    f.write("\n\n")
 
                 loss = loss + (config.length_weight * length_loss)
 
@@ -397,7 +393,7 @@ def main():
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
 
-    model_class, loss_class = get_model_class(config.model_type)
+    model_class, loss_class = get_multitask_model_class(config.model_type)
     model = model_class(
         pretrained_model_name=config.pretrained_model,
         num_phonemes=config.num_phonemes,

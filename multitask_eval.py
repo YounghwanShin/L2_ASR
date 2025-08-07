@@ -9,7 +9,7 @@ import pytz
 
 from config import Config
 from utils import (
-    get_model_class,
+    get_multitask_model_class,
     detect_model_type_from_checkpoint,
     evaluate_error_detection,
     evaluate_phoneme_recognition,
@@ -60,7 +60,7 @@ def main():
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
-    model_class, loss_class = get_model_class(model_type)
+    model_class, loss_class = get_multitask_model_class(model_type)
     model_config = config.model_configs[model_type]
     
     model = model_class(

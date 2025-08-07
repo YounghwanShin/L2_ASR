@@ -21,7 +21,12 @@ class Config:
                  'error_eval' : 'error_eval'}
     error_task_ratio = 0.5
     
-    model_type = 'simple'
+    model_type = ''
+    """
+    model_type = {multitask : ['simple', 'transformer']
+                 phoneme: ['simple', 'transformer']
+                }
+    """
     
     sigmoid_k = 20
     sigmoid_threshold = 1.0
@@ -80,7 +85,7 @@ class Config:
                 model_prefix = 'phoneme_simple' if self.model_type == 'simple' else f'phoneme_{self.model_type}'
                 self.experiment_name = f"{model_prefix}_{current_date}"
             else:
-                model_prefix = 'simple' if self.model_type == 'simple' else 'trm' if self.model_type == 'transformer' else self.model_type
+                model_prefix = 'multi_simple' if self.model_type == 'simple' else 'multi_transformer'
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
                 self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_{current_date}"
@@ -89,6 +94,7 @@ class Config:
         
         self.experiment_dir = os.path.join(self.base_experiment_dir, self.experiment_name)
         self.checkpoint_dir = os.path.join(self.experiment_dir, 'checkpoints')
+        self.length_logs_dir = os.path.join(self.experiment_dir, 'length_logs')
         self.log_dir = os.path.join(self.experiment_dir, 'logs')
         self.result_dir = os.path.join(self.experiment_dir, 'results')
         self.output_dir = self.checkpoint_dir
