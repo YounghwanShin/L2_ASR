@@ -85,7 +85,7 @@ class Config:
                 model_prefix = 'phoneme_simple' if self.model_type == 'simple' else f'phoneme_{self.model_type}'
                 self.experiment_name = f"{model_prefix}_{current_date}"
             else:
-                model_prefix = 'multi_simple' if self.model_type == 'simple' else 'trm' if self.model_type == 'multi_transformer' else self.model_type
+                model_prefix = 'multi_simple' if self.model_type == 'simple' else 'multi_transformer'
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
                 self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_{current_date}"
