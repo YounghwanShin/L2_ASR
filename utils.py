@@ -148,6 +148,7 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
 def calculate_soft_length(outputs, config):
     probs = torch.softmax(outputs, dim=-1)
     non_blank_probs = 1.0 - probs[:, :, 0]
+    non_blank_probs = torch.where(non_blank_probs >= 0.7, non_blank_probs, torch.zeros_like(non_blank_probs))
     
     phoneme_probs = probs[:, :, 1:]
     soft_preds = torch.matmul(
