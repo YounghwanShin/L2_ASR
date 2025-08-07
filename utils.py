@@ -9,7 +9,7 @@ from speechbrain.utils.edit_distance import wer_details_for_batch
 EDIT_SYMBOLS = {
     "eq": "=",
     "ins": "I",
-    "del": "D", 
+    "del": "D",
     "sub": "S",
 }
 
@@ -145,8 +145,8 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
     
     return decoded_seqs
 
-def calculate_soft_length(log_probs):
-    probs = log_probs.exp()
+def calculate_soft_length(outputs, config):
+    probs = torch.softmax(outputs, dim=-1)
     non_blank_probs = 1.0 - probs[:, :, 0]
     
     phoneme_probs = probs[:, :, 1:]
@@ -155,10 +155,11 @@ def calculate_soft_length(log_probs):
     )
     
     preds_shift = torch.roll(soft_preds, shifts=1, dims=1)
-    change_mask = torch.log(torch.cosh(soft_preds - preds_shift))
-    change_mask[:, 0] = 1.0
-    
-    soft_length = (non_blank_probs * change_mask).sum(dim=1)
+
+    diff = torch.abs(soft_preds - preds_shift)
+    change_probs = torch.sigmoid(config.sigmoid_k * (diff - config.sigmoid_threshold))
+
+    soft_length = (non_blank_probs * change_probs).sum(dim=1)
     return soft_length
 
 def show_sample_predictions(task_mode, model, eval_dataloader, device, id_to_phoneme, logger, error_type_names=None, num_samples=3):
@@ -324,7 +325,7 @@ def calculate_mispronunciation_metrics(all_predictions, all_canonical, all_perce
 def clean_targets(error_labels, label_lengths):
     return [labels[:length].cpu().numpy().tolist() for labels, length in zip(error_labels, label_lengths)]
 
-def evaluate_error_detection(model, dataloader, device, error_type_names=None):
+def evaluate_error_detection(model, dataloader, device, task_mode='', error_type_names=None):
     if error_type_names is None:
         error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
@@ -345,7 +346,7 @@ def evaluate_error_detection(model, dataloader, device, error_type_names=None):
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
-            outputs = model(waveforms, attention_mask, task='error')
+            outputs = model(waveforms, attention_mask, task_mode=task_mode)
             error_logits = outputs['error_logits']
             
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
@@ -436,7 +437,7 @@ def _calculate_error_metrics(all_predictions, all_targets, all_ids, error_type_n
         'total_tokens': int(total_tokens)
     }
 
-def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
+def evaluate_phoneme_recognition(model, dataloader, device, task_mode=None, id_to_phoneme=None):
     model.eval()
     all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids = [], [], [], [], [], []
     
@@ -459,7 +460,7 @@ def evaluate_phoneme_recognition(model, dataloader, device, id_to_phoneme):
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
-            outputs = model(waveforms, attention_mask)
+            outputs = model(waveforms, attention_mask, task_mode=task_mode)
             if 'phoneme_logits' in outputs:
                 phoneme_logits = outputs['phoneme_logits']
             else:

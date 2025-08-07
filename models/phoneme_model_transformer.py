@@ -23,8 +23,9 @@ class TransformerPhonemeModel(nn.Module):
         )
         self.phoneme_head = PhonemeRecognitionHead(hidden_dim, num_phonemes, dropout)
         
-    def forward(self, x, attention_mask=None):
-        features = self.encoder(x, attention_mask)
-        enhanced_features = self.transformer_encoder(features, attention_mask)
-        phoneme_logits = self.phoneme_head(enhanced_features)
-        return {'phoneme_logits': phoneme_logits}
+    def forward(self, x, attention_mask=None, task_mode=None):
+        if task_mode in ['phoneme_train', 'phoneme_eval']:
+            features = self.encoder(x, attention_mask)
+            enhanced_features = self.transformer_encoder(features, attention_mask)
+            phoneme_logits = self.phoneme_head(enhanced_features)
+            return {'phoneme_logits': phoneme_logits}
