@@ -94,6 +94,7 @@ class Config:
         
         self.experiment_dir = os.path.join(self.base_experiment_dir, self.experiment_name)
         self.checkpoint_dir = os.path.join(self.experiment_dir, 'checkpoints')
+        self.length_logs_dir = os.path.join(self.experiment_dir, 'length_logs')
         self.log_dir = os.path.join(self.experiment_dir, 'logs')
         self.result_dir = os.path.join(self.experiment_dir, 'results')
         self.output_dir = self.checkpoint_dir

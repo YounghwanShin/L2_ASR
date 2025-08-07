@@ -124,13 +124,11 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     error_target_lengths=batch_error_lengths,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
-
-            length_logs_path = f"experiments/length_logs/length_logs_epoch{epoch}.json"
-            os.makedirs('experiments/length_logs', exist_ok=True)
+            length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
             if has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits, config)
-                soft_length = torch.clamp(soft_length, min=5, max=80)
+                soft_length = torch.clamp(soft_length, max=80)
 
                 length_loss = LogCoshLengthLoss()(
                     soft_length,
