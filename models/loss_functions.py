@@ -72,7 +72,8 @@ class LogCoshLengthLoss(nn.Module):
 
     def forward(self, input_lengths, target_lengths):
         diff = input_lengths - target_lengths
-        length_losses = torch.mean(torch.log(torch.cosh(diff)))
+        diff_ratio = (diff / (target_lengths + 1e-8)) * 10
+        length_losses = torch.mean(torch.log(torch.cosh(diff_ratio)))
         return length_losses
 
 class PhonemeLoss(nn.Module):
