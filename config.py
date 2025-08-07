@@ -21,7 +21,12 @@ class Config:
                  'error_eval' : 'error_eval'}
     error_task_ratio = 0.5
     
-    model_type = 'simple'
+    model_type = ''
+    """
+    model_type = {multitask : ['simple', 'transformer']
+                 phoneme: ['simple', 'transformer']
+                }
+    """
     
     sigmoid_k = 20
     sigmoid_threshold = 1.0
