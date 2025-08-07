@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from config import Config
 from utils import (
     make_attn_mask,
-    get_model_class,
+    get_multitask_model_class,
     detect_model_type_from_checkpoint,
     setup_experiment_dirs,
     enable_wav2vec2_specaug,
@@ -397,7 +397,7 @@ def main():
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
 
-    model_class, loss_class = get_model_class(config.model_type)
+    model_class, loss_class = get_multitask_model_class(config.model_type)
     model = model_class(
         pretrained_model_name=config.pretrained_model,
         num_phonemes=config.num_phonemes,

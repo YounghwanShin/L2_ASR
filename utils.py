@@ -20,7 +20,7 @@ def make_attn_mask(wavs, wav_lens):
         attn_mask[i, :abs_lens[i]] = 1
     return attn_mask
 
-def get_model_class(model_type):
+def get_multitask_model_class(model_type):
     if model_type == 'simple':
         from models.multitask_model import SimpleMultiTaskModel
         from models.loss_functions import MultiTaskLoss
