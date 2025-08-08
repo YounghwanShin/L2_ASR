@@ -28,8 +28,8 @@ class Config:
                 }
     """
     
-    sigmoid_k = 20
-    sigmoid_threshold = 1.0
+    sigmoid_k = 10
+    sigmoid_threshold = 1.0 / 42.0
 
     batch_size = 8
     eval_batch_size = 8

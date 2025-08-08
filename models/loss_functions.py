@@ -72,7 +72,7 @@ class LogCoshLengthLoss(nn.Module):
 
     def forward(self, input_lengths, target_lengths):
         diff = input_lengths - target_lengths
-        diff_ratio = (diff / (target_lengths + 1e-8)) * 10
+        diff_ratio = diff / (target_lengths + 1e-8)
         length_losses = torch.mean(torch.log(torch.cosh(diff_ratio)))
         return length_losses
 
