@@ -28,20 +28,20 @@ class Config:
                 }
     """
     
-    sigmoid_k = 20
-    sigmoid_threshold = 1.0
+    sigmoid_k = 10
+    sigmoid_threshold = 1.0 / 42.0
 
-    batch_size = 16
-    eval_batch_size = 16
+    batch_size = 8
+    eval_batch_size = 8
     num_epochs = 50
     gradient_accumulation = 2
     
     main_lr = 3e-4
     wav2vec_lr = 1e-5
     
-    error_weight = 0.3
-    phoneme_weight = 0.4
-    length_weight = 0.3
+    error_weight = 0.35
+    phoneme_weight = 0.45
+    length_weight = 0.2
     
     focal_alpha = 0.25
     focal_gamma = 2.0
@@ -79,7 +79,7 @@ class Config:
     
     def __post_init__(self):
         if self.experiment_name is None or not hasattr(self, '_last_model_type') or self._last_model_type != self.model_type:
-            current_date = datetime.now(timezone('Asia/Seoul')).strftime('%Y%m%d')
+            current_date = datetime.now(timezone('Asia/Seoul')).strftime('%Y%m%d%H%M%S')
             
             if hasattr(self, '_is_phoneme_model') and self._is_phoneme_model:
                 model_prefix = 'phoneme_simple' if self.model_type == 'simple' else f'phoneme_{self.model_type}'
@@ -88,8 +88,9 @@ class Config:
                 model_prefix = 'multi_simple' if self.model_type == 'simple' else 'multi_transformer'
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
-                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_{current_date}"
-            
+                length_ratio = str(int(self.length_weight * 10)).zfill(2)
+                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}{length_ratio}_{current_date}"
+
             self._last_model_type = self.model_type
         
         self.experiment_dir = os.path.join(self.base_experiment_dir, self.experiment_name)
