@@ -112,7 +112,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     }
                     phoneme_input_lengths_filtered = phoneme_input_lengths[valid_phoneme_indices]
 
-                    soft_length = calculate_soft_length(phoneme_outputs['phoneme_logits'])
+                    soft_length = calculate_soft_length(phoneme_outputs['phoneme_logits'], config=config)
                     soft_length = torch.clamp(soft_length, max=80).to(device)
 
                     length_loss = length_loss_fn(soft_length, batch_phoneme_lengths)
@@ -207,6 +207,7 @@ def validate_epoch(model, dataloader, criterion, device, config):
     model.eval()
     enable_wav2vec2_specaug(model, False)
     total_loss = 0.0
+    length_loss_fn = LogCoshLengthLoss()
 
     with torch.no_grad():
         progress_bar = tqdm(dataloader, desc='Validation')
@@ -271,6 +272,11 @@ def validate_epoch(model, dataloader, criterion, device, config):
                     }
                     phoneme_input_lengths_filtered = phoneme_input_lengths[valid_phoneme_indices]
 
+                    soft_length = calculate_soft_length(phoneme_outputs['phoneme_logits'], config=config)
+                    soft_length = torch.clamp(soft_length, max=80).to(device)
+
+                    length_loss = length_loss_fn(soft_length, batch_error_lengths)
+
             combined_outputs = {}
             if has_error and batch_error_labels is not None:
                 combined_outputs.update(error_outputs)
@@ -289,13 +295,6 @@ def validate_epoch(model, dataloader, criterion, device, config):
                 )
 
             if has_phoneme:
-                phoneme_logits = outputs['phoneme_logits']
-                soft_length = calculate_soft_length(phoneme_logits, config)
-
-                length_loss = LogCoshLengthLoss()(
-                    soft_length,
-                    batch_phoneme_lengths.float()
-                )
                 loss = loss + config.length_weight * length_loss
 
             total_loss += loss.item() if loss > 0 else 0
