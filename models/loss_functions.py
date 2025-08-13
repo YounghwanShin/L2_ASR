@@ -10,12 +10,12 @@ class FocalCTCLoss(nn.Module):
         self.reduction = reduction
         
     def forward(self, log_probs, targets, input_lengths, target_lengths):
-        ctc_losses = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)        
+        ctc_losses = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
         ctc_losses = torch.clamp(ctc_losses, min=1e-6)
-        
-        p_t = torch.clamp(torch.exp(-ctc_losses), min=1e-6, max=1.0)
-        
-        focal_losses = self.alpha * ((1 - p_t) ** self.gamma) * ctc_losses
+        p_t = torch.exp(-ctc_losses)
+        p_t = torch.clamp(p_t, min=1e-6, max=1.0)
+        focal_weights = self.alpha * (1 - p_t) ** self.gamma
+        focal_losses = focal_weights * ctc_losses
         
         if self.reduction == 'mean':
             return focal_losses.mean()
@@ -40,10 +40,9 @@ class MultiTaskLoss(nn.Module):
         loss_dict = {}
         
         if 'error_logits' in outputs and error_targets is not None:
-            error_log_probs = torch.log_softmax(outputs['error_logits'], dim=-1).transpose(0, 1)
-            
+            error_log_probs = torch.log_softmax(outputs['error_logits'], dim=-1)
             error_loss = self.error_criterion(
-                error_log_probs, 
+                error_log_probs.transpose(0, 1), 
                 error_targets, 
                 error_input_lengths, 
                 error_target_lengths
@@ -53,10 +52,9 @@ class MultiTaskLoss(nn.Module):
             loss_dict['error_loss'] = error_loss.item()
             
         if 'phoneme_logits' in outputs and phoneme_targets is not None:
-            phoneme_log_probs = torch.log_softmax(outputs['phoneme_logits'], dim=-1).transpose(0, 1)
-            
+            phoneme_log_probs = torch.log_softmax(outputs['phoneme_logits'], dim=-1)
             phoneme_loss = self.phoneme_criterion(
-                phoneme_log_probs, 
+                phoneme_log_probs.transpose(0, 1), 
                 phoneme_targets, 
                 phoneme_input_lengths, 
                 phoneme_target_lengths
@@ -84,10 +82,9 @@ class PhonemeLoss(nn.Module):
         self.phoneme_criterion = FocalCTCLoss(alpha=focal_alpha, gamma=focal_gamma, blank=0, reduction='mean', zero_infinity=True)
         
     def forward(self, outputs, phoneme_targets, phoneme_input_lengths, phoneme_target_lengths):
-        phoneme_log_probs = torch.log_softmax(outputs['phoneme_logits'], dim=-1).transpose(0, 1)
-        
+        phoneme_log_probs = torch.log_softmax(outputs['phoneme_logits'], dim=-1)
         phoneme_loss = self.phoneme_criterion(
-            phoneme_log_probs, 
+            phoneme_log_probs.transpose(0, 1), 
             phoneme_targets, 
             phoneme_input_lengths, 
             phoneme_target_lengths
