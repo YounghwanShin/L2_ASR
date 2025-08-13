@@ -14,9 +14,8 @@ class FocalCTCLoss(nn.Module):
         ctc_losses = torch.clamp(ctc_losses, min=1e-6)
         p_t = torch.exp(-ctc_losses)
         p_t = torch.clamp(p_t, min=1e-6, max=1.0)
-        focal_weights = self.alpha * (1 - p_t) ** self.gamma
-        focal_losses = focal_weights * ctc_losses
-        
+        focal_losses = ctc_losses * (self.alpha * (1 - p_t) ** self.gamma)
+
         if self.reduction == 'mean':
             return focal_losses.mean()
         elif self.reduction == 'sum':
