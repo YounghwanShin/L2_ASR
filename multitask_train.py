@@ -129,37 +129,38 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
             
-            os.makedirs(config.length_logs_dir, exist_ok=True)
-            length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
-            if has_phoneme:
-                phoneme_logits = outputs['phoneme_logits']
-                soft_length = calculate_soft_length(phoneme_logits, config)
-                soft_length = torch.clamp(soft_length, max=80)
+            if epoch >= 10:
+                os.makedirs(config.length_logs_dir, exist_ok=True)
+                length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
+                if has_phoneme:
+                    phoneme_logits = outputs['phoneme_logits']
+                    soft_length = calculate_soft_length(phoneme_logits, config)
+                    soft_length = torch.clamp(soft_length, max=80)
 
-                length_loss = length_loss_fn(
-                    soft_length,
-                    batch_phoneme_lengths.float()
-                )
+                    length_loss = length_loss_fn(
+                        soft_length,
+                        batch_phoneme_lengths.float()
+                    )
 
-                length_loss_sum += length_loss
-                length_count += 1
+                    length_loss_sum += length_loss
+                    length_count += 1
 
-                soft_lengths = [int(s) for s in soft_length.tolist()]
-                target_lengths = batch_phoneme_lengths.tolist()
-                length_diffs = [s - t for s, t in zip(soft_lengths, target_lengths)]
-                length_dict = {
-                    'epoch_num' : epoch,
-                    'batch_idx' : batch_idx,
-                    'soft_lengths' : soft_lengths,
-                    'target_lengths' : target_lengths,
-                    'length_diffs' : length_diffs
-                }
-                    
-                with open(length_logs_path, 'a') as f:
-                    json.dump(length_dict, f)
-                    f.write("\n")
+                    soft_lengths = [int(s) for s in soft_length.tolist()]
+                    target_lengths = batch_phoneme_lengths.tolist()
+                    length_diffs = [s - t for s, t in zip(soft_lengths, target_lengths)]
+                    length_dict = {
+                        'epoch_num' : epoch,
+                        'batch_idx' : batch_idx,
+                        'soft_lengths' : soft_lengths,
+                        'target_lengths' : target_lengths,
+                        'length_diffs' : length_diffs
+                    }
 
-                loss = loss + (config.length_weight * length_loss)
+                    with open(length_logs_path, 'a') as f:
+                        json.dump(length_dict, f)
+                        f.write("\n")
+
+                    loss = loss + (config.length_weight * length_loss)
 
             accumulated_loss = loss / gradient_accumulation
             if 'error_loss' in loss_dict:
