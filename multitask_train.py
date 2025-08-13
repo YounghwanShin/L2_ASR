@@ -136,7 +136,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             
             os.makedirs(config.length_logs_dir, exist_ok=True)
             length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
-            if has_phoneme and config.length_loss != 0:
+            if has_phoneme:
                 length_loss_sum += length_loss
                 length_count += 1
 
@@ -155,7 +155,8 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     json.dump(length_dict, f)
                     f.write("\n")
 
-                loss = loss + (config.length_weight * length_loss)
+                if config.length_weight != 0:
+                    loss = loss + (config.length_weight * length_loss)
 
             accumulated_loss = loss / gradient_accumulation
             if 'error_loss' in loss_dict:
@@ -294,7 +295,7 @@ def validate_epoch(model, dataloader, criterion, device, config):
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
 
-            if has_phoneme:
+            if has_phoneme and config.length_weight != 0:
                 loss = loss + config.length_weight * length_loss
 
             total_loss += loss.item() if loss > 0 else 0
