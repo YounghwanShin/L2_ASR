@@ -8,7 +8,7 @@ from pytz import timezone
 class Config:
     pretrained_model = "facebook/wav2vec2-large-xlsr-53"
     sampling_rate = 16000
-    max_length = 320000
+    max_length = 160000
     
     num_phonemes = 42
     num_error_types = 3

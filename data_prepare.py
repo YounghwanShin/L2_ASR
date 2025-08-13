@@ -30,6 +30,33 @@ class BaseDataset(Dataset):
                 self.valid_files.append(wav_file)
             elif task_mode.endswith('eval'):
                 self.valid_files.append(wav_file)
+        
+        if self.max_length:
+            filtered_files = []
+            excluded_count = 0
+            
+            for wav_file in self.valid_files:
+                try:
+                    waveform, sample_rate = torchaudio.load(wav_file)
+                    if waveform.shape[0] > 1:
+                        waveform = torch.mean(waveform, dim=0, keepdim=True)
+                    
+                    if sample_rate != self.sampling_rate:
+                        resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
+                        waveform = resampler(waveform)
+                    
+                    if waveform.shape[1] <= self.max_length:
+                        filtered_files.append(wav_file)
+                    else:
+                        excluded_count += 1
+                        print(f"Excluding long file: {wav_file} ({waveform.shape[1]} samples, {waveform.shape[1]/self.sampling_rate:.1f}s)")
+                
+                except Exception as e:
+                    print(f"Error loading {wav_file}: {e}")
+                    excluded_count += 1
+            
+            print(f"Length filtering: {len(self.valid_files)} → {len(filtered_files)} files ({excluded_count} excluded)")
+            self.valid_files = filtered_files
     
     def __len__(self):
         return len(self.valid_files)
@@ -42,9 +69,6 @@ class BaseDataset(Dataset):
         if sample_rate != self.sampling_rate:
             resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
             waveform = resampler(waveform)
-        
-        if self.max_length and waveform.shape[1] > self.max_length:
-            waveform = waveform[:, :self.max_length]
         
         return waveform.squeeze(0)
 
