@@ -2,6 +2,7 @@ import torch
 import json
 import torchaudio
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 class BaseDataset(Dataset):
     def __init__(self, json_path, phoneme_to_id, task_mode, error_task_ratio=None, max_length=None, sampling_rate=16000):
@@ -35,7 +36,7 @@ class BaseDataset(Dataset):
             filtered_files = []
             excluded_count = 0
             
-            for wav_file in self.valid_files:
+            for wav_file in tqdm(self.valid_files, desc = "data file processing"):
                 try:
                     waveform, sample_rate = torchaudio.load(wav_file)
                     if waveform.shape[0] > 1:
