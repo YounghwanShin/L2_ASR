@@ -189,15 +189,15 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             torch.cuda.empty_cache()
 
         avg_total = total_loss / max(((batch_idx + 1) // gradient_accumulation), 1)
-        avg_error = error_loss_sum / max(error_count, 1)
-        avg_phoneme = phoneme_loss_sum / max(phoneme_count, 1)
-        avg_length = length_loss_sum / max(length_count, 1)
+        avg_error_weighted = (error_loss_sum * config.error_weight) / max(error_count, 1)
+        avg_phoneme_weighted = (phoneme_loss_sum * config.phoneme_weight) / max(phoneme_count, 1)
+        avg_length_weighted = (length_loss_sum * config.length_weight) / max(length_count, 1)
 
         progress_bar.set_postfix({
             'Total': f'{avg_total:.4f}',
-            'Error': f'{avg_error:.4f}',
-            'Phoneme': f'{avg_phoneme:.4f}',
-            'Length': f'{avg_length:.4f}'
+            'Error': f'{avg_error_weighted:.4f}',
+            'Phoneme': f'{avg_phoneme_weighted:.4f}',
+            'Length': f'{avg_length_weighted:.4f}'
         })
 
     torch.cuda.empty_cache()
