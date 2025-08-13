@@ -136,7 +136,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             
             os.makedirs(config.length_logs_dir, exist_ok=True)
             length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
-            if has_phoneme:
+            if has_phoneme and config.length_loss != 0:
                 length_loss_sum += length_loss
                 length_count += 1
 
