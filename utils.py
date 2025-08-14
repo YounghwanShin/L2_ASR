@@ -116,7 +116,7 @@ def detect_model_type_from_checkpoint(checkpoint_path):
     state_dict = remove_module_prefix(state_dict)
     keys = list(state_dict.keys())
     
-    if any('transformer_encoder' in key or 'feature_encoder.transformer' in key for key in keys):
+    if any('feature_encoder.transformer' in key for key in keys):
         return 'transformer'
     else:
         return 'simple'

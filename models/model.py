@@ -16,7 +16,6 @@ class UnifiedModel(nn.Module):
         super().__init__()
         
         self.encoder = Wav2VecEncoder(pretrained_model_name)
-        self.use_transformer = use_transformer
         
         config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
         wav2vec_dim = config.hidden_size
@@ -34,7 +33,7 @@ class UnifiedModel(nn.Module):
     def forward(self, x, attention_mask=None, training_mode='phoneme_only'):
         features = self.encoder(x, attention_mask)
         
-        if self.use_transformer:
+        if hasattr(self.feature_encoder, 'transformer'):
             enhanced_features = self.feature_encoder(features, attention_mask)
         else:
             enhanced_features = self.feature_encoder(features)

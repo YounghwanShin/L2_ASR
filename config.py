@@ -19,9 +19,6 @@ class Config:
     # Model architecture: 'simple' or 'transformer'
     model_type = 'simple'
     
-    # Use transformer encoder or simple encoder
-    use_transformer = False
-    
     # Sigmoid parameters for soft length calculation
     sigmoid_k = 10
     sigmoid_threshold = 1.0 / 42.0
@@ -37,8 +34,8 @@ class Config:
     
     # Loss weights (only used when corresponding components are enabled)
     error_weight = 0.4
-    phoneme_weight = 0.5
-    length_weight = 0.1
+    phoneme_weight = 0.6
+    length_weight = 0.0
     
     # Focal loss parameters
     focal_alpha = 0.25
@@ -135,14 +132,9 @@ class Config:
                 print(f"Normalized weights: phoneme_weight={self.phoneme_weight:.3f}, error_weight={self.error_weight:.3f}, length_weight={self.length_weight:.3f}")
     
     def get_model_config(self):
-        # Set use_transformer based on model_type for backward compatibility
-        if self.model_type == 'transformer':
-            self.use_transformer = True
-        elif self.model_type == 'simple':
-            self.use_transformer = False
-            
+        """Get model configuration and set use_transformer based on model_type"""
         config = self.model_configs.get(self.model_type, self.model_configs['simple']).copy()
-        config['use_transformer'] = self.use_transformer
+        config['use_transformer'] = (self.model_type == 'transformer')
         return config
     
     def has_error_component(self):
