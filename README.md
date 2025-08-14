@@ -11,8 +11,7 @@ project/
 ├── utils.py                  # 통합 유틸리티 함수
 ├── models/
 │   ├── __init__.py
-│   ├── model.py              # Simple 통합 모델
-│   ├── model_transformer.py  # Transformer 통합 모델  
+│   ├── model.py              # 통합 모델 (Simple/Transformer)
 │   ├── loss_functions.py     # 통합 손실 함수
 │   └── utils_models.py       # 모델 구성 요소
 └── data/
@@ -54,10 +53,10 @@ python train.py --training_mode phoneme_error_length --model_type simple
 python train.py --training_mode phoneme_error_length --model_type transformer
 ```
 
-### 4. 추가 옵션 설정
+### 4. 하이퍼파라미터 조정
 
 ```bash
-# 하이퍼파라미터 조정
+# 손실 가중치 조정 (자동으로 합이 1이 되도록 정규화됨)
 python train.py \
     --training_mode phoneme_error_length \
     --model_type transformer \
@@ -81,7 +80,7 @@ python train.py --resume "experiments/experiment_name/checkpoints/latest.pth"
 ### 6. 모델 평가
 
 ```bash
-# 기본 평가
+# 기본 평가 (자동으로 모델 타입 감지)
 python eval.py --model_checkpoint "experiments/experiment_name/checkpoints/best_phoneme.pth"
 
 # 학습 모드 명시적 지정

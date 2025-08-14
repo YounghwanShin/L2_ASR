@@ -25,6 +25,9 @@ class Config:
     # Model architecture: 'simple' or 'transformer'
     model_type = 'simple'
     
+    # Use transformer encoder or simple encoder
+    use_transformer = False
+    
     # Sigmoid parameters for soft length calculation
     sigmoid_k = 10
     sigmoid_threshold = 1.0 / 42.0
@@ -81,6 +84,9 @@ class Config:
     }
     
     def __post_init__(self):
+        # Validate weight sums based on training mode
+        self._validate_weights()
+        
         if self.experiment_name is None or not hasattr(self, '_last_model_type') or self._last_model_type != self.model_type:
             current_date = datetime.now(timezone('Asia/Seoul')).strftime('%Y%m%d%H%M%S')
             
@@ -109,8 +115,41 @@ class Config:
         self.result_dir = os.path.join(self.experiment_dir, 'results')
         self.output_dir = self.checkpoint_dir
     
+    def _validate_weights(self):
+        """Validate that weights sum to 1.0 based on training mode"""
+        if self.training_mode == 'phoneme_only':
+            # Only phoneme_weight should be used, but we don't enforce sum=1 for this mode
+            pass
+        elif self.training_mode == 'phoneme_error':
+            # phoneme_weight + error_weight should equal 1.0
+            total = self.phoneme_weight + self.error_weight
+            if abs(total - 1.0) > 1e-6:
+                print(f"Warning: phoneme_weight ({self.phoneme_weight}) + error_weight ({self.error_weight}) = {total} != 1.0")
+                print("Auto-normalizing weights...")
+                self.phoneme_weight = self.phoneme_weight / total
+                self.error_weight = self.error_weight / total
+                print(f"Normalized weights: phoneme_weight={self.phoneme_weight:.3f}, error_weight={self.error_weight:.3f}")
+        elif self.training_mode == 'phoneme_error_length':
+            # phoneme_weight + error_weight + length_weight should equal 1.0
+            total = self.phoneme_weight + self.error_weight + self.length_weight
+            if abs(total - 1.0) > 1e-6:
+                print(f"Warning: phoneme_weight ({self.phoneme_weight}) + error_weight ({self.error_weight}) + length_weight ({self.length_weight}) = {total} != 1.0")
+                print("Auto-normalizing weights...")
+                self.phoneme_weight = self.phoneme_weight / total
+                self.error_weight = self.error_weight / total
+                self.length_weight = self.length_weight / total
+                print(f"Normalized weights: phoneme_weight={self.phoneme_weight:.3f}, error_weight={self.error_weight:.3f}, length_weight={self.length_weight:.3f}")
+    
     def get_model_config(self):
-        return self.model_configs.get(self.model_type, self.model_configs['simple'])
+        # Set use_transformer based on model_type for backward compatibility
+        if self.model_type == 'transformer':
+            self.use_transformer = True
+        elif self.model_type == 'simple':
+            self.use_transformer = False
+            
+        config = self.model_configs.get(self.model_type, self.model_configs['simple']).copy()
+        config['use_transformer'] = self.use_transformer
+        return config
     
     def has_error_component(self):
         """Check if current training mode includes error detection"""

@@ -12,4 +12,4 @@ librosa>=0.8.1
 soundfile>=0.10.3
 pyyaml>=5.4.0
 jsonlines>=2.0.0
-speechbrain
+pytz>=2021.1

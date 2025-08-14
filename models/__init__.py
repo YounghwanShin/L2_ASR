@@ -1,5 +1,4 @@
 from .model import UnifiedModel
-from .model_transformer import UnifiedTransformerModel
 from .loss_functions import UnifiedLoss, LogCoshLengthLoss, FocalCTCLoss
 from .utils_models import (
     ErrorDetectionHead, 
@@ -11,7 +10,6 @@ from .utils_models import (
 
 __all__ = [
     'UnifiedModel',
-    'UnifiedTransformerModel', 
     'UnifiedLoss',
     'LogCoshLengthLoss',
     'FocalCTCLoss',

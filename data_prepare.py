@@ -20,8 +20,8 @@ class UnifiedDataset(Dataset):
         self.valid_files = []
         for wav_file in self.wav_files:
             item = self.data[wav_file]
-            has_error_labels = 'error_labels' in item and item['error_labels'].strip()
-            has_phoneme_labels = 'perceived_train_target' in item and item['perceived_train_target'].strip()
+            has_error_labels = 'error_labels' in item and item['error_labels'] and item['error_labels'].strip()
+            has_phoneme_labels = 'perceived_train_target' in item and item['perceived_train_target'] and item['perceived_train_target'].strip()
             
             if training_mode == 'phoneme_only' and has_phoneme_labels:
                 self.valid_files.append(wav_file)
@@ -98,40 +98,48 @@ class UnifiedDataset(Dataset):
             'wav_file': wav_file
         }
 
-        perceived = item.get('perceived_train_target', '').split()
-        canonical = item.get('canonical_aligned', '').split()
+        perceived = item.get('perceived_train_target', '')
+        canonical = item.get('canonical_aligned', '')
         
-        result['phoneme_labels'] = torch.tensor(
-            [self.phoneme_to_id[p] for p in perceived if p in self.phoneme_to_id],
-            dtype=torch.long
-        ) if perceived else None
+        if perceived and perceived.strip():
+            perceived_tokens = perceived.split()
+            result['phoneme_labels'] = torch.tensor(
+                [self.phoneme_to_id.get(p, 0) for p in perceived_tokens],
+                dtype=torch.long
+            )
+        else:
+            result['phoneme_labels'] = torch.tensor([], dtype=torch.long)
         
-        result['phoneme_length'] = torch.tensor(
-            len(result['phoneme_labels']) if result['phoneme_labels'] is not None else 0
-        )
+        result['phoneme_length'] = torch.tensor(len(result['phoneme_labels']))
         
-        result['canonical_labels'] = torch.tensor(
-            [self.phoneme_to_id[p] for p in canonical if p in self.phoneme_to_id],
-            dtype=torch.long
-        ) if canonical else None
+        if canonical and canonical.strip():
+            canonical_tokens = canonical.split()
+            result['canonical_labels'] = torch.tensor(
+                [self.phoneme_to_id.get(p, 0) for p in canonical_tokens],
+                dtype=torch.long
+            )
+        else:
+            result['canonical_labels'] = torch.tensor([], dtype=torch.long)
 
-        result['canonical_length'] = torch.tensor(
-            len(result['canonical_labels']) if result['canonical_labels'] is not None else 0
-        )
+        result['canonical_length'] = torch.tensor(len(result['canonical_labels']))
 
         if self.training_mode in ['phoneme_error', 'phoneme_error_length']:
-            errors = item.get('error_labels', '').split()
-            error_ids = [self.error_mapping.get(e, 0) for e in errors]
+            errors = item.get('error_labels', '')
+            if errors and errors.strip():
+                error_tokens = errors.split()
+                error_ids = [self.error_mapping.get(e, 0) for e in error_tokens]
+                result['error_labels'] = torch.tensor(error_ids, dtype=torch.long)
+            else:
+                result['error_labels'] = torch.tensor([], dtype=torch.long)
             
-            result['error_labels'] = torch.tensor(error_ids, dtype=torch.long) if errors else None
-            result['error_length'] = torch.tensor(len(error_ids) if error_ids else 0)
+            result['error_length'] = torch.tensor(len(result['error_labels']))
         
         result['spk_id'] = item.get('spk_id', 'UNKNOWN')
         
         return result
 
 def collate_fn(batch, training_mode='phoneme_only'):
-    valid_samples = [item for item in batch if item['phoneme_labels'] is not None]
+    valid_samples = [item for item in batch if item['phoneme_labels'] is not None and len(item['phoneme_labels']) > 0]
     
     if not valid_samples:
         return None
@@ -151,25 +159,42 @@ def collate_fn(batch, training_mode='phoneme_only'):
     }
 
     phoneme_labels = [sample['phoneme_labels'] for sample in valid_samples]
-    max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
-    result['phoneme_labels'] = torch.stack([
-        torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
-        for l in phoneme_labels
-    ])
+    if phoneme_labels and all(len(l) > 0 for l in phoneme_labels):
+        max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
+        result['phoneme_labels'] = torch.stack([
+            torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
+            for l in phoneme_labels
+        ])
+    else:
+        result['phoneme_labels'] = torch.zeros((len(valid_samples), 1), dtype=torch.long)
+    
     result['phoneme_lengths'] = torch.tensor([sample['phoneme_length'] for sample in valid_samples])
 
-    canonical_labels = [sample['canonical_labels'] for sample in valid_samples if sample['canonical_labels'] is not None]
-    if canonical_labels:
-        max_canonical_len = max(l.shape[0] for l in canonical_labels)
-        result['canonical_labels'] = torch.stack([
-            torch.nn.functional.pad(l, (0, max_canonical_len - l.shape[0]), value=0)
-            for l in canonical_labels
-        ])
-        result['canonical_lengths'] = torch.tensor([sample['canonical_length'] for sample in valid_samples])
+    canonical_labels = [sample.get('canonical_labels', torch.tensor([], dtype=torch.long)) for sample in valid_samples]
+    valid_canonical = [l for l in canonical_labels if len(l) > 0]
+    
+    if valid_canonical:
+        max_canonical_len = max(l.shape[0] for l in valid_canonical)
+        padded_canonical = []
+        canonical_lengths = []
+        
+        for sample in valid_samples:
+            canonical = sample.get('canonical_labels', torch.tensor([], dtype=torch.long))
+            if len(canonical) > 0:
+                padded_canonical.append(
+                    torch.nn.functional.pad(canonical, (0, max_canonical_len - canonical.shape[0]), value=0)
+                )
+                canonical_lengths.append(sample['canonical_length'])
+            else:
+                padded_canonical.append(torch.zeros(max_canonical_len, dtype=torch.long))
+                canonical_lengths.append(torch.tensor(0))
+        
+        result['canonical_labels'] = torch.stack(padded_canonical)
+        result['canonical_lengths'] = torch.tensor(canonical_lengths)
 
     if training_mode in ['phoneme_error', 'phoneme_error_length']:
-        error_labels = [sample.get('error_labels') for sample in valid_samples]
-        valid_error_labels = [l for l in error_labels if l is not None]
+        error_labels = [sample.get('error_labels', torch.tensor([], dtype=torch.long)) for sample in valid_samples]
+        valid_error_labels = [l for l in error_labels if len(l) > 0]
         
         if valid_error_labels:
             max_error_len = max(l.shape[0] for l in valid_error_labels)
@@ -177,9 +202,10 @@ def collate_fn(batch, training_mode='phoneme_only'):
             error_lengths = []
             
             for sample in valid_samples:
-                if sample.get('error_labels') is not None:
+                error_data = sample.get('error_labels', torch.tensor([], dtype=torch.long))
+                if len(error_data) > 0:
                     padded_error_labels.append(
-                        torch.nn.functional.pad(sample['error_labels'], (0, max_error_len - sample['error_labels'].shape[0]), value=0)
+                        torch.nn.functional.pad(error_data, (0, max_error_len - error_data.shape[0]), value=0)
                     )
                     error_lengths.append(sample['error_length'])
                 else:

@@ -4,14 +4,94 @@ import torch
 from tqdm import tqdm
 from collections import defaultdict
 from sklearn.metrics import classification_report, f1_score
-from speechbrain.utils.edit_distance import wer_details_for_batch
 
-EDIT_SYMBOLS = {
-    "eq": "=",
-    "ins": "I",
-    "del": "D",
-    "sub": "S",
-}
+def edit_distance_with_details(ref, hyp):
+    len_ref, len_hyp = len(ref), len(hyp)
+    
+    if len_ref == 0:
+        return len_hyp, 0, 0, len_hyp, 0
+    if len_hyp == 0:
+        return len_ref, 0, len_ref, 0, len_ref
+    
+    dp = [[0] * (len_hyp + 1) for _ in range(len_ref + 1)]
+    
+    for i in range(len_ref + 1):
+        dp[i][0] = i
+    for j in range(len_hyp + 1):
+        dp[0][j] = j
+    
+    for i in range(1, len_ref + 1):
+        for j in range(1, len_hyp + 1):
+            if ref[i-1] == hyp[j-1]:
+                dp[i][j] = dp[i-1][j-1]
+            else:
+                dp[i][j] = 1 + min(
+                    dp[i-1][j],     
+                    dp[i][j-1],       
+                    dp[i-1][j-1]    
+                )
+    
+    total_errors = dp[len_ref][len_hyp]
+    
+    i, j = len_ref, len_hyp
+    substitutions = deletions = insertions = 0
+    
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and ref[i-1] == hyp[j-1]:
+            i -= 1
+            j -= 1
+        elif i > 0 and j > 0 and dp[i][j] == dp[i-1][j-1] + 1:
+            substitutions += 1
+            i -= 1
+            j -= 1
+        elif i > 0 and dp[i][j] == dp[i-1][j] + 1:
+            deletions += 1
+            i -= 1
+        elif j > 0 and dp[i][j] == dp[i][j-1] + 1:
+            insertions += 1
+            j -= 1
+        else:
+            break
+    
+    return total_errors, substitutions, deletions, insertions, len_ref
+
+def wer_details_for_batch(ids, refs, hyps, compute_alignments=True):
+    details = []
+    
+    for i, (id_val, ref, hyp) in enumerate(zip(ids, refs, hyps)):
+        if isinstance(ref, (list, tuple)) and len(ref) > 0 and isinstance(ref[0], str):
+            ref_tokens = ref
+        else:
+            ref_tokens = [str(token) for token in ref]
+            
+        if isinstance(hyp, (list, tuple)) and len(hyp) > 0 and isinstance(hyp[0], str):
+            hyp_tokens = hyp
+        else:
+            hyp_tokens = [str(token) for token in hyp]
+        
+        total_errors, substitutions, deletions, insertions, num_ref = edit_distance_with_details(
+            ref_tokens, hyp_tokens
+        )
+        
+        wer = total_errors / num_ref if num_ref > 0 else 0.0
+        
+        detail = {
+            'id': id_val,
+            'WER': wer,
+            'num_ref_tokens': num_ref,
+            'substitutions': substitutions,
+            'deletions': deletions,
+            'insertions': insertions,
+            'num_scored_tokens': num_ref,
+            'num_hyp_tokens': len(hyp_tokens)
+        }
+        
+        if compute_alignments:
+            detail['alignment'] = list(zip(ref_tokens, hyp_tokens)) if len(ref_tokens) == len(hyp_tokens) else None
+        
+        details.append(detail)
+    
+    return details
 
 def make_attn_mask(wavs, wav_lens):
     abs_lens = (wav_lens * wavs.shape[1]).long()
@@ -21,16 +101,9 @@ def make_attn_mask(wavs, wav_lens):
     return attn_mask
 
 def get_model_class(model_type):
-    if model_type == 'simple':
-        from models.model import UnifiedModel
-        from models.loss_functions import UnifiedLoss
-        return UnifiedModel, UnifiedLoss
-    elif model_type == 'transformer':
-        from models.model_transformer import UnifiedTransformerModel
-        from models.loss_functions import UnifiedLoss
-        return UnifiedTransformerModel, UnifiedLoss
-    else:
-        raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer")
+    from models.model import UnifiedModel
+    from models.loss_functions import UnifiedLoss
+    return UnifiedModel, UnifiedLoss
 
 def detect_model_type_from_checkpoint(checkpoint_path):
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
@@ -43,10 +116,8 @@ def detect_model_type_from_checkpoint(checkpoint_path):
     state_dict = remove_module_prefix(state_dict)
     keys = list(state_dict.keys())
     
-    if any('transformer_encoder' in key for key in keys):
+    if any('transformer_encoder' in key or 'feature_encoder.transformer' in key for key in keys):
         return 'transformer'
-    elif any('shared_encoder' in key for key in keys):
-        return 'simple'
     else:
         return 'simple'
 
