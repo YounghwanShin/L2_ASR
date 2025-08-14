@@ -56,7 +56,7 @@ python train.py --training_mode phoneme_error_length --model_type transformer
 ### 4. 하이퍼파라미터 조정
 
 ```bash
-# 손실 가중치 조정 (자동으로 합이 1이 되도록 정규화됨)
+# 손실 가중치 조정
 python train.py \
     --training_mode phoneme_error_length \
     --model_type transformer \

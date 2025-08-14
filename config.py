@@ -16,12 +16,6 @@ class Config:
     # Training modes: 'phoneme_only', 'phoneme_error', 'phoneme_error_length'
     training_mode = 'phoneme_error_length'
     
-    # Task modes for data loading and evaluation
-    task_mode = {
-        'train': 'train',
-        'eval': 'eval'
-    }
-    
     # Model architecture: 'simple' or 'transformer'
     model_type = 'simple'
     
