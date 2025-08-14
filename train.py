@@ -14,7 +14,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from config import Config
-from utils import (
+from src.utils import (
     make_attn_mask,
     get_model_class,
     detect_model_type_from_checkpoint,
@@ -27,7 +27,7 @@ from utils import (
     evaluate_phoneme_recognition,
 )
 from models.loss_functions import LogCoshLengthLoss
-from data_prepare import UnifiedDataset, collate_fn
+from src.data_prepare import UnifiedDataset, collate_fn
 
 logger = logging.getLogger(__name__)
 

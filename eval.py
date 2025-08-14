@@ -8,14 +8,14 @@ from datetime import datetime
 import pytz
 
 from config import Config
-from utils import (
+from src.utils import (
     get_model_class,
     detect_model_type_from_checkpoint,
     evaluate_error_detection,
     evaluate_phoneme_recognition,
     remove_module_prefix,
 )
-from data_prepare import UnifiedDataset, collate_fn
+from src.data_prepare import UnifiedDataset, collate_fn
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate Unified L2 Pronunciation Model')
