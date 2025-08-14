@@ -1,4 +1,5 @@
 # 통합 L2 발음 평가 시스템
+커밋 전에 항상 pre-commit run --all-files
 
 ## 프로젝트 구조
 
@@ -29,7 +30,7 @@ project/
 # Simple 모델
 python train.py --training_mode phoneme_only --model_type simple
 
-# Transformer 모델  
+# Transformer 모델
 python train.py --training_mode phoneme_only --model_type transformer
 ```
 

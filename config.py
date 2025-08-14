@@ -9,16 +9,16 @@ class Config:
     pretrained_model = "facebook/wav2vec2-large-xlsr-53"
     sampling_rate = 16000
     max_length = 160000
-    
+
     num_phonemes = 42
     num_error_types = 3
-    
+
     # Training modes: 'phoneme_only', 'phoneme_error', 'phoneme_error_length'
     training_mode = 'phoneme_error_length'
-    
+
     # Model architecture: 'simple' or 'transformer'
     model_type = 'simple'
-    
+
     # Sigmoid parameters for soft length calculation
     sigmoid_k = 10
     sigmoid_threshold = 1.0 / 42.0
@@ -28,38 +28,38 @@ class Config:
     eval_batch_size = 16
     num_epochs = 50
     gradient_accumulation = 2
-    
+
     main_lr = 3e-4
     wav2vec_lr = 1e-5
-    
+
     # Loss weights (only used when corresponding components are enabled)
     error_weight = 0.4
     phoneme_weight = 0.6
     length_weight = 0.0
-    
+
     # Focal loss parameters
     focal_alpha = 0.25
     focal_gamma = 2.0
-    
+
     # Checkpoint saving options
     save_best_error = True
     save_best_phoneme = True
     save_best_loss = True
-    
+
     wav2vec2_specaug = True
     seed = 42
-    
+
     # Directory and file paths
     base_experiment_dir = "experiments"
     experiment_name = None
-    
+
     train_data = "data/train_labels.json"
-    val_data = "data/val_labels.json" 
+    val_data = "data/val_labels.json"
     eval_data = "data/test_labels.json"
     phoneme_map = "data/phoneme_map.json"
-    
+
     device = "cuda"
-    
+
     # Model configurations
     model_configs = {
         'simple': {
@@ -73,14 +73,14 @@ class Config:
             'dropout': 0.1
         }
     }
-    
+
     def __post_init__(self):
         # Validate weight sums based on training mode
         self._validate_weights()
-        
+
         if self.experiment_name is None or not hasattr(self, '_last_model_type') or self._last_model_type != self.model_type:
             current_date = datetime.now(timezone('Asia/Seoul')).strftime('%Y%m%d%H%M%S')
-            
+
             # Generate experiment name based on training mode and model type
             if self.training_mode == 'phoneme_only':
                 model_prefix = f'phoneme_{self.model_type}'
@@ -98,14 +98,14 @@ class Config:
                 self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}{length_ratio}_{current_date}"
 
             self._last_model_type = self.model_type
-        
+
         self.experiment_dir = os.path.join(self.base_experiment_dir, self.experiment_name)
         self.checkpoint_dir = os.path.join(self.experiment_dir, 'checkpoints')
         self.length_logs_dir = os.path.join(self.experiment_dir, 'length_logs')
         self.log_dir = os.path.join(self.experiment_dir, 'logs')
         self.result_dir = os.path.join(self.experiment_dir, 'results')
         self.output_dir = self.checkpoint_dir
-    
+
     def _validate_weights(self):
         """Validate that weights sum to 1.0 based on training mode"""
         if self.training_mode == 'phoneme_only':
@@ -130,24 +130,24 @@ class Config:
                 self.error_weight = self.error_weight / total
                 self.length_weight = self.length_weight / total
                 print(f"Normalized weights: phoneme_weight={self.phoneme_weight:.3f}, error_weight={self.error_weight:.3f}, length_weight={self.length_weight:.3f}")
-    
+
     def get_model_config(self):
         """Get model configuration and set use_transformer based on model_type"""
         config = self.model_configs.get(self.model_type, self.model_configs['simple']).copy()
         config['use_transformer'] = (self.model_type == 'transformer')
         return config
-    
+
     def has_error_component(self):
         """Check if current training mode includes error detection"""
         return self.training_mode in ['phoneme_error', 'phoneme_error_length']
-    
+
     def has_length_component(self):
         """Check if current training mode includes length loss"""
         return self.training_mode == 'phoneme_error_length'
-    
+
     def save_config(self, path):
         config_dict = {
-            attr: getattr(self, attr) for attr in dir(self) 
+            attr: getattr(self, attr) for attr in dir(self)
             if not attr.startswith('_') and not callable(getattr(self, attr))
         }
         with open(path, 'w') as f:

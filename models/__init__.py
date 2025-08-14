@@ -1,10 +1,10 @@
 from .model import UnifiedModel
 from .loss_functions import UnifiedLoss, LogCoshLengthLoss, FocalCTCLoss
 from .utils_models import (
-    ErrorDetectionHead, 
-    PhonemeRecognitionHead, 
-    Wav2VecEncoder, 
-    SimpleEncoder, 
+    ErrorDetectionHead,
+    PhonemeRecognitionHead,
+    Wav2VecEncoder,
+    SimpleEncoder,
     TransformerEncoder
 )
 

@@ -8,7 +8,7 @@ class UnifiedDataset(Dataset):
     def __init__(self, json_path, phoneme_to_id, training_mode, max_length=None, sampling_rate=16000, device='cuda'):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
-        
+
         self.wav_files = list(self.data.keys())
         self.phoneme_to_id = phoneme_to_id
         self.training_mode = training_mode
@@ -16,13 +16,13 @@ class UnifiedDataset(Dataset):
         self.max_length = max_length
         self.device = device
         self.error_mapping = {'C': 2, 'I': 1}
-        
+
         self.valid_files = []
         for wav_file in self.wav_files:
             item = self.data[wav_file]
             has_error_labels = 'error_labels' in item and item['error_labels'] and item['error_labels'].strip()
             has_phoneme_labels = 'perceived_train_target' in item and item['perceived_train_target'] and item['perceived_train_target'].strip()
-            
+
             if training_mode == 'phoneme_only' and has_phoneme_labels:
                 self.valid_files.append(wav_file)
             elif training_mode in ['phoneme_error', 'phoneme_error_length']:
@@ -30,25 +30,25 @@ class UnifiedDataset(Dataset):
                     self.valid_files.append(wav_file)
             else:
                 self.valid_files.append(wav_file)
-        
+
         if self.max_length:
             self._filter_by_length()
-    
+
     def _filter_by_length(self):
         filtered_files = []
         excluded_count = 0
         resamplers_cache = {}
-        
+
         for wav_file in tqdm(self.valid_files, desc="Processing audio files"):
             try:
                 waveform, sample_rate = torchaudio.load(wav_file)
-                
+
                 if torch.cuda.is_available():
                     waveform = waveform.to(self.device)
-                
+
                 if waveform.shape[0] > 1:
                     waveform = torch.mean(waveform, dim=0, keepdim=True)
-                
+
                 if sample_rate != self.sampling_rate:
                     if torch.cuda.is_available():
                         if sample_rate not in resamplers_cache:
@@ -59,38 +59,38 @@ class UnifiedDataset(Dataset):
                     else:
                         resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
                         waveform = resampler(waveform)
-                
+
                 if waveform.shape[1] <= self.max_length:
                     filtered_files.append(wav_file)
                 else:
                     excluded_count += 1
                     print(f"Excluding long file: {wav_file} ({waveform.shape[1]} samples, {waveform.shape[1]/self.sampling_rate:.1f}s)")
-            
+
             except Exception as e:
                 print(f"Error loading {wav_file}: {e}")
                 excluded_count += 1
-        
+
         print(f"Length filtering: {len(self.valid_files)} → {len(filtered_files)} files ({excluded_count} excluded)")
         self.valid_files = filtered_files
-    
+
     def __len__(self):
         return len(self.valid_files)
-    
+
     def load_waveform(self, wav_file):
         waveform, sample_rate = torchaudio.load(wav_file)
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
-        
+
         if sample_rate != self.sampling_rate:
             resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
             waveform = resampler(waveform)
-        
+
         return waveform.squeeze(0)
 
     def __getitem__(self, idx):
         wav_file = self.valid_files[idx]
         item = self.data[wav_file]
-        
+
         waveform = self.load_waveform(wav_file)
         result = {
             'waveform': waveform,
@@ -100,7 +100,7 @@ class UnifiedDataset(Dataset):
 
         perceived = item.get('perceived_train_target', '')
         canonical = item.get('canonical_aligned', '')
-        
+
         if perceived and perceived.strip():
             perceived_tokens = perceived.split()
             result['phoneme_labels'] = torch.tensor(
@@ -109,9 +109,9 @@ class UnifiedDataset(Dataset):
             )
         else:
             result['phoneme_labels'] = torch.tensor([], dtype=torch.long)
-        
+
         result['phoneme_length'] = torch.tensor(len(result['phoneme_labels']))
-        
+
         if canonical and canonical.strip():
             canonical_tokens = canonical.split()
             result['canonical_labels'] = torch.tensor(
@@ -131,16 +131,16 @@ class UnifiedDataset(Dataset):
                 result['error_labels'] = torch.tensor(error_ids, dtype=torch.long)
             else:
                 result['error_labels'] = torch.tensor([], dtype=torch.long)
-            
+
             result['error_length'] = torch.tensor(len(result['error_labels']))
-        
+
         result['spk_id'] = item.get('spk_id', 'UNKNOWN')
-        
+
         return result
 
 def collate_fn(batch, training_mode='phoneme_only'):
     valid_samples = [item for item in batch if item['phoneme_labels'] is not None and len(item['phoneme_labels']) > 0]
-    
+
     if not valid_samples:
         return None
 
@@ -167,17 +167,17 @@ def collate_fn(batch, training_mode='phoneme_only'):
         ])
     else:
         result['phoneme_labels'] = torch.zeros((len(valid_samples), 1), dtype=torch.long)
-    
+
     result['phoneme_lengths'] = torch.tensor([sample['phoneme_length'] for sample in valid_samples])
 
     canonical_labels = [sample.get('canonical_labels', torch.tensor([], dtype=torch.long)) for sample in valid_samples]
     valid_canonical = [l for l in canonical_labels if len(l) > 0]
-    
+
     if valid_canonical:
         max_canonical_len = max(l.shape[0] for l in valid_canonical)
         padded_canonical = []
         canonical_lengths = []
-        
+
         for sample in valid_samples:
             canonical = sample.get('canonical_labels', torch.tensor([], dtype=torch.long))
             if len(canonical) > 0:
@@ -188,19 +188,19 @@ def collate_fn(batch, training_mode='phoneme_only'):
             else:
                 padded_canonical.append(torch.zeros(max_canonical_len, dtype=torch.long))
                 canonical_lengths.append(torch.tensor(0))
-        
+
         result['canonical_labels'] = torch.stack(padded_canonical)
         result['canonical_lengths'] = torch.tensor(canonical_lengths)
 
     if training_mode in ['phoneme_error', 'phoneme_error_length']:
         error_labels = [sample.get('error_labels', torch.tensor([], dtype=torch.long)) for sample in valid_samples]
         valid_error_labels = [l for l in error_labels if len(l) > 0]
-        
+
         if valid_error_labels:
             max_error_len = max(l.shape[0] for l in valid_error_labels)
             padded_error_labels = []
             error_lengths = []
-            
+
             for sample in valid_samples:
                 error_data = sample.get('error_labels', torch.tensor([], dtype=torch.long))
                 if len(error_data) > 0:
@@ -211,7 +211,7 @@ def collate_fn(batch, training_mode='phoneme_only'):
                 else:
                     padded_error_labels.append(torch.zeros(max_error_len, dtype=torch.long))
                     error_lengths.append(torch.tensor(0))
-            
+
             result['error_labels'] = torch.stack(padded_error_labels)
             result['error_lengths'] = torch.tensor(error_lengths)
 

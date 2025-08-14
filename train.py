@@ -36,7 +36,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
     model.train()
     if config and config.wav2vec2_specaug:
         enable_wav2vec2_specaug(model, True)
-    
+
     length_loss_fn = LogCoshLengthLoss()
 
     total_loss = 0.0
@@ -77,7 +77,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 error_labels = batch_data['error_labels'].to(device)
                 error_lengths = batch_data['error_lengths'].to(device)
                 error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
-                
+
                 valid_error_mask = error_lengths > 0
                 if valid_error_mask.any():
                     error_targets = error_labels[valid_error_mask]
@@ -93,11 +93,11 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 error_input_lengths=error_input_lengths,
                 error_target_lengths=error_target_lengths
             )
-            
+
             if config.has_length_component():
                 os.makedirs(config.length_logs_dir, exist_ok=True)
                 length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
-                
+
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits, config)
                 soft_length = torch.clamp(soft_length, max=80)
@@ -120,7 +120,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     'target_lengths': target_lengths,
                     'length_diffs': length_diffs
                 }
-                    
+
                 with open(length_logs_path, 'a') as f:
                     json.dump(length_dict, f)
                     f.write("\n")
@@ -170,7 +170,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             progress_dict['Error'] = f'{avg_error:.4f}'
         if config.has_length_component():
             progress_dict['Length'] = f'{avg_length:.4f}'
-        
+
         progress_bar.set_postfix(progress_dict)
 
     torch.cuda.empty_cache()
@@ -209,7 +209,7 @@ def validate_epoch(model, dataloader, criterion, device, config):
                 error_labels = batch_data['error_labels'].to(device)
                 error_lengths = batch_data['error_lengths'].to(device)
                 error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
-                
+
                 valid_error_mask = error_lengths > 0
                 if valid_error_mask.any():
                     error_targets = error_labels[valid_error_mask]
@@ -455,21 +455,21 @@ def main():
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
             show_sample_predictions(
-                model=model, 
-                eval_dataloader=eval_dataloader, 
-                device=config.device, 
-                id_to_phoneme=id_to_phoneme, 
-                logger=logger, 
+                model=model,
+                eval_dataloader=eval_dataloader,
+                device=config.device,
+                id_to_phoneme=id_to_phoneme,
+                logger=logger,
                 training_mode=config.training_mode,
                 error_type_names=error_type_names
             )
 
         logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
         phoneme_recognition_results = evaluate_phoneme_recognition(
-            model=model, 
-            dataloader=eval_dataloader, 
-            device=config.device, 
-            training_mode=config.training_mode, 
+            model=model,
+            dataloader=eval_dataloader,
+            device=config.device,
+            training_mode=config.training_mode,
             id_to_phoneme=id_to_phoneme
         )
         logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
@@ -481,10 +481,10 @@ def main():
         if config.has_error_component():
             logger.info(f"Epoch {epoch}: Evaluating error detection...")
             error_detection_results = evaluate_error_detection(
-                model=model, 
-                dataloader=eval_dataloader, 
-                device=config.device, 
-                training_mode=config.training_mode, 
+                model=model,
+                dataloader=eval_dataloader,
+                device=config.device,
+                training_mode=config.training_mode,
                 error_type_names=error_type_names
             )
             logger.info(f"Error Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
