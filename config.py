@@ -30,8 +30,8 @@ class Config:
     sigmoid_threshold = 1.0 / 42.0
 
     # Training hyperparameters
-    batch_size = 8
-    eval_batch_size = 8
+    batch_size = 16
+    eval_batch_size = 16
     num_epochs = 50
     gradient_accumulation = 2
     
@@ -39,9 +39,9 @@ class Config:
     wav2vec_lr = 1e-5
     
     # Loss weights (only used when corresponding components are enabled)
-    error_weight = 0.35
-    phoneme_weight = 0.45
-    length_weight = 0.2
+    error_weight = 0.4
+    phoneme_weight = 0.6
+    length_weight = 0.0
     
     # Focal loss parameters
     focal_alpha = 0.25

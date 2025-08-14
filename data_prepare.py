@@ -37,13 +37,9 @@ class UnifiedDataset(Dataset):
     def _filter_by_length(self):
         filtered_files = []
         excluded_count = 0
+        resamplers_cache = {}
         
-        if torch.cuda.is_available():
-            resampler_16k = torchaudio.transforms.Resample(
-                orig_freq=None, new_freq=self.sampling_rate
-            ).to(self.device)
-        
-        for wav_file in tqdm(self.wav_files[:len(self.valid_files)], desc="Processing audio files"):
+        for wav_file in tqdm(self.valid_files, desc="Processing audio files"):
             try:
                 waveform, sample_rate = torchaudio.load(wav_file)
                 
@@ -55,8 +51,11 @@ class UnifiedDataset(Dataset):
                 
                 if sample_rate != self.sampling_rate:
                     if torch.cuda.is_available():
-                        resampler_16k.orig_freq = sample_rate
-                        waveform = resampler_16k(waveform)
+                        if sample_rate not in resamplers_cache:
+                            resamplers_cache[sample_rate] = torchaudio.transforms.Resample(
+                                orig_freq=sample_rate, new_freq=self.sampling_rate
+                            ).to(self.device)
+                        waveform = resamplers_cache[sample_rate](waveform)
                     else:
                         resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
                         waveform = resampler(waveform)
