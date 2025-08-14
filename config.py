@@ -37,8 +37,8 @@ class Config:
     
     # Loss weights (only used when corresponding components are enabled)
     error_weight = 0.4
-    phoneme_weight = 0.6
-    length_weight = 0.0
+    phoneme_weight = 0.5
+    length_weight = 0.1
     
     # Focal loss parameters
     focal_alpha = 0.25
