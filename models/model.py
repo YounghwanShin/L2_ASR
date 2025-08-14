@@ -3,7 +3,7 @@ from transformers import Wav2Vec2Config
 
 from models.utils_models import ErrorDetectionHead, PhonemeRecognitionHead, Wav2VecEncoder, SimpleEncoder
 
-class SimpleMultiTaskModel(nn.Module):
+class UnifiedModel(nn.Module):
     def __init__(self, 
                  pretrained_model_name="facebook/wav2vec2-large-xlsr-53",
                  hidden_dim=512,
@@ -21,16 +21,15 @@ class SimpleMultiTaskModel(nn.Module):
         self.error_head = ErrorDetectionHead(hidden_dim, num_error_types, dropout)
         self.phoneme_head = PhonemeRecognitionHead(hidden_dim, num_phonemes, dropout)
         
-    def forward(self, x, attention_mask=None, task_mode=''):
+    def forward(self, x, attention_mask=None, training_mode='phoneme_only'):
         features = self.encoder(x, attention_mask)
         shared_features = self.shared_encoder(features)
         
         outputs = {}
         
-        if task_mode.startswith(('error', 'multi')):
+        outputs['phoneme_logits'] = self.phoneme_head(shared_features)
+        
+        if training_mode in ['phoneme_error', 'phoneme_error_length']:
             outputs['error_logits'] = self.error_head(shared_features)
-            
-        if task_mode.startswith(('phoneme', 'multi')):
-            outputs['phoneme_logits'] = self.phoneme_head(shared_features)
             
         return outputs

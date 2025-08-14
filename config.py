@@ -13,24 +13,23 @@ class Config:
     num_phonemes = 42
     num_error_types = 3
     
-    task_mode = {'multi_train' : 'multi_train',
-                 'multi_eval' : 'multi_eval',
-                 'phoneme_train' : 'phoneme_train',
-                 'phoneme_eval' : 'phoneme_eval',
-                 'error_train' : 'error_train',
-                 'error_eval' : 'error_eval'}
-    error_task_ratio = 0.5
+    # Training modes: 'phoneme_only', 'phoneme_error', 'phoneme_error_length'
+    training_mode = 'phoneme_error_length'
     
-    model_type = ''
-    """
-    model_type = {multitask : ['simple', 'transformer']
-                 phoneme: ['simple', 'transformer']
-                }
-    """
+    # Task modes for data loading and evaluation
+    task_mode = {
+        'train': 'train',
+        'eval': 'eval'
+    }
     
+    # Model architecture: 'simple' or 'transformer'
+    model_type = 'simple'
+    
+    # Sigmoid parameters for soft length calculation
     sigmoid_k = 10
     sigmoid_threshold = 1.0 / 42.0
 
+    # Training hyperparameters
     batch_size = 8
     eval_batch_size = 8
     num_epochs = 50
@@ -39,22 +38,24 @@ class Config:
     main_lr = 3e-4
     wav2vec_lr = 1e-5
     
+    # Loss weights (only used when corresponding components are enabled)
     error_weight = 0.35
     phoneme_weight = 0.45
     length_weight = 0.2
-    use_length_loss = False
     
+    # Focal loss parameters
     focal_alpha = 0.25
     focal_gamma = 2.0
     
+    # Checkpoint saving options
     save_best_error = True
     save_best_phoneme = True
     save_best_loss = True
     
     wav2vec2_specaug = True
-    
     seed = 42
     
+    # Directory and file paths
     base_experiment_dir = "experiments"
     experiment_name = None
     
@@ -65,6 +66,7 @@ class Config:
     
     device = "cuda"
     
+    # Model configurations
     model_configs = {
         'simple': {
             'hidden_dim': 1024,
@@ -82,18 +84,21 @@ class Config:
         if self.experiment_name is None or not hasattr(self, '_last_model_type') or self._last_model_type != self.model_type:
             current_date = datetime.now(timezone('Asia/Seoul')).strftime('%Y%m%d%H%M%S')
             
-            if hasattr(self, '_is_phoneme_model') and self._is_phoneme_model:
-                model_prefix = 'phoneme_simple' if self.model_type == 'simple' else f'phoneme_{self.model_type}'
+            # Generate experiment name based on training mode and model type
+            if self.training_mode == 'phoneme_only':
+                model_prefix = f'phoneme_{self.model_type}'
                 self.experiment_name = f"{model_prefix}_{current_date}"
-            else:
-                model_prefix = 'multi_simple' if self.model_type == 'simple' else 'multi_transformer'
+            elif self.training_mode == 'phoneme_error':
+                model_prefix = f'phoneme_error_{self.model_type}'
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
-                if self.use_length_loss:
-                    length_ratio = str(int(self.length_weight * 10)).zfill(2)
-                    self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}{length_ratio}_{current_date}"
-                else:
-                    self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_no_length_{current_date}"
+                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_{current_date}"
+            elif self.training_mode == 'phoneme_error_length':
+                model_prefix = f'phoneme_error_length_{self.model_type}'
+                error_ratio = str(int(self.error_weight * 10)).zfill(2)
+                phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
+                length_ratio = str(int(self.length_weight * 10)).zfill(2)
+                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}{length_ratio}_{current_date}"
 
             self._last_model_type = self.model_type
         
@@ -106,6 +111,14 @@ class Config:
     
     def get_model_config(self):
         return self.model_configs.get(self.model_type, self.model_configs['simple'])
+    
+    def has_error_component(self):
+        """Check if current training mode includes error detection"""
+        return self.training_mode in ['phoneme_error', 'phoneme_error_length']
+    
+    def has_length_component(self):
+        """Check if current training mode includes length loss"""
+        return self.training_mode == 'phoneme_error_length'
     
     def save_config(self, path):
         config_dict = {

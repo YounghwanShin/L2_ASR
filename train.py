@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from config import Config
 from utils import (
     make_attn_mask,
-    get_multitask_model_class,
+    get_model_class,
     detect_model_type_from_checkpoint,
     setup_experiment_dirs,
     enable_wav2vec2_specaug,
@@ -27,7 +27,7 @@ from utils import (
     evaluate_phoneme_recognition,
 )
 from models.loss_functions import LogCoshLengthLoss
-from data_prepare import BaseDataset, collate_fn
+from data_prepare import UnifiedDataset, collate_fn
 
 logger = logging.getLogger(__name__)
 
@@ -57,79 +57,44 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
 
         waveforms = batch_data['waveforms'].to(device)
         audio_lengths = batch_data['audio_lengths'].to(device)
+        phoneme_labels = batch_data['phoneme_labels'].to(device)
+        phoneme_lengths = batch_data['phoneme_lengths'].to(device)
 
         input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
         wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
         attention_mask = make_attn_mask(waveforms, wav_lens_norm)
 
         with torch.amp.autocast('cuda'):
-            outputs = model(waveforms, attention_mask=attention_mask, task_mode=config.task_mode['multi_train'])
+            outputs = model(waveforms, attention_mask=attention_mask, training_mode=config.training_mode)
 
-            error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
             phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
 
-            has_error = any(el is not None for el in batch_data['error_labels'])
-            has_phoneme = any(pl is not None for pl in batch_data['phoneme_labels'])
+            error_targets = None
+            error_input_lengths = None
+            error_target_lengths = None
 
-            batch_error_labels = None
-            batch_error_lengths = None
-            batch_phoneme_labels = None
-            batch_phoneme_lengths = None
+            if config.has_error_component() and 'error_labels' in batch_data:
+                error_labels = batch_data['error_labels'].to(device)
+                error_lengths = batch_data['error_lengths'].to(device)
+                error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
+                
+                valid_error_mask = error_lengths > 0
+                if valid_error_mask.any():
+                    error_targets = error_labels[valid_error_mask]
+                    error_input_lengths = error_input_lengths[valid_error_mask]
+                    error_target_lengths = error_lengths[valid_error_mask]
 
-            if has_error:
-                valid_error_indices = [i for i, el in enumerate(batch_data['error_labels']) if el is not None]
-                if valid_error_indices:
-                    error_labels = [batch_data['error_labels'][i] for i in valid_error_indices]
-                    error_lengths = [batch_data['error_lengths'][i] for i in valid_error_indices]
-
-                    max_error_len = max(l.shape[0] for l in error_labels)
-                    batch_error_labels = torch.stack([
-                        torch.nn.functional.pad(l, (0, max_error_len - l.shape[0]), value=0)
-                        for l in error_labels
-                    ]).to(device)
-                    batch_error_lengths = torch.stack(error_lengths).to(device)
-
-                    error_outputs = {
-                        'error_logits': outputs['error_logits'][valid_error_indices]
-                    }
-                    error_input_lengths_filtered = error_input_lengths[valid_error_indices]
-
-            if has_phoneme:
-                valid_phoneme_indices = [i for i, pl in enumerate(batch_data['phoneme_labels']) if pl is not None]
-                if valid_phoneme_indices:
-                    phoneme_labels = [batch_data['phoneme_labels'][i] for i in valid_phoneme_indices]
-                    phoneme_lengths = [batch_data['phoneme_lengths'][i] for i in valid_phoneme_indices]
-
-                    max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
-                    batch_phoneme_labels = torch.stack([
-                        torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
-                        for l in phoneme_labels
-                    ]).to(device)
-                    batch_phoneme_lengths = torch.stack(phoneme_lengths).to(device)
-
-                    phoneme_outputs = {
-                        'phoneme_logits': outputs['phoneme_logits'][valid_phoneme_indices]
-                    }
-                    phoneme_input_lengths_filtered = phoneme_input_lengths[valid_phoneme_indices]
-
-            combined_outputs = {}
-            if has_error and batch_error_labels is not None:
-                combined_outputs.update(error_outputs)
-            if has_phoneme and batch_phoneme_labels is not None:
-                combined_outputs.update(phoneme_outputs)
-
-            if combined_outputs:
-                loss, loss_dict = criterion(
-                    combined_outputs,
-                    error_targets=batch_error_labels,
-                    phoneme_targets=batch_phoneme_labels,
-                    error_input_lengths=error_input_lengths_filtered if has_error and batch_error_labels is not None else None,
-                    phoneme_input_lengths=phoneme_input_lengths_filtered if has_phoneme and batch_phoneme_labels is not None else None,
-                    error_target_lengths=batch_error_lengths,
-                    phoneme_target_lengths=batch_phoneme_lengths
-                )
+            loss, loss_dict = criterion(
+                outputs,
+                phoneme_targets=phoneme_labels,
+                phoneme_input_lengths=phoneme_input_lengths,
+                phoneme_target_lengths=phoneme_lengths,
+                error_targets=error_targets,
+                error_input_lengths=error_input_lengths,
+                error_target_lengths=error_target_lengths
+            )
             
-            if config.use_length_loss and has_phoneme:
+            if config.has_length_component():
                 os.makedirs(config.length_logs_dir, exist_ok=True)
                 length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
                 
@@ -139,21 +104,21 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
 
                 length_loss = length_loss_fn(
                     soft_length,
-                    batch_phoneme_lengths.float()
+                    phoneme_lengths.float()
                 )
 
                 length_loss_sum += length_loss
                 length_count += 1
 
                 soft_lengths = [int(s) for s in soft_length.tolist()]
-                target_lengths = batch_phoneme_lengths.tolist()
+                target_lengths = phoneme_lengths.tolist()
                 length_diffs = [s - t for s, t in zip(soft_lengths, target_lengths)]
                 length_dict = {
-                    'epoch_num' : epoch,
-                    'batch_idx' : batch_idx,
-                    'soft_lengths' : soft_lengths,
-                    'target_lengths' : target_lengths,
-                    'length_diffs' : length_diffs
+                    'epoch_num': epoch,
+                    'batch_idx': batch_idx,
+                    'soft_lengths': soft_lengths,
+                    'target_lengths': target_lengths,
+                    'length_diffs': length_diffs
                 }
                     
                 with open(length_logs_path, 'a') as f:
@@ -174,7 +139,6 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
             if scaler:
                 scaler.scale(accumulated_loss).backward()
             else:
-                accumulated_loss
                 accumulated_loss.backward()
 
         if (batch_idx + 1) % gradient_accumulation == 0:
@@ -196,14 +160,15 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
         avg_total = total_loss / max(((batch_idx + 1) // gradient_accumulation), 1)
         avg_error = error_loss_sum / max(error_count, 1)
         avg_phoneme = phoneme_loss_sum / max(phoneme_count, 1)
-        avg_length = length_loss_sum / max(length_count, 1) if config.use_length_loss else 0
+        avg_length = length_loss_sum / max(length_count, 1) if config.has_length_component() else 0
 
         progress_dict = {
             'Total': f'{avg_total:.4f}',
-            'Error': f'{avg_error:.4f}',
             'Phoneme': f'{avg_phoneme:.4f}'
         }
-        if config.use_length_loss:
+        if config.has_error_component():
+            progress_dict['Error'] = f'{avg_error:.4f}'
+        if config.has_length_component():
             progress_dict['Length'] = f'{avg_length:.4f}'
         
         progress_bar.set_postfix(progress_dict)
@@ -225,84 +190,49 @@ def validate_epoch(model, dataloader, criterion, device, config):
 
             waveforms = batch_data['waveforms'].to(device)
             audio_lengths = batch_data['audio_lengths'].to(device)
+            phoneme_labels = batch_data['phoneme_labels'].to(device)
+            phoneme_lengths = batch_data['phoneme_lengths'].to(device)
 
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
 
-            outputs = model(waveforms, attention_mask=attention_mask, task_mode=config.task_mode['multi_train'])
+            outputs = model(waveforms, attention_mask=attention_mask, training_mode=config.training_mode)
 
-            error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
             phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
 
-            has_error = any(el is not None for el in batch_data['error_labels'])
-            has_phoneme = any(pl is not None for pl in batch_data['phoneme_labels'])
+            error_targets = None
+            error_input_lengths = None
+            error_target_lengths = None
 
-            batch_error_labels = None
-            batch_error_lengths = None
-            batch_phoneme_labels = None
-            batch_phoneme_lengths = None
+            if config.has_error_component() and 'error_labels' in batch_data:
+                error_labels = batch_data['error_labels'].to(device)
+                error_lengths = batch_data['error_lengths'].to(device)
+                error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
+                
+                valid_error_mask = error_lengths > 0
+                if valid_error_mask.any():
+                    error_targets = error_labels[valid_error_mask]
+                    error_input_lengths = error_input_lengths[valid_error_mask]
+                    error_target_lengths = error_lengths[valid_error_mask]
 
-            if has_error:
-                valid_error_indices = [i for i, el in enumerate(batch_data['error_labels']) if el is not None]
-                if valid_error_indices:
-                    error_labels = [batch_data['error_labels'][i] for i in valid_error_indices]
-                    error_lengths = [batch_data['error_lengths'][i] for i in valid_error_indices]
+            loss, _ = criterion(
+                outputs,
+                phoneme_targets=phoneme_labels,
+                phoneme_input_lengths=phoneme_input_lengths,
+                phoneme_target_lengths=phoneme_lengths,
+                error_targets=error_targets,
+                error_input_lengths=error_input_lengths,
+                error_target_lengths=error_target_lengths
+            )
 
-                    max_error_len = max(l.shape[0] for l in error_labels)
-                    batch_error_labels = torch.stack([
-                        torch.nn.functional.pad(l, (0, max_error_len - l.shape[0]), value=0)
-                        for l in error_labels
-                    ]).to(device)
-                    batch_error_lengths = torch.stack(error_lengths).to(device)
-
-                    error_outputs = {
-                        'error_logits': outputs['error_logits'][valid_error_indices]
-                    }
-                    error_input_lengths_filtered = error_input_lengths[valid_error_indices]
-
-            if has_phoneme:
-                valid_phoneme_indices = [i for i, pl in enumerate(batch_data['phoneme_labels']) if pl is not None]
-                if valid_phoneme_indices:
-                    phoneme_labels = [batch_data['phoneme_labels'][i] for i in valid_phoneme_indices]
-                    phoneme_lengths = [batch_data['phoneme_lengths'][i] for i in valid_phoneme_indices]
-
-                    max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
-                    batch_phoneme_labels = torch.stack([
-                        torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
-                        for l in phoneme_labels
-                    ]).to(device)
-                    batch_phoneme_lengths = torch.stack(phoneme_lengths).to(device)
-
-                    phoneme_outputs = {
-                        'phoneme_logits': outputs['phoneme_logits'][valid_phoneme_indices]
-                    }
-                    phoneme_input_lengths_filtered = phoneme_input_lengths[valid_phoneme_indices]
-
-            combined_outputs = {}
-            if has_error and batch_error_labels is not None:
-                combined_outputs.update(error_outputs)
-            if has_phoneme and batch_phoneme_labels is not None:
-                combined_outputs.update(phoneme_outputs)
-
-            if combined_outputs:
-                loss, _ = criterion(
-                    combined_outputs,
-                    error_targets=batch_error_labels,
-                    phoneme_targets=batch_phoneme_labels,
-                    error_input_lengths=error_input_lengths_filtered if has_error and batch_error_labels is not None else None,
-                    phoneme_input_lengths=phoneme_input_lengths_filtered if has_phoneme and batch_phoneme_labels is not None else None,
-                    error_target_lengths=batch_error_lengths,
-                    phoneme_target_lengths=batch_phoneme_lengths
-                )
-
-            if config.use_length_loss and has_phoneme:
+            if config.has_length_component():
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits, config)
 
                 length_loss = LogCoshLengthLoss()(
                     soft_length,
-                    batch_phoneme_lengths.float()
+                    phoneme_lengths.float()
                 )
                 loss = loss + config.length_weight * length_loss
 
@@ -350,6 +280,8 @@ def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, d
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--training_mode', type=str, choices=['phoneme_only', 'phoneme_error', 'phoneme_error_length'], help='Training mode')
+    parser.add_argument('--model_type', type=str, choices=['simple', 'transformer'], help='Model architecture')
     parser.add_argument('--config', type=str, help='Override config values in format key=value')
     parser.add_argument('--train_data', type=str, help='Override train data path')
     parser.add_argument('--val_data', type=str, help='Override validation data path')
@@ -358,11 +290,14 @@ def main():
     parser.add_argument('--output_dir', type=str, help='Override output directory')
     parser.add_argument('--resume', type=str, help='Resume training from checkpoint path')
     parser.add_argument('--experiment_name', type=str, help='Override experiment name')
-    parser.add_argument('--use_length_loss', action='store_true', help='Enable length loss')
     args = parser.parse_args()
 
     config = Config()
 
+    if args.training_mode:
+        config.training_mode = args.training_mode
+    if args.model_type:
+        config.model_type = args.model_type
     if args.train_data:
         config.train_data = args.train_data
     if args.val_data:
@@ -373,8 +308,6 @@ def main():
         config.phoneme_map = args.phoneme_map
     if args.output_dir:
         config.output_dir = args.output_dir
-    if args.use_length_loss:
-        config.use_length_loss = args.use_length_loss
 
     if args.resume:
         detected_model_type = detect_model_type_from_checkpoint(args.resume)
@@ -407,7 +340,7 @@ def main():
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
 
-    model_class, loss_class = get_multitask_model_class(config.model_type)
+    model_class, loss_class = get_model_class(config.model_type)
     model = model_class(
         pretrained_model_name=config.pretrained_model,
         num_phonemes=config.num_phonemes,
@@ -421,6 +354,7 @@ def main():
     model = model.to(config.device)
 
     criterion = loss_class(
+        training_mode=config.training_mode,
         error_weight=config.error_weight,
         phoneme_weight=config.phoneme_weight,
         focal_alpha=config.focal_alpha,
@@ -440,37 +374,38 @@ def main():
 
     scaler = torch.amp.GradScaler('cuda')
 
-    train_dataset = BaseDataset(
+    train_dataset = UnifiedDataset(
         config.train_data, phoneme_to_id,
+        training_mode=config.training_mode,
         max_length=config.max_length,
         sampling_rate=config.sampling_rate,
-        task_mode=config.task_mode['multi_train'],
-        error_task_ratio=config.error_task_ratio
+        device=config.device
     )
-    val_dataset = BaseDataset(
+    val_dataset = UnifiedDataset(
         config.val_data, phoneme_to_id,
+        training_mode=config.training_mode,
         max_length=config.max_length,
         sampling_rate=config.sampling_rate,
-        task_mode=config.task_mode['multi_train'],
-        error_task_ratio=config.error_task_ratio
+        device=config.device
     )
     train_dataloader = DataLoader(
         train_dataset, batch_size=config.batch_size, shuffle=True,
-        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multi_train'])
+        collate_fn=lambda batch: collate_fn(batch, training_mode=config.training_mode)
     )
     val_dataloader = DataLoader(
         val_dataset, batch_size=config.batch_size, shuffle=False,
-        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multi_train'])
+        collate_fn=lambda batch: collate_fn(batch, training_mode=config.training_mode)
     )
-    eval_dataset = BaseDataset(
+    eval_dataset = UnifiedDataset(
         config.eval_data, phoneme_to_id,
-        task_mode=config.task_mode['multi_eval'],
+        training_mode=config.training_mode,
         max_length=config.max_length,
-        sampling_rate=config.sampling_rate
+        sampling_rate=config.sampling_rate,
+        device=config.device
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multi_eval'])
+        collate_fn=lambda batch: collate_fn(batch, training_mode=config.training_mode)
     )
 
     best_val_loss = float('inf')
@@ -492,17 +427,20 @@ def main():
         logger.info("=" * 50)
         logger.info("RESUMING TRAINING")
         logger.info("=" * 50)
+        logger.info(f"Training mode: {config.training_mode}")
         logger.info(f"Resuming from epoch {start_epoch}")
         logger.info(f"Best error accuracy so far: {best_error_accuracy:.4f}")
         logger.info(f"Best phoneme accuracy so far: {best_phoneme_accuracy:.4f}")
         logger.info(f"Best validation loss so far: {best_val_loss:.4f}")
         logger.info("=" * 50)
     else:
-        logger.info(f"Starting training with model type: {config.model_type}")
+        logger.info(f"Starting training with training mode: {config.training_mode}")
+        logger.info(f"Model type: {config.model_type}")
         logger.info(f"Experiment: {config.experiment_name}")
         logger.info(f"Starting training for {config.num_epochs} epochs")
         logger.info(f"SpecAugment enabled: {config.wav2vec2_specaug}")
-        logger.info(f"Length Loss enabled: {config.use_length_loss}")
+        logger.info(f"Length Loss enabled: {config.has_length_component()}")
+        logger.info(f"Error Detection enabled: {config.has_error_component()}")
         logger.info(f"Using Focal Loss with default parameters")
 
     for epoch in range(start_epoch, config.num_epochs + 1):
@@ -516,23 +454,45 @@ def main():
         if True:
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
-            show_sample_predictions(task_mode=config.task_mode['multi_eval'], model=model, eval_dataloader=eval_dataloader, device=config.device, id_to_phoneme=id_to_phoneme, logger=logger, error_type_names=error_type_names)
-
-        logger.info(f"Epoch {epoch}: Evaluating error detection...")
-        error_detection_results = evaluate_error_detection(model=model, dataloader=eval_dataloader, device=config.device, task_mode=config.task_mode['multi_train'], error_type_names=error_type_names)
-        logger.info(f"Error Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
-        logger.info(f"Error Weighted F1: {error_detection_results['weighted_f1']:.4f}")
-        for error_type, metrics in error_detection_results['class_metrics'].items():
-            if error_type != 'blank':
-                logger.info(f"  {error_type}: Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1']:.4f}")
+            show_sample_predictions(
+                model=model, 
+                eval_dataloader=eval_dataloader, 
+                device=config.device, 
+                id_to_phoneme=id_to_phoneme, 
+                logger=logger, 
+                training_mode=config.training_mode,
+                error_type_names=error_type_names
+            )
 
         logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
-        phoneme_recognition_results = evaluate_phoneme_recognition(model=model, dataloader=eval_dataloader, device=config.device, task_mode=config.task_mode['multi_train'], id_to_phoneme=id_to_phoneme)
+        phoneme_recognition_results = evaluate_phoneme_recognition(
+            model=model, 
+            dataloader=eval_dataloader, 
+            device=config.device, 
+            training_mode=config.training_mode, 
+            id_to_phoneme=id_to_phoneme
+        )
         logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
         logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
 
-        current_error_accuracy = error_detection_results['token_accuracy']
         current_phoneme_accuracy = 1.0 - phoneme_recognition_results['per']
+        current_error_accuracy = 0.0
+
+        if config.has_error_component():
+            logger.info(f"Epoch {epoch}: Evaluating error detection...")
+            error_detection_results = evaluate_error_detection(
+                model=model, 
+                dataloader=eval_dataloader, 
+                device=config.device, 
+                training_mode=config.training_mode, 
+                error_type_names=error_type_names
+            )
+            logger.info(f"Error Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
+            logger.info(f"Error Weighted F1: {error_detection_results['weighted_f1']:.4f}")
+            for error_type, metrics in error_detection_results['class_metrics'].items():
+                if error_type != 'blank':
+                    logger.info(f"  {error_type}: Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1']:.4f}")
+            current_error_accuracy = error_detection_results['token_accuracy']
 
         if config.save_best_error and current_error_accuracy > best_error_accuracy:
             best_error_accuracy = current_error_accuracy
@@ -587,6 +547,7 @@ def main():
         'best_phoneme_accuracy': best_phoneme_accuracy,
         'best_val_loss': best_val_loss,
         'completed_epochs': config.num_epochs,
+        'training_mode': config.training_mode,
         'model_type': config.model_type,
         'experiment_name': config.experiment_name
     }
@@ -595,6 +556,7 @@ def main():
         json.dump(final_metrics, f, indent=2)
 
     logger.info("Training completed!")
+    logger.info(f"Training mode: {config.training_mode}")
     logger.info(f"Best Error Accuracy: {best_error_accuracy:.4f}")
     logger.info(f"Best Phoneme Accuracy: {best_phoneme_accuracy:.4f}")
     logger.info(f"Final metrics saved to: {metrics_path}")

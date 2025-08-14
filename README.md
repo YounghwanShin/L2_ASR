@@ -1,204 +1,92 @@
-## Data Format
+# 통합 L2 발음 평가 시스템
 
-Your data should be organized as JSON files with the following structure:
+## 프로젝트 구조
 
-```json
-{
-  "path/to/audio1.wav": {
-    "error_labels": "C I C C I",
-    "perceived_train_target": "ae n t iy k",
-    "canonical_aligned": "ae n t iy k", 
-    "spk_id": "US"
-  },
-  "path/to/audio2.wav": {
-    "error_labels": "C C I C",
-    "perceived_train_target": "hh ae p iy",
-    "canonical_aligned": "hh ae p iy",
-    "spk_id": "CN"
-  }
-}
+```
+project/
+├── config.py                 # 통합 설정 파일
+├── train.py                  # 통합 학습 스크립트
+├── eval.py                   # 통합 평가 스크립트
+├── data_prepare.py           # 통합 데이터 처리
+├── utils.py                  # 통합 유틸리티 함수
+├── models/
+│   ├── __init__.py
+│   ├── model.py              # Simple 통합 모델
+│   ├── model_transformer.py  # Transformer 통합 모델  
+│   ├── loss_functions.py     # 통합 손실 함수
+│   └── utils_models.py       # 모델 구성 요소
+└── data/
+    ├── train_labels.json
+    ├── val_labels.json
+    ├── test_labels.json
+    └── phoneme_map.json
 ```
 
-**Label Descriptions:**
-- `error_labels`: C (Correct), I (Incorrect) - space-separated
-- `perceived_train_target`: Phonemes as actually pronounced
-- `canonical_aligned`: Reference canonical phonemes
-- `spk_id`: Speaker country/group identifier
+## 사용법
 
-## Quick Start
-
-### 1. Prepare Your Data
-
-Create the required directory structure:
-```bash
-mkdir -p data
-# Place your JSON files in data/
-# - train_labels.json
-# - val_labels.json  
-# - test_labels.json
-# - phoneme_map.json
-```
-
-Create `phoneme_map.json`:
-```json
-{
-  "sil": 0,
-  "aa": 1,
-  "ae": 2,
-  "ah": 3,
-  ...
-}
-```
-
-### 2. Training
-
-**Simple Model (Recommended for first try):**
-```bash
-python multitask_train.py
-```
-
-**Transformer Model:**
-```bash
-python multitask_train.py --config model_type=transformer
-```
-
-**Custom Configuration:**
-```bash
-python multitask_train.py \
-  --train_data data/my_train.json \
-  --val_data data/my_val.json \
-  --eval_data data/my_test.json \
-  --experiment_name my_experiment \
-  --config batch_size=8,num_epochs=30
-```
-
-**Resume Training:**
-```bash
-python multitask_train.py --resume experiments/multi_transformer0304_20250807/checkpoints/latest.pth
-```
-
-### 3. Evaluation
+### 1. 음소 인식만 학습 (Phoneme Only)
 
 ```bash
-python multitask_eval.py \
-  --model_checkpoint experiments/simple0304_20241201/checkpoints/best_phoneme.pth \
-  --batch_size 16
+# Simple 모델
+python train.py --training_mode phoneme_only --model_type simple
+
+# Transformer 모델  
+python train.py --training_mode phoneme_only --model_type transformer
 ```
 
-**With Custom Data:**
+### 2. 음소 인식 + 오류 탐지 학습 (Phoneme + Error)
+
 ```bash
-python multitask_eval.py \
-  --model_checkpoint path/to/model.pth \
-  --eval_data data/custom_test.json \
-  --phoneme_map data/custom_phoneme_map.json \
-  --save_predictions
+# Simple 모델
+python train.py --training_mode phoneme_error --model_type simple
+
+# Transformer 모델
+python train.py --training_mode phoneme_error --model_type transformer
 ```
 
+### 3. 음소 인식 + 오류 탐지 + 길이 손실 학습 (Full Multi-task)
 
-## Configuration Options
-
-Key parameters in `config.py`:
-
-```python
-# Model Architecture
-model_type = 'simple'  # or 'transformer'
-hidden_dim = 1024
-num_layers = 2  # for transformer
-num_heads = 8   # for transformer
-
-# Training
-batch_size = 16
-num_epochs = 50
-main_lr = 3e-4
-wav2vec_lr = 1e-5
-
-# Loss Weights
-error_weight = 0.3
-phoneme_weight = 0.4
-focal_alpha = 0.25
-focal_gamma = 2.0
-
-# Data Augmentation
-wav2vec2_specaug = True
-```
-
-## Training Output
-
-The system creates organized experiment directories:
-
-```
-experiments/
-├── simple0304_20241201/           # Auto-generated name
-│   ├── checkpoints/
-│   │   ├── best_error.pth        # Best error detection model
-│   │   ├── best_phoneme.pth      # Best phoneme recognition model
-│   │   ├── best_loss.pth         # Best validation loss model
-│   │   └── latest.pth            # Latest checkpoint
-│   ├── logs/
-│   │   └── training.log          # Training logs
-│   └── results/
-│       └── final_metrics.json    # Final training metrics
-```
-
-### Multi-GPU Training
-The framework automatically uses DataParallel when multiple GPUs are available.
-
-### Task-Specific Training
 ```bash
-# Error detection only
-python multitask_train.py --config "task_mode=error,error_task_ratio=1.0"
+# Simple 모델
+python train.py --training_mode phoneme_error_length --model_type simple
 
-# Phoneme recognition only  
-python multitask_train.py --config "task_mode=phoneme,error_task_ratio=0.0"
+# Transformer 모델
+python train.py --training_mode phoneme_error_length --model_type transformer
 ```
 
-### Experiment Naming
+### 4. 추가 옵션 설정
+
 ```bash
-python multitask_train.py --experiment_name my_custom_experiment_v2
+# 하이퍼파라미터 조정
+python train.py \
+    --training_mode phoneme_error_length \
+    --model_type transformer \
+    --config "error_weight=0.4,phoneme_weight=0.4,length_weight=0.2" \
+    --experiment_name "custom_experiment"
+
+# 데이터 경로 지정
+python train.py \
+    --training_mode phoneme_error \
+    --train_data "data/custom_train.json" \
+    --val_data "data/custom_val.json" \
+    --phoneme_map "data/custom_phoneme_map.json"
 ```
 
-## Sample Training Output
+### 5. 학습 재개
 
-```
-Epoch 10: Train Loss: 2.1456, Val Loss: 2.3421
-Error Token Accuracy: 0.7834
-Error Weighted F1: 0.7623
-Phoneme Error Rate (PER): 0.2341
-Phoneme Accuracy: 0.7659
-New best phoneme accuracy: 0.7659 (PER: 0.2341)
-
---- Multi-task Sample 1 ---
-File: /path/to/audio.wav
-Error Actual:    C I C C
-Error Predicted: C I I C
-Phoneme Actual:    ae n t iy
-Phoneme Predicted: ae n t iy
+```bash
+python train.py --resume "experiments/experiment_name/checkpoints/latest.pth"
 ```
 
-## Evaluation Results
+### 6. 모델 평가
 
-Results are saved to `evaluation_results/` with detailed metrics:
+```bash
+# 기본 평가
+python eval.py --model_checkpoint "experiments/experiment_name/checkpoints/best_phoneme.pth"
 
-```json
-{
-  "config": {
-    "model_type": "simple",
-    "evaluation_date": "2024-12-01 15:30:45"
-  },
-  "evaluation_results": {
-    "error_detection": {
-      "token_accuracy": 0.7834,
-      "weighted_f1": 0.7623,
-      "by_country": {
-        "US": {"token_accuracy": 0.8012},
-        "CN": {"token_accuracy": 0.7456}
-      }
-    },
-    "phoneme_recognition": {
-      "per": 0.2341,
-      "mispronunciation_f1": 0.6789,
-      "by_country": {...}
-    }
-  }
-}
+# 학습 모드 명시적 지정
+python eval.py \
+    --model_checkpoint "path/to/checkpoint.pth" \
+    --training_mode phoneme_error_length \
+    --model_type transformer
 ```

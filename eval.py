@@ -9,17 +9,18 @@ import pytz
 
 from config import Config
 from utils import (
-    get_multitask_model_class,
+    get_model_class,
     detect_model_type_from_checkpoint,
     evaluate_error_detection,
     evaluate_phoneme_recognition,
     remove_module_prefix,
 )
-from data_prepare import BaseDataset, collate_fn
+from data_prepare import UnifiedDataset, collate_fn
 
 def main():
-    parser = argparse.ArgumentParser(description='Evaluate Multi-task L2 Pronunciation Model')
+    parser = argparse.ArgumentParser(description='Evaluate Unified L2 Pronunciation Model')
     parser.add_argument('--model_checkpoint', type=str, required=True, help='Path to model checkpoint')
+    parser.add_argument('--training_mode', type=str, choices=['phoneme_only', 'phoneme_error', 'phoneme_error_length'], help='Training mode used for the model')
     parser.add_argument('--eval_data', type=str, help='Override evaluation data path')
     parser.add_argument('--phoneme_map', type=str, help='Override phoneme map path')
     parser.add_argument('--model_type', type=str, help='Force model type (simple/transformer)')
@@ -33,6 +34,8 @@ def main():
     
     config = Config()
     
+    if args.training_mode:
+        config.training_mode = args.training_mode
     if args.eval_data:
         config.eval_data = args.eval_data
     if args.phoneme_map:
@@ -50,8 +53,11 @@ def main():
             logger.warning(f"Specified model type '{model_type}' doesn't match checkpoint '{detected_type}'. Using checkpoint type.")
             model_type = detected_type
     
+    config.model_type = model_type
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
+    logger.info(f"Training mode: {config.training_mode}")
     logger.info(f"Model type: {model_type}")
     logger.info(f"Checkpoint: {args.model_checkpoint}")
     
@@ -60,7 +66,7 @@ def main():
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
-    model_class, loss_class = get_multitask_model_class(model_type)
+    model_class, loss_class = get_model_class(model_type)
     model_config = config.model_configs[model_type]
     
     model = model_class(
@@ -94,45 +100,43 @@ def main():
     model = model.to(device)
     model.eval()
     
-    eval_dataset = BaseDataset(
+    eval_dataset = UnifiedDataset(
         config.eval_data, phoneme_to_id,
-        task_mode=config.task_mode['multi_eval'],
+        training_mode=config.training_mode,
         max_length=config.max_length,
-        sampling_rate=config.sampling_rate
+        sampling_rate=config.sampling_rate,
+        device=device
     )
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=lambda batch: collate_fn(batch, task_mode=config.task_mode['multi_eval'])
+        collate_fn=lambda batch: collate_fn(batch, training_mode=config.training_mode)
     )
     
     logger.info("Starting evaluation...")
     
-    logger.info("Evaluating error detection...")
-    error_detection_results = evaluate_error_detection(model=model, dataloader=eval_dataloader, device=device, task_mode=config.task_mode['multi_eval'], error_type_names=error_type_names)
-    
     logger.info("Evaluating phoneme recognition...")
-    phoneme_recognition_results = evaluate_phoneme_recognition(model=model, dataloader=eval_dataloader, device=device, task_mode=config.task_mode['multi_eval'], id_to_phoneme=id_to_phoneme)
+    phoneme_recognition_results = evaluate_phoneme_recognition(
+        model=model, 
+        dataloader=eval_dataloader, 
+        device=device, 
+        training_mode=config.training_mode, 
+        id_to_phoneme=id_to_phoneme
+    )
+    
+    error_detection_results = None
+    if config.has_error_component():
+        logger.info("Evaluating error detection...")
+        error_detection_results = evaluate_error_detection(
+            model=model, 
+            dataloader=eval_dataloader, 
+            device=device, 
+            training_mode=config.training_mode, 
+            error_type_names=error_type_names
+        )
     
     logger.info("\n" + "="*80)
     logger.info("COMPLETE EVALUATION RESULTS")
     logger.info("="*80)
-    
-    logger.info("\n--- ERROR DETECTION RESULTS ---")
-    logger.info(f"Sequence Accuracy: {error_detection_results['sequence_accuracy']:.4f}")
-    logger.info(f"Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
-    logger.info(f"Average Edit Distance: {error_detection_results['avg_edit_distance']:.4f}")
-    logger.info(f"Weighted F1: {error_detection_results['weighted_f1']:.4f}")
-    logger.info(f"Macro F1: {error_detection_results['macro_f1']:.4f}")
-    logger.info(f"Total Sequences: {error_detection_results['total_sequences']}")
-    logger.info(f"Total Tokens: {error_detection_results['total_tokens']}")
-    
-    logger.info("\n--- ERROR TYPE METRICS ---")
-    for error_type, metrics in error_detection_results['class_metrics'].items():
-        logger.info(f"{error_type.upper()}:")
-        logger.info(f"  Precision: {metrics['precision']:.4f}")
-        logger.info(f"  Recall: {metrics['recall']:.4f}")
-        logger.info(f"  F1-Score: {metrics['f1']:.4f}")
-        logger.info(f"  Support: {metrics['support']}")
     
     logger.info("\n--- PHONEME RECOGNITION RESULTS ---")
     logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
@@ -155,14 +159,28 @@ def main():
     logger.info(f"False Acceptance (FA): {cm['false_acceptance']}")
     logger.info(f"True Rejection (TR): {cm['true_rejection']}")
     
-    logger.info("\n--- SUMMARY ---")
-    logger.info(f"Overall Error Detection Performance: {error_detection_results['weighted_f1']:.4f} (Weighted F1)")
-    logger.info(f"Overall Phoneme Recognition Performance: {1.0 - phoneme_recognition_results['per']:.4f} (Accuracy)")
-    logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
+    if error_detection_results:
+        logger.info("\n--- ERROR DETECTION RESULTS ---")
+        logger.info(f"Sequence Accuracy: {error_detection_results['sequence_accuracy']:.4f}")
+        logger.info(f"Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
+        logger.info(f"Average Edit Distance: {error_detection_results['avg_edit_distance']:.4f}")
+        logger.info(f"Weighted F1: {error_detection_results['weighted_f1']:.4f}")
+        logger.info(f"Macro F1: {error_detection_results['macro_f1']:.4f}")
+        logger.info(f"Total Sequences: {error_detection_results['total_sequences']}")
+        logger.info(f"Total Tokens: {error_detection_results['total_tokens']}")
+        
+        logger.info("\n--- ERROR TYPE METRICS ---")
+        for error_type, metrics in error_detection_results['class_metrics'].items():
+            logger.info(f"{error_type.upper()}:")
+            logger.info(f"  Precision: {metrics['precision']:.4f}")
+            logger.info(f"  Recall: {metrics['recall']:.4f}")
+            logger.info(f"  F1-Score: {metrics['f1']:.4f}")
+            logger.info(f"  Support: {metrics['support']}")
     
     experiment_dir_name = os.path.basename(os.path.dirname(os.path.dirname(args.model_checkpoint)))
     
     config_info = {
+        'training_mode': config.training_mode,
         'model_type': model_type,
         'checkpoint_path': args.model_checkpoint,
         'experiment_name': experiment_dir_name,
@@ -171,45 +189,58 @@ def main():
     }
     
     logger.info("\n--- BY COUNTRY RESULTS ---")
-    for country in sorted(error_detection_results.get('by_country', {}).keys()):
+    for country in sorted(phoneme_recognition_results.get('by_country', {}).keys()):
         logger.info(f"\n{country}:")
-        error_country = error_detection_results['by_country'][country]
         phoneme_country = phoneme_recognition_results['by_country'][country]
-        logger.info(f"  Error Token Accuracy: {error_country['token_accuracy']:.4f}")
-        logger.info(f"  Error Weighted F1: {error_country['weighted_f1']:.4f}")
         logger.info(f"  Phoneme Accuracy: {1.0 - phoneme_country['per']:.4f}")
         logger.info(f"  Mispronunciation F1: {phoneme_country['mispronunciation_f1']:.4f}")
+        
+        if error_detection_results and country in error_detection_results.get('by_country', {}):
+            error_country = error_detection_results['by_country'][country]
+            logger.info(f"  Error Token Accuracy: {error_country['token_accuracy']:.4f}")
+            logger.info(f"  Error Weighted F1: {error_country['weighted_f1']:.4f}")
+    
+    evaluation_results = {
+        'phoneme_recognition': {
+            'per': phoneme_recognition_results['per'],
+            'accuracy': 1.0 - phoneme_recognition_results['per'],
+            'mispronunciation_precision': phoneme_recognition_results['mispronunciation_precision'],
+            'mispronunciation_recall': phoneme_recognition_results['mispronunciation_recall'],
+            'mispronunciation_f1': phoneme_recognition_results['mispronunciation_f1'],
+            'total_phonemes': phoneme_recognition_results['total_phonemes'],
+            'total_errors': phoneme_recognition_results['total_errors'],
+            'insertions': phoneme_recognition_results['insertions'],
+            'deletions': phoneme_recognition_results['deletions'],
+            'substitutions': phoneme_recognition_results['substitutions'],
+            'confusion_matrix': phoneme_recognition_results['confusion_matrix'],
+            'by_country': phoneme_recognition_results.get('by_country', {})
+        }
+    }
+    
+    if error_detection_results:
+        evaluation_results['error_detection'] = {
+            'sequence_accuracy': error_detection_results['sequence_accuracy'],
+            'token_accuracy': error_detection_results['token_accuracy'],
+            'avg_edit_distance': error_detection_results['avg_edit_distance'],
+            'weighted_f1': error_detection_results['weighted_f1'],
+            'macro_f1': error_detection_results['macro_f1'],
+            'total_sequences': error_detection_results['total_sequences'],
+            'total_tokens': error_detection_results['total_tokens'],
+            'class_metrics': error_detection_results['class_metrics'],
+            'by_country': error_detection_results.get('by_country', {})
+        }
     
     final_results = {
         'config': config_info,
-        'evaluation_results': {
-            'error_detection': {
-                'sequence_accuracy': error_detection_results['sequence_accuracy'],
-                'token_accuracy': error_detection_results['token_accuracy'],
-                'avg_edit_distance': error_detection_results['avg_edit_distance'],
-                'weighted_f1': error_detection_results['weighted_f1'],
-                'macro_f1': error_detection_results['macro_f1'],
-                'total_sequences': error_detection_results['total_sequences'],
-                'total_tokens': error_detection_results['total_tokens'],
-                'class_metrics': error_detection_results['class_metrics'],
-                'by_country': error_detection_results.get('by_country', {})
-            },
-            'phoneme_recognition': {
-                'per': phoneme_recognition_results['per'],
-                'accuracy': 1.0 - phoneme_recognition_results['per'],
-                'mispronunciation_precision': phoneme_recognition_results['mispronunciation_precision'],
-                'mispronunciation_recall': phoneme_recognition_results['mispronunciation_recall'],
-                'mispronunciation_f1': phoneme_recognition_results['mispronunciation_f1'],
-                'total_phonemes': phoneme_recognition_results['total_phonemes'],
-                'total_errors': phoneme_recognition_results['total_errors'],
-                'insertions': phoneme_recognition_results['insertions'],
-                'deletions': phoneme_recognition_results['deletions'],
-                'substitutions': phoneme_recognition_results['substitutions'],
-                'confusion_matrix': phoneme_recognition_results['confusion_matrix'],
-                'by_country': phoneme_recognition_results.get('by_country', {})
-            }
-        }
+        'evaluation_results': evaluation_results
     }
+    
+    logger.info("\n--- SUMMARY ---")
+    logger.info(f"Training Mode: {config.training_mode}")
+    logger.info(f"Overall Phoneme Recognition Performance: {1.0 - phoneme_recognition_results['per']:.4f} (Accuracy)")
+    logger.info(f"Mispronunciation Detection F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
+    if error_detection_results:
+        logger.info(f"Overall Error Detection Performance: {error_detection_results['weighted_f1']:.4f} (Weighted F1)")
     
     evaluation_results_dir = 'evaluation_results'
     os.makedirs(evaluation_results_dir, exist_ok=True)

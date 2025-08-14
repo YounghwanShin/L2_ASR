@@ -20,29 +20,17 @@ def make_attn_mask(wavs, wav_lens):
         attn_mask[i, :abs_lens[i]] = 1
     return attn_mask
 
-def get_multitask_model_class(model_type):
+def get_model_class(model_type):
     if model_type == 'simple':
-        from models.multitask_model import SimpleMultiTaskModel
-        from models.loss_functions import MultiTaskLoss
-        return SimpleMultiTaskModel, MultiTaskLoss
+        from models.model import UnifiedModel
+        from models.loss_functions import UnifiedLoss
+        return UnifiedModel, UnifiedLoss
     elif model_type == 'transformer':
-        from models.multitask_model_transformer import TransformerMultiTaskModel
-        from models.loss_functions import MultiTaskLoss
-        return TransformerMultiTaskModel, MultiTaskLoss
+        from models.model_transformer import UnifiedTransformerModel
+        from models.loss_functions import UnifiedLoss
+        return UnifiedTransformerModel, UnifiedLoss
     else:
         raise ValueError(f"Unknown model type: {model_type}. Available: simple, transformer")
-
-def get_phoneme_model_class(model_type):
-    if model_type == 'simple':
-        from models.phoneme_model import SimplePhonemeModel
-        from models.loss_functions import PhonemeLoss
-        return SimplePhonemeModel, PhonemeLoss
-    elif model_type == 'transformer':
-        from models.phoneme_model_transformer import TransformerPhonemeModel
-        from models.loss_functions import PhonemeLoss
-        return TransformerPhonemeModel, PhonemeLoss
-    else:
-        raise ValueError(f"Unknown phoneme model type: {model_type}. Available: simple, transformer")
 
 def detect_model_type_from_checkpoint(checkpoint_path):
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
@@ -52,16 +40,6 @@ def detect_model_type_from_checkpoint(checkpoint_path):
     else:
         state_dict = checkpoint
     
-    def remove_module_prefix(state_dict):
-        new_state_dict = {}
-        for key, value in state_dict.items():
-            if key.startswith('module.'):
-                new_key = key[7:]
-            else:
-                new_key = key
-            new_state_dict[new_key] = value
-        return new_state_dict
-    
     state_dict = remove_module_prefix(state_dict)
     keys = list(state_dict.keys())
     
@@ -70,32 +48,6 @@ def detect_model_type_from_checkpoint(checkpoint_path):
     elif any('shared_encoder' in key for key in keys):
         return 'simple'
     else:
-        return 'simple'
-
-def detect_phoneme_model_type_from_checkpoint(checkpoint_path):
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-    else:
-        state_dict = checkpoint
-    
-    def remove_module_prefix(state_dict):
-        new_state_dict = {}
-        for key, value in state_dict.items():
-            if key.startswith('module.'):
-                new_key = key[7:]
-            else:
-                new_key = key
-            new_state_dict[new_key] = value
-        return new_state_dict
-    
-    state_dict = remove_module_prefix(state_dict)
-    keys = list(state_dict.keys())
-    
-    if any('transformer_encoder' in key for key in keys):
-        return 'transformer'
-    elif any('shared_encoder' in key for key in keys):
         return 'simple'
 
 def setup_experiment_dirs(config, resume=False):
@@ -164,7 +116,7 @@ def calculate_soft_length(outputs, config):
     soft_length = (non_blank_probs * change_probs).sum(dim=1)
     return soft_length
 
-def show_sample_predictions(task_mode, model, eval_dataloader, device, id_to_phoneme, logger, error_type_names=None, num_samples=3):
+def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, logger, training_mode='phoneme_only', error_type_names=None, num_samples=3):
     model.eval()
     enable_wav2vec2_specaug(model, False)
     samples_shown = 0
@@ -174,79 +126,50 @@ def show_sample_predictions(task_mode, model, eval_dataloader, device, id_to_pho
             if samples_shown >= num_samples:
                 break
                 
-            if task_mode == 'multi_eval':
-                (waveforms, error_labels, perceived_phoneme_ids, canonical_phoneme_ids, 
-                 audio_lengths, error_label_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            elif task_mode == 'phoneme_eval':
-                (waveforms, perceived_phoneme_ids, canonical_phoneme_ids, 
-                 audio_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
+            waveforms = batch_data['waveforms'].to(device)
+            audio_lengths = batch_data['audio_lengths'].to(device)
             
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
-            if task_mode == 'multi_eval':
-                outputs = model(waveforms, attention_mask, task_mode=task_mode)
+            outputs = model(waveforms, attention_mask, training_mode=training_mode)
             
+            phoneme_logits = outputs['phoneme_logits']
+            phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
+            phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
+            phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
+            
+            if training_mode in ['phoneme_error', 'phoneme_error_length'] and 'error_logits' in outputs:
                 error_logits = outputs['error_logits']
                 error_input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
                 error_log_probs = torch.log_softmax(error_logits, dim=-1)
                 error_predictions = decode_ctc(error_log_probs, error_input_lengths)
-
-                phoneme_logits = outputs['phoneme_logits']
-                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-                phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-                phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
             
-                for i in range(min(waveforms.shape[0], num_samples - samples_shown)):
-                    logger.info(f"\n--- Multi-task Sample {samples_shown + 1} ---")
-                    logger.info(f"File: {wav_files[i]}")
+            for i in range(min(waveforms.shape[0], num_samples - samples_shown)):
+                logger.info(f"\n--- Sample {samples_shown + 1} ({training_mode}) ---")
+                logger.info(f"File: {batch_data['wav_files'][i]}")
 
+                phoneme_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
+                                for pid in batch_data['phoneme_labels'][i][:batch_data['phoneme_lengths'][i]]]
+                phoneme_pred = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
+                              for pid in phoneme_predictions[i]]
+
+                logger.info(f"Phoneme Actual:    {' '.join(phoneme_actual)}")
+                logger.info(f"Phoneme Predicted: {' '.join(phoneme_pred)}")
+
+                if training_mode in ['phoneme_error', 'phoneme_error_length'] and 'error_labels' in batch_data:
                     error_actual = [error_type_names.get(int(label), str(label)) 
-                                  for label in error_labels[i][:error_label_lengths[i]]]
+                                  for label in batch_data['error_labels'][i][:batch_data['error_lengths'][i]]]
                     error_pred = [error_type_names.get(int(pred), str(pred)) 
                                 for pred in error_predictions[i]]
 
-                    phoneme_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                    for pid in perceived_phoneme_ids[i][:perceived_lengths[i]]]
-                    phoneme_pred = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                  for pid in phoneme_predictions[i]]
-
                     logger.info(f"Error Actual:    {' '.join(error_actual)}")
                     logger.info(f"Error Predicted: {' '.join(error_pred)}")
-                    logger.info(f"Phoneme Actual:    {' '.join(phoneme_actual)}")
-                    logger.info(f"Phoneme Predicted: {' '.join(phoneme_pred)}")
 
-                    samples_shown += 1
-                    if samples_shown >= num_samples:
-                        break
-            
-            elif task_mode == 'phoneme_eval':
-                outputs = model(waveforms, attention_mask)
-                
-                phoneme_logits = outputs['phoneme_logits']
-                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
-                phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
-                phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
-
-                for i in range(min(waveforms.shape[0], num_samples - samples_shown)):
-                    logger.info(f"\n--- Phoneme Sample {samples_shown + 1} ---")
-                    logger.info(f"File: {wav_files[i]}")
-
-                    phoneme_actual = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                    for pid in perceived_phoneme_ids[i][:perceived_lengths[i]]]
-                    phoneme_pred = [id_to_phoneme.get(str(int(pid)), f"UNK_{pid}") 
-                                  for pid in phoneme_predictions[i]]
-
-                    logger.info(f"Phoneme Actual:    {' '.join(phoneme_actual)}")
-                    logger.info(f"Phoneme Predicted: {' '.join(phoneme_pred)}")
-                
-                    samples_shown += 1
-                    if samples_shown >= num_samples:
-                        break
+                samples_shown += 1
+                if samples_shown >= num_samples:
+                    break
             
             if samples_shown >= num_samples:
                 break
@@ -324,10 +247,10 @@ def calculate_mispronunciation_metrics(all_predictions, all_canonical, all_perce
         'tr': total_tr
     }
 
-def clean_targets(error_labels, label_lengths):
-    return [labels[:length].cpu().numpy().tolist() for labels, length in zip(error_labels, label_lengths)]
+def clean_targets(labels, label_lengths):
+    return [labels[i][:length].cpu().numpy().tolist() for i, length in enumerate(label_lengths)]
 
-def evaluate_error_detection(model, dataloader, device, task_mode='', error_type_names=None):
+def evaluate_error_detection(model, dataloader, device, training_mode='phoneme_error', error_type_names=None):
     if error_type_names is None:
         error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
     
@@ -338,17 +261,21 @@ def evaluate_error_detection(model, dataloader, device, task_mode='', error_type
         progress_bar = tqdm(dataloader, desc='Error Detection Evaluation', dynamic_ncols=True)
         
         for batch_data in progress_bar:
-            (waveforms, error_labels, _, _, audio_lengths, error_label_lengths, 
-             _, _, wav_files, spk_ids) = batch_data
-            
-            waveforms = waveforms.to(device)
-            error_labels = error_labels.to(device)
-            audio_lengths = audio_lengths.to(device)
+            if 'error_labels' not in batch_data:
+                continue
+                
+            waveforms = batch_data['waveforms'].to(device)
+            error_labels = batch_data['error_labels'].to(device)
+            audio_lengths = batch_data['audio_lengths'].to(device)
             
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
-            outputs = model(waveforms, attention_mask, task_mode=task_mode)
+            outputs = model(waveforms, attention_mask, training_mode=training_mode)
+            
+            if 'error_logits' not in outputs:
+                continue
+                
             error_logits = outputs['error_logits']
             
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
@@ -356,12 +283,12 @@ def evaluate_error_detection(model, dataloader, device, task_mode='', error_type
             
             log_probs = torch.log_softmax(error_logits, dim=-1)
             predictions = decode_ctc(log_probs, input_lengths)
-            targets = clean_targets(error_labels, error_label_lengths)
+            targets = clean_targets(error_labels, batch_data['error_lengths'])
             
             all_predictions.extend(predictions)
             all_targets.extend(targets)
-            all_ids.extend(wav_files)
-            all_spk_ids.extend(spk_ids)
+            all_ids.extend(batch_data['wav_files'])
+            all_spk_ids.extend(batch_data['spk_ids'])
     
     results = _calculate_error_metrics(all_predictions, all_targets, all_ids, error_type_names)
     
@@ -439,7 +366,7 @@ def _calculate_error_metrics(all_predictions, all_targets, all_ids, error_type_n
         'total_tokens': int(total_tokens)
     }
 
-def evaluate_phoneme_recognition(model, dataloader, device, task_mode=None, id_to_phoneme=None):
+def evaluate_phoneme_recognition(model, dataloader, device, training_mode='phoneme_only', id_to_phoneme=None):
     model.eval()
     all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids = [], [], [], [], [], []
     
@@ -447,26 +374,14 @@ def evaluate_phoneme_recognition(model, dataloader, device, task_mode=None, id_t
         progress_bar = tqdm(dataloader, desc='Phoneme Recognition Evaluation', dynamic_ncols=True)
         
         for batch_data in progress_bar:
-            if len(batch_data) == 8:
-                (waveforms, perceived_phoneme_ids, canonical_phoneme_ids, 
-                 audio_lengths, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            elif len(batch_data) == 10:
-                (waveforms, _, perceived_phoneme_ids, canonical_phoneme_ids, 
-                 audio_lengths, _, perceived_lengths, canonical_lengths, wav_files, spk_ids) = batch_data
-            else:
-                raise ValueError(f"Unexpected batch format with {len(batch_data)} elements")
-            
-            waveforms = waveforms.to(device)
-            audio_lengths = audio_lengths.to(device)
+            waveforms = batch_data['waveforms'].to(device)
+            audio_lengths = batch_data['audio_lengths'].to(device)
             
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
             
-            outputs = model(waveforms, attention_mask, task_mode=task_mode)
-            if 'phoneme_logits' in outputs:
-                phoneme_logits = outputs['phoneme_logits']
-            else:
-                raise ValueError("Model output does not contain 'phoneme_logits'")
+            outputs = model(waveforms, attention_mask, training_mode=training_mode)
+            phoneme_logits = outputs['phoneme_logits']
             
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
             input_lengths = torch.clamp(input_lengths, min=1, max=phoneme_logits.size(1))
@@ -474,38 +389,30 @@ def evaluate_phoneme_recognition(model, dataloader, device, task_mode=None, id_t
             log_probs = torch.log_softmax(phoneme_logits, dim=-1)
             batch_phoneme_preds = decode_ctc(log_probs, input_lengths)
             
-            batch_targets = [
-                perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(perceived_lengths)
-            ]
+            batch_targets = clean_targets(batch_data['phoneme_labels'], batch_data['phoneme_lengths'])
             
-            batch_canonical = [
-                canonical_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(canonical_lengths)
-            ]
-            
-            batch_perceived = [
-                perceived_phoneme_ids[i][:length].cpu().numpy().tolist()
-                for i, length in enumerate(perceived_lengths)
-            ]
+            if 'canonical_labels' in batch_data:
+                batch_canonical = clean_targets(batch_data['canonical_labels'], batch_data['canonical_lengths'])
+                batch_perceived = clean_targets(batch_data['phoneme_labels'], batch_data['phoneme_lengths'])
+                all_canonical.extend(batch_canonical)
+                all_perceived.extend(batch_perceived)
             
             all_predictions.extend(batch_phoneme_preds)
             all_targets.extend(batch_targets)
-            all_canonical.extend(batch_canonical)
-            all_perceived.extend(batch_perceived)
-            all_ids.extend(wav_files)
-            all_spk_ids.extend(spk_ids)
+            all_ids.extend(batch_data['wav_files'])
+            all_spk_ids.extend(batch_data['spk_ids'])
     
     results = _calculate_phoneme_metrics(all_predictions, all_targets, all_canonical, all_perceived, all_ids, id_to_phoneme)
     
     by_country_results = {}
     country_data = defaultdict(lambda: {'predictions': [], 'targets': [], 'canonical': [], 'perceived': [], 'ids': []})
     
-    for pred, target, canonical, perceived, id_val, spk_id in zip(all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids):
+    for i, (pred, target, id_val, spk_id) in enumerate(zip(all_predictions, all_targets, all_ids, all_spk_ids)):
         country_data[spk_id]['predictions'].append(pred)
         country_data[spk_id]['targets'].append(target)
-        country_data[spk_id]['canonical'].append(canonical)
-        country_data[spk_id]['perceived'].append(perceived)
+        if i < len(all_canonical):
+            country_data[spk_id]['canonical'].append(all_canonical[i])
+            country_data[spk_id]['perceived'].append(all_perceived[i])
         country_data[spk_id]['ids'].append(id_val)
     
     for country, data in country_data.items():
