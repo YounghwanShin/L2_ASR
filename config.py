@@ -42,6 +42,7 @@ class Config:
     error_weight = 0.35
     phoneme_weight = 0.45
     length_weight = 0.2
+    use_length_loss = False
     
     focal_alpha = 0.25
     focal_gamma = 2.0
@@ -88,8 +89,11 @@ class Config:
                 model_prefix = 'multi_simple' if self.model_type == 'simple' else 'multi_transformer'
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
-                length_ratio = str(int(self.length_weight * 10)).zfill(2)
-                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}{length_ratio}_{current_date}"
+                if self.use_length_loss:
+                    length_ratio = str(int(self.length_weight * 10)).zfill(2)
+                    self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}{length_ratio}_{current_date}"
+                else:
+                    self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_no_length_{current_date}"
 
             self._last_model_type = self.model_type
         

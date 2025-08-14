@@ -129,9 +129,10 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
             
-            os.makedirs(config.length_logs_dir, exist_ok=True)
-            length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
-            if has_phoneme:
+            if config.use_length_loss and has_phoneme:
+                os.makedirs(config.length_logs_dir, exist_ok=True)
+                length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
+                
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits, config)
                 soft_length = torch.clamp(soft_length, max=80)
@@ -195,14 +196,17 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
         avg_total = total_loss / max(((batch_idx + 1) // gradient_accumulation), 1)
         avg_error = error_loss_sum / max(error_count, 1)
         avg_phoneme = phoneme_loss_sum / max(phoneme_count, 1)
-        avg_length = length_loss_sum / max(length_count, 1)
+        avg_length = length_loss_sum / max(length_count, 1) if config.use_length_loss else 0
 
-        progress_bar.set_postfix({
+        progress_dict = {
             'Total': f'{avg_total:.4f}',
             'Error': f'{avg_error:.4f}',
-            'Phoneme': f'{avg_phoneme:.4f}',
-            'Length': f'{avg_length:.4f}'
-        })
+            'Phoneme': f'{avg_phoneme:.4f}'
+        }
+        if config.use_length_loss:
+            progress_dict['Length'] = f'{avg_length:.4f}'
+        
+        progress_bar.set_postfix(progress_dict)
 
     torch.cuda.empty_cache()
     return total_loss / (len(dataloader) // gradient_accumulation)
@@ -292,7 +296,7 @@ def validate_epoch(model, dataloader, criterion, device, config):
                     phoneme_target_lengths=batch_phoneme_lengths
                 )
 
-            if has_phoneme:
+            if config.use_length_loss and has_phoneme:
                 phoneme_logits = outputs['phoneme_logits']
                 soft_length = calculate_soft_length(phoneme_logits, config)
 
@@ -354,6 +358,7 @@ def main():
     parser.add_argument('--output_dir', type=str, help='Override output directory')
     parser.add_argument('--resume', type=str, help='Resume training from checkpoint path')
     parser.add_argument('--experiment_name', type=str, help='Override experiment name')
+    parser.add_argument('--use_length_loss', action='store_true', help='Enable length loss')
     args = parser.parse_args()
 
     config = Config()
@@ -368,6 +373,8 @@ def main():
         config.phoneme_map = args.phoneme_map
     if args.output_dir:
         config.output_dir = args.output_dir
+    if args.use_length_loss:
+        config.use_length_loss = args.use_length_loss
 
     if args.resume:
         detected_model_type = detect_model_type_from_checkpoint(args.resume)
@@ -385,7 +392,10 @@ def main():
             key, value = override.split('=')
             if hasattr(config, key):
                 attr_type = type(getattr(config, key))
-                setattr(config, key, attr_type(value))
+                if attr_type == bool:
+                    setattr(config, key, value.lower() == 'true')
+                else:
+                    setattr(config, key, attr_type(value))
 
     config.__post_init__()
 
@@ -492,6 +502,7 @@ def main():
         logger.info(f"Experiment: {config.experiment_name}")
         logger.info(f"Starting training for {config.num_epochs} epochs")
         logger.info(f"SpecAugment enabled: {config.wav2vec2_specaug}")
+        logger.info(f"Length Loss enabled: {config.use_length_loss}")
         logger.info(f"Using Focal Loss with default parameters")
 
     for epoch in range(start_epoch, config.num_epochs + 1):
@@ -502,7 +513,6 @@ def main():
         val_loss = validate_epoch(model, val_dataloader, criterion, config.device, config)
         logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
-        # if epoch % 5 == 0 or epoch == 1:
         if True:
             logger.info(f"Epoch {epoch} - Sample Predictions")
             logger.info("=" * 50)
