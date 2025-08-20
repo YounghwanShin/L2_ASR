@@ -168,24 +168,15 @@ def decode_ctc(log_probs, input_lengths, blank_idx=0):
 
     return decoded_seqs
 
-def calculate_soft_length(outputs, config):
-    probs = torch.softmax(outputs, dim=-1)
-    non_blank_probs = 1.0 - probs[:, :, 0]
-    non_blank_probs = torch.sigmoid(10 * (non_blank_probs - 0.5))
-
-    phoneme_probs = probs[:, :, 1:]
-    soft_preds = torch.matmul(
-        phoneme_probs, torch.arange(1, phoneme_probs.size(-1) + 1, device=phoneme_probs.device, dtype=phoneme_probs.dtype)
-    )
-
-    preds_shift = torch.roll(soft_preds, shifts=1, dims=1)
-
-    diff = torch.abs(soft_preds - preds_shift) / 42.0
-    change_probs = torch.sigmoid(config.sigmoid_k * (diff - config.sigmoid_threshold))
-    change_probs = torch.cat([torch.ones(change_probs.size(0), 1, device=change_probs.device, dtype=change_probs.dtype), change_probs[:, 1:]], dim=1)
-
-    soft_length = (non_blank_probs * change_probs).sum(dim=1)
-    return soft_length
+def calculate_ctc_decoded_length(outputs, input_lengths, blank_idx=0):
+    with torch.no_grad():
+        log_probs = torch.log_softmax(outputs, dim=-1)
+        decoded_seqs = decode_ctc(log_probs, input_lengths, blank_idx)
+        
+        lengths = torch.tensor([len(seq) for seq in decoded_seqs], 
+                             device=outputs.device, dtype=torch.float32)
+        
+    return lengths
 
 def show_sample_predictions(model, eval_dataloader, device, id_to_phoneme, logger, training_mode='phoneme_only', error_type_names=None, num_samples=3):
     model.eval()

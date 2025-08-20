@@ -19,13 +19,9 @@ class Config:
     # Model architecture: 'simple' or 'transformer'
     model_type = 'simple'
 
-    # Sigmoid parameters for soft length calculation
-    sigmoid_k = 10
-    sigmoid_threshold = 1.0 / 42.0
-
     # Training hyperparameters
-    batch_size = 16
-    eval_batch_size = 16
+    batch_size = 8
+    eval_batch_size = 8
     num_epochs = 50
     gradient_accumulation = 2
 
@@ -33,9 +29,9 @@ class Config:
     wav2vec_lr = 1e-5
 
     # Loss weights (only used when corresponding components are enabled)
-    error_weight = 0.4
-    phoneme_weight = 0.6
-    length_weight = 0.0
+    error_weight = 0.35
+    phoneme_weight = 0.55
+    length_weight = 0.1
 
     # Focal loss parameters
     focal_alpha = 0.25

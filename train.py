@@ -21,7 +21,7 @@ from src.utils import (
     setup_experiment_dirs,
     enable_wav2vec2_specaug,
     get_wav2vec2_output_lengths_official,
-    calculate_soft_length,
+    calculate_ctc_decoded_length,
     show_sample_predictions,
     evaluate_error_detection,
     evaluate_phoneme_recognition,
@@ -99,24 +99,27 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
 
                 phoneme_logits = outputs['phoneme_logits']
-                soft_length = calculate_soft_length(phoneme_logits, config)
-                soft_length = torch.clamp(soft_length, max=80)
+                ctc_decoded_length = calculate_ctc_decoded_length(
+                    phoneme_logits, 
+                    phoneme_input_lengths
+                )
+                ctc_decoded_length = torch.clamp(ctc_decoded_length, max=80)
 
                 length_loss = length_loss_fn(
-                    soft_length,
+                    ctc_decoded_length.detach(),
                     phoneme_lengths.float()
                 )
 
                 length_loss_sum += length_loss
                 length_count += 1
 
-                soft_lengths = [int(s) for s in soft_length.tolist()]
+                decoded_lengths = [int(s) for s in ctc_decoded_length.tolist()]
                 target_lengths = phoneme_lengths.tolist()
-                length_diffs = [s - t for s, t in zip(soft_lengths, target_lengths)]
+                length_diffs = [s - t for s, t in zip(decoded_lengths, target_lengths)]
                 length_dict = {
                     'epoch_num': epoch,
                     'batch_idx': batch_idx,
-                    'soft_lengths': soft_lengths,
+                    'decoded_lengths': decoded_lengths,
                     'target_lengths': target_lengths,
                     'length_diffs': length_diffs
                 }
@@ -228,10 +231,13 @@ def validate_epoch(model, dataloader, criterion, device, config):
 
             if config.has_length_component():
                 phoneme_logits = outputs['phoneme_logits']
-                soft_length = calculate_soft_length(phoneme_logits, config)
+                ctc_decoded_length = calculate_ctc_decoded_length(
+                    phoneme_logits, 
+                    phoneme_input_lengths
+                )
 
                 length_loss = LogCoshLengthLoss()(
-                    soft_length,
+                    ctc_decoded_length.detach(),
                     phoneme_lengths.float()
                 )
                 loss = loss + config.length_weight * length_loss
