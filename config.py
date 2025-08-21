@@ -20,18 +20,18 @@ class Config:
     model_type = 'simple'
 
     # Training hyperparameters
-    batch_size = 8
-    eval_batch_size = 8
+    batch_size = 16
+    eval_batch_size = 16
     num_epochs = 50
     gradient_accumulation = 2
 
     main_lr = 3e-4
     wav2vec_lr = 1e-5
 
-    # Loss weights (only used when corresponding components are enabled)
+    # Loss weights (error + phoneme = 1.0 for multitask, length separate)
     error_weight = 0.35
-    phoneme_weight = 0.55
-    length_weight = 0.1
+    phoneme_weight = 0.65
+    length_weight = 0.02
 
     # Focal loss parameters
     focal_alpha = 0.25
@@ -90,8 +90,8 @@ class Config:
                 model_prefix = f'phoneme_error_length_{self.model_type}'
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
-                length_ratio = str(int(self.length_weight * 10)).zfill(2)
-                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}{length_ratio}_{current_date}"
+                length_ratio = str(int(self.length_weight * 100)).zfill(2)
+                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}l{length_ratio}_{current_date}"
 
             self._last_model_type = self.model_type
 
@@ -103,11 +103,9 @@ class Config:
         self.output_dir = self.checkpoint_dir
 
     def _validate_weights(self):
-        """Validate that weights sum to 1.0 based on training mode"""
         if self.training_mode == 'phoneme_only':
-            # Only phoneme_weight should be used, but we don't enforce sum=1 for this mode
             pass
-        elif self.training_mode == 'phoneme_error':
+        elif self.training_mode in ['phoneme_error', 'phoneme_error_length']:
             # phoneme_weight + error_weight should equal 1.0
             total = self.phoneme_weight + self.error_weight
             if abs(total - 1.0) > 1e-6:
@@ -116,16 +114,8 @@ class Config:
                 self.phoneme_weight = self.phoneme_weight / total
                 self.error_weight = self.error_weight / total
                 print(f"Normalized weights: phoneme_weight={self.phoneme_weight:.3f}, error_weight={self.error_weight:.3f}")
-        elif self.training_mode == 'phoneme_error_length':
-            # phoneme_weight + error_weight + length_weight should equal 1.0
-            total = self.phoneme_weight + self.error_weight + self.length_weight
-            if abs(total - 1.0) > 1e-6:
-                print(f"Warning: phoneme_weight ({self.phoneme_weight}) + error_weight ({self.error_weight}) + length_weight ({self.length_weight}) = {total} != 1.0")
-                print("Auto-normalizing weights...")
-                self.phoneme_weight = self.phoneme_weight / total
-                self.error_weight = self.error_weight / total
-                self.length_weight = self.length_weight / total
-                print(f"Normalized weights: phoneme_weight={self.phoneme_weight:.3f}, error_weight={self.error_weight:.3f}, length_weight={self.length_weight:.3f}")
+                if self.training_mode == 'phoneme_error_length':
+                    print(f"Length weight (separate penalty): {self.length_weight:.3f}")
 
     def get_model_config(self):
         """Get model configuration and set use_transformer based on model_type"""

@@ -59,12 +59,19 @@ class UnifiedLoss(nn.Module):
         loss_dict['total_loss'] = total_loss.item()
         return total_loss, loss_dict
 
-class LogCoshLengthLoss(nn.Module):
-    def __init__(self):
+class SmoothL1LengthLoss(nn.Module):
+    def __init__(self, beta=1.0):
         super().__init__()
+        self.beta = beta
 
     def forward(self, input_lengths, target_lengths):
         diff = input_lengths - target_lengths
-        diff_ratio = diff / (target_lengths + 1e-8)
-        length_losses = torch.mean(torch.log(torch.cosh(diff_ratio)))
-        return length_losses
+        abs_diff = torch.abs(diff)
+        
+        smooth_l1 = torch.where(
+            abs_diff < self.beta,
+            0.5 * diff ** 2 / self.beta,
+            abs_diff - 0.5 * self.beta
+        )
+        
+        return torch.mean(smooth_l1)

@@ -26,7 +26,7 @@ from src.utils import (
     evaluate_error_detection,
     evaluate_phoneme_recognition,
 )
-from models.loss_functions import LogCoshLengthLoss
+from models.loss_functions import SmoothL1LengthLoss
 from src.data_prepare import UnifiedDataset, collate_fn
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
     if config and config.wav2vec2_specaug:
         enable_wav2vec2_specaug(model, True)
 
-    length_loss_fn = LogCoshLengthLoss()
+    length_loss_fn = SmoothL1LengthLoss()
 
     total_loss = 0.0
     error_loss_sum = 0.0
@@ -236,7 +236,7 @@ def validate_epoch(model, dataloader, criterion, device, config):
                     phoneme_input_lengths
                 )
 
-                length_loss = LogCoshLengthLoss()(
+                length_loss = SmoothL1LengthLoss()(
                     ctc_decoded_length.detach(),
                     phoneme_lengths.float()
                 )

@@ -1,5 +1,5 @@
 from .model import UnifiedModel
-from .loss_functions import UnifiedLoss, LogCoshLengthLoss, FocalCTCLoss
+from .loss_functions import UnifiedLoss, SmoothL1LengthLoss, FocalCTCLoss
 from .utils_models import (
     ErrorDetectionHead,
     PhonemeRecognitionHead,
@@ -11,7 +11,7 @@ from .utils_models import (
 __all__ = [
     'UnifiedModel',
     'UnifiedLoss',
-    'LogCoshLengthLoss',
+    'SmoothL1LengthLoss',
     'FocalCTCLoss',
     'ErrorDetectionHead',
     'PhonemeRecognitionHead',
