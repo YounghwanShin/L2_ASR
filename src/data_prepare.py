@@ -233,7 +233,7 @@ def load_data(json_path):
         data = json.load(f)
     return list(data.keys())
 
-def calculate_melspectrogram(audio, sample_rate):
+def calculate_mfcc(audio, sample_rate, n_mfcc=13):
     mel_spec = librosa.feature.melspectrogram(
         y=audio,
         sr=sample_rate,
@@ -244,8 +244,9 @@ def calculate_melspectrogram(audio, sample_rate):
         n_mels=128,
         fmax=sample_rate/2
     )
-    mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
-    return mel_spec_db
+    log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
+    mfcc = librosa.feature.mfcc(S=log_mel_spec, n_mfcc=n_mfcc)
+    return mfcc
 
 def process_data(file_list, config, batch_size=500):
     all_mel = []
@@ -257,7 +258,7 @@ def process_data(file_list, config, batch_size=500):
 
         batch_mel = []
         for j in range(batch_audio.shape[0]):
-            mel = calculate_melspectrogram(batch_audio[j, :], config.sampling_rate)
+            mel = calculate_mfcc(batch_audio[j, :], config.sampling_rate)
             batch_mel.append(mel)
             print(f"\rProcessed {i+j+1}/{len(file_list)} files", end='')
         batch_mel = np.stack(batch_mel, axis=0)
