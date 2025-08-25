@@ -54,6 +54,10 @@ class Config:
     eval_data = "data/test_labels.json"
     phoneme_map = "data/phoneme_map.json"
 
+    train_mfcc_data = "data/train_mfcc.npy"
+    val_mfcc_data = "data/val_mfcc.npy"
+    eval_mfcc_data = "data/test_mfcc.npy"
+
     device = "cuda"
 
     # Model configurations
