@@ -17,7 +17,7 @@ class Config:
     training_mode = 'phoneme_error_length'
 
     # Model architecture: 'simple' or 'transformer'
-    model_type = 'simple'
+    model_type = 'transformer'
 
     # Training hyperparameters
     batch_size = 16
@@ -29,9 +29,9 @@ class Config:
     wav2vec_lr = 1e-5
 
     # Loss weights (error + phoneme = 1.0 for multitask, length separate)
-    error_weight = 0.35
-    phoneme_weight = 0.65
-    length_weight = 0.02
+    error_weight = 0.4
+    phoneme_weight = 0.6
+    length_weight = 1.0
 
     # Focal loss parameters
     focal_alpha = 0.25
@@ -49,14 +49,10 @@ class Config:
     base_experiment_dir = "experiments"
     experiment_name = None
 
-    train_data = "data/train_labels.json"
-    val_data = "data/val_labels.json"
-    eval_data = "data/test_labels.json"
-    phoneme_map = "data/phoneme_map.json"
-
-    train_mfcc_data = "data/train_mfcc.npy"
-    val_mfcc_data = "data/val_mfcc.npy"
-    eval_mfcc_data = "data/test_mfcc.npy"
+    train_data = "shared/data/train_labels.json"
+    val_data = "shared/data/val_labels.json"
+    eval_data = "shared/data/test_labels.json"
+    phoneme_map = "shared/data/phoneme_map.json"
 
     device = "cuda"
 

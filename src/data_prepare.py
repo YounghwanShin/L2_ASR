@@ -1,13 +1,8 @@
-import os
-import sys
 import torch
-import numpy as np
-import librosa
 import json
 import torchaudio
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from sklearn.preprocessing import StandardScaler
 
 class UnifiedDataset(Dataset):
     def __init__(self, json_path, phoneme_to_id, training_mode, max_length=None, sampling_rate=16000, device='cuda'):
@@ -221,78 +216,3 @@ def collate_fn(batch, training_mode='phoneme_only'):
             result['error_lengths'] = torch.tensor(error_lengths)
 
     return result
-
-def load_audiofile(file_path, config):
-    audio_signal, sample_rate = librosa.load(file_path, duration=10, offset=0.5, sr=config.sampling_rate)
-    signal = np.zeros(int(config.max_length))
-    signal[:len(audio_signal)] = audio_signal
-    return signal
-
-def load_data(json_path):
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    return list(data.keys())
-
-def calculate_mfcc(audio, sample_rate, n_mfcc=13):
-    mel_spec = librosa.feature.melspectrogram(
-        y=audio,
-        sr=sample_rate,
-        n_fft=1024,
-        win_length=512,
-        window='hamming',
-        hop_length=256,
-        n_mels=128,
-        fmax=sample_rate/2
-    )
-    log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-    mfcc = librosa.feature.mfcc(S=log_mel_spec, n_mfcc=n_mfcc)
-    return mfcc
-
-def process_data(file_list, config, batch_size=500):
-    all_mel = []
-
-    for i in range(0, len(file_list), batch_size):
-        batch_files = file_list[i:i+batch_size]
-        batch_audio = [load_audiofile(f, config) for f in batch_files]
-        batch_audio = np.stack(batch_audio, 0)
-
-        batch_mel = []
-        for j in range(batch_audio.shape[0]):
-            mel = calculate_mfcc(batch_audio[j, :], config.sampling_rate)
-            batch_mel.append(mel)
-            print(f"\rProcessed {i+j+1}/{len(file_list)} files", end='')
-        batch_mel = np.stack(batch_mel, axis=0)
-        all_mel.append(batch_mel)
-    print('')
-    return np.concatenate(all_mel, axis=0)
-
-def scale_and_save(all_mel, save_path):
-    b,h,w = all_mel.shape
-    all_mel_flat = all_mel.reshape(b, -1)
-
-    scaler = StandardScaler()
-    all_mel_flat = scaler.fit_transform(all_mel_flat)
-
-    all_mel = all_mel_flat.reshape(b,h,w)
-    np.save(save_path, all_mel)
-    print(f"{save_path} saved. shape: {all_mel.shape}")
-
-def main():
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    from config import Config
-    config = Config()
-
-    train_files = load_data(config.train_data)
-    val_files = load_data(config.val_data)
-    eval_files = load_data(config.eval_data)
-
-    mel_train = process_data(train_files, config)
-    mel_val   = process_data(val_files, config)
-    mel_eval  = process_data(eval_files, config)
-
-    scale_and_save(mel_train, config.train_mfcc_data)
-    scale_and_save(mel_val, config.val_mfcc_data)
-    scale_and_save(mel_eval, config.eval_mfcc_data)
-
-if __name__ == "__main__":
-    main()
