@@ -21,23 +21,57 @@ from src.utils import (
     setup_experiment_dirs,
     enable_wav2vec2_specaug,
     get_wav2vec2_output_lengths_official,
-    calculate_ctc_decoded_length,
     show_sample_predictions,
     evaluate_error_detection,
     evaluate_phoneme_recognition,
 )
-from models.loss_functions import SmoothL1LengthLoss
 from src.data_prepare import UnifiedDataset, collate_fn
 
 logger = logging.getLogger(__name__)
 
+def calculate_target_length(phoneme_lengths, error_lengths=None, training_mode='phoneme_only'):
+    """
+    훈련 모드에 따라 적절한 목표 길이를 계산
+    
+    Args:
+        phoneme_lengths: Phoneme 시퀀스 길이
+        error_lengths: Error 시퀀스 길이 (옵션)
+        training_mode: 훈련 모드
+    
+    Returns:
+        목표 길이 텐서
+    """
+    if training_mode == 'phoneme_only':
+        return phoneme_lengths.float()
+    elif training_mode == 'phoneme_error':
+        # Error 정보가 있으면 더 긴 길이를 목표로 설정
+        if error_lengths is not None:
+            return torch.max(phoneme_lengths, error_lengths).float()
+        else:
+            return phoneme_lengths.float()
+    elif training_mode == 'phoneme_error_length':
+        # Length prediction이 주요 목적이므로 phoneme 길이를 기준으로 함
+        # 하지만 error 정보가 있으면 약간의 가중치를 부여
+        if error_lengths is not None:
+            # Phoneme 길이를 기본으로 하되, error 길이가 더 길면 약간 반영
+            target_lengths = phoneme_lengths.float()
+            longer_error_mask = error_lengths > phoneme_lengths
+            target_lengths[longer_error_mask] = (
+                phoneme_lengths[longer_error_mask].float() * 0.8 + 
+                error_lengths[longer_error_mask].float() * 0.2
+            )
+            return target_lengths
+        else:
+            return phoneme_lengths.float()
+    else:
+        return phoneme_lengths.float()
+
 def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 device, epoch, scaler, gradient_accumulation=1, config=None):
+    """훈련 에폭 실행"""
     model.train()
     if config and config.wav2vec2_specaug:
         enable_wav2vec2_specaug(model, True)
-
-    length_loss_fn = SmoothL1LengthLoss()
 
     total_loss = 0.0
     error_loss_sum = 0.0
@@ -45,7 +79,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
     length_loss_sum = 0.0
     error_count = 0
     phoneme_count = 0
-    length_count = 0.0
+    length_count = 0
 
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch}')
 
@@ -53,37 +87,52 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
         if batch_data is None:
             continue
 
-        accumulated_loss = 0.0
-
+        # 배치 데이터 준비
         waveforms = batch_data['waveforms'].to(device)
         audio_lengths = batch_data['audio_lengths'].to(device)
         phoneme_labels = batch_data['phoneme_labels'].to(device)
         phoneme_lengths = batch_data['phoneme_lengths'].to(device)
 
+        # Attention mask 및 입력 길이 계산
         input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
         wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
         attention_mask = make_attn_mask(waveforms, wav_lens_norm)
 
         with torch.amp.autocast('cuda'):
+            # 모델 순전파
             outputs = model(waveforms, attention_mask=attention_mask, training_mode=config.training_mode)
 
+            # Phoneme CTC를 위한 입력 길이 조정
             phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
 
+            # Error detection 관련 데이터 준비
             error_targets = None
             error_input_lengths = None
             error_target_lengths = None
+            batch_error_lengths = None
 
             if config.has_error_component() and 'error_labels' in batch_data:
                 error_labels = batch_data['error_labels'].to(device)
-                error_lengths = batch_data['error_lengths'].to(device)
+                batch_error_lengths = batch_data['error_lengths'].to(device)
                 error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
 
-                valid_error_mask = error_lengths > 0
+                # 유효한 error 샘플들만 필터링
+                valid_error_mask = batch_error_lengths > 0
                 if valid_error_mask.any():
                     error_targets = error_labels[valid_error_mask]
                     error_input_lengths = error_input_lengths[valid_error_mask]
-                    error_target_lengths = error_lengths[valid_error_mask]
+                    error_target_lengths = batch_error_lengths[valid_error_mask]
 
+            # 길이 예측을 위한 목표 길이 계산
+            target_lengths = None
+            if config.has_length_component():
+                target_lengths = calculate_target_length(
+                    phoneme_lengths, 
+                    batch_error_lengths, 
+                    config.training_mode
+                )
+
+            # 통합 손실 계산
             loss, loss_dict = criterion(
                 outputs,
                 phoneme_targets=phoneme_labels,
@@ -91,74 +140,32 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
                 phoneme_target_lengths=phoneme_lengths,
                 error_targets=error_targets,
                 error_input_lengths=error_input_lengths,
-                error_target_lengths=error_target_lengths
+                error_target_lengths=error_target_lengths,
+                target_lengths=target_lengths
             )
 
-            if config.has_length_component():
-                os.makedirs(config.length_logs_dir, exist_ok=True)
-                length_logs_path = os.path.join(config.length_logs_dir, f'length_logs_epoch_{epoch}.json')
-
-                phoneme_logits = outputs['phoneme_logits']
-                error_logits = outputs['error_logits']
-                
-                phoneme_ctc_decoded_length = calculate_ctc_decoded_length(
-                    phoneme_logits, 
-                    phoneme_input_lengths
-                )
-                phoneme_ctc_decoded_length = torch.clamp(phoneme_ctc_decoded_length, max=80)
-                
-                error_ctc_decoded_length = calculate_ctc_decoded_length(
-                    error_logits, 
-                    error_input_lengths if error_input_lengths is not None else phoneme_input_lengths
-                )
-                error_ctc_decoded_length = torch.clamp(error_ctc_decoded_length, max=80)
-                
-                combined_ctc_decoded_length = (phoneme_ctc_decoded_length + error_ctc_decoded_length) / 2.0
-
-                length_loss = length_loss_fn(
-                    combined_ctc_decoded_length.detach(),
-                    phoneme_lengths.float()
-                )
-
-                length_loss_sum += length_loss
-                length_count += 1
-
-                phoneme_decoded_lengths = [int(s) for s in phoneme_ctc_decoded_length.tolist()]
-                error_decoded_lengths = [int(s) for s in error_ctc_decoded_length.tolist()]
-                combined_decoded_lengths = [int(s) for s in combined_ctc_decoded_length.tolist()]
-                target_lengths = phoneme_lengths.tolist()
-                length_diffs = [s - t for s, t in zip(combined_decoded_lengths, target_lengths)]
-                
-                length_dict = {
-                    'epoch_num': epoch,
-                    'batch_idx': batch_idx,
-                    'phoneme_decoded_lengths': phoneme_decoded_lengths,
-                    'error_decoded_lengths': error_decoded_lengths,
-                    'combined_decoded_lengths': combined_decoded_lengths,
-                    'target_lengths': target_lengths,
-                    'length_diffs': length_diffs
-                }
-
-                with open(length_logs_path, 'a') as f:
-                    json.dump(length_dict, f)
-                    f.write("\n")
-
-                loss = loss + (config.length_weight * length_loss)
-
+            # Gradient accumulation을 위한 손실 스케일링
             accumulated_loss = loss / gradient_accumulation
+
+            # 손실 통계 업데이트
             if 'error_loss' in loss_dict:
                 error_loss_sum += loss_dict['error_loss']
                 error_count += 1
             if 'phoneme_loss' in loss_dict:
                 phoneme_loss_sum += loss_dict['phoneme_loss']
                 phoneme_count += 1
+            if 'length_loss' in loss_dict:
+                length_loss_sum += loss_dict['length_loss']
+                length_count += 1
 
+        # 역전파
         if accumulated_loss > 0:
             if scaler:
                 scaler.scale(accumulated_loss).backward()
             else:
                 accumulated_loss.backward()
 
+        # Gradient accumulation 처리
         if (batch_idx + 1) % gradient_accumulation == 0:
             if scaler:
                 scaler.step(wav2vec_optimizer)
@@ -172,13 +179,15 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
 
             total_loss += accumulated_loss.item() * gradient_accumulation if accumulated_loss > 0 else 0
 
+        # 메모리 정리
         if (batch_idx + 1) % 100 == 0:
             torch.cuda.empty_cache()
 
+        # Progress bar 업데이트
         avg_total = total_loss / max(((batch_idx + 1) // gradient_accumulation), 1)
         avg_error = error_loss_sum / max(error_count, 1)
         avg_phoneme = phoneme_loss_sum / max(phoneme_count, 1)
-        avg_length = length_loss_sum / max(length_count, 1) if config.has_length_component() else 0
+        avg_length = length_loss_sum / max(length_count, 1) if length_count > 0 else 0
 
         progress_dict = {
             'Total': f'{avg_total:.4f}',
@@ -195,6 +204,7 @@ def train_epoch(model, dataloader, criterion, wav2vec_optimizer, main_optimizer,
     return total_loss / (len(dataloader) // gradient_accumulation)
 
 def validate_epoch(model, dataloader, criterion, device, config):
+    """검증 에폭 실행"""
     model.eval()
     enable_wav2vec2_specaug(model, False)
     total_loss = 0.0
@@ -206,34 +216,51 @@ def validate_epoch(model, dataloader, criterion, device, config):
             if batch_data is None:
                 continue
 
+            # 배치 데이터 준비
             waveforms = batch_data['waveforms'].to(device)
             audio_lengths = batch_data['audio_lengths'].to(device)
             phoneme_labels = batch_data['phoneme_labels'].to(device)
             phoneme_lengths = batch_data['phoneme_lengths'].to(device)
 
+            # Attention mask 및 입력 길이 계산
             input_lengths = get_wav2vec2_output_lengths_official(model, audio_lengths)
             wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
             attention_mask = make_attn_mask(waveforms, wav_lens_norm)
 
+            # 모델 순전파
             outputs = model(waveforms, attention_mask=attention_mask, training_mode=config.training_mode)
 
+            # Phoneme CTC를 위한 입력 길이 조정
             phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
 
+            # Error detection 관련 데이터 준비
             error_targets = None
             error_input_lengths = None
             error_target_lengths = None
+            batch_error_lengths = None
 
             if config.has_error_component() and 'error_labels' in batch_data:
                 error_labels = batch_data['error_labels'].to(device)
-                error_lengths = batch_data['error_lengths'].to(device)
+                batch_error_lengths = batch_data['error_lengths'].to(device)
                 error_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['error_logits'].size(1))
 
-                valid_error_mask = error_lengths > 0
+                # 유효한 error 샘플들만 필터링
+                valid_error_mask = batch_error_lengths > 0
                 if valid_error_mask.any():
                     error_targets = error_labels[valid_error_mask]
                     error_input_lengths = error_input_lengths[valid_error_mask]
-                    error_target_lengths = error_lengths[valid_error_mask]
+                    error_target_lengths = batch_error_lengths[valid_error_mask]
 
+            # 길이 예측을 위한 목표 길이 계산
+            target_lengths = None
+            if config.has_length_component():
+                target_lengths = calculate_target_length(
+                    phoneme_lengths, 
+                    batch_error_lengths, 
+                    config.training_mode
+                )
+
+            # 통합 손실 계산
             loss, _ = criterion(
                 outputs,
                 phoneme_targets=phoneme_labels,
@@ -241,32 +268,9 @@ def validate_epoch(model, dataloader, criterion, device, config):
                 phoneme_target_lengths=phoneme_lengths,
                 error_targets=error_targets,
                 error_input_lengths=error_input_lengths,
-                error_target_lengths=error_target_lengths
+                error_target_lengths=error_target_lengths,
+                target_lengths=target_lengths
             )
-
-            if config.has_length_component():
-                phoneme_logits = outputs['phoneme_logits']
-                error_logits = outputs['error_logits']
-                
-                phoneme_ctc_decoded_length = calculate_ctc_decoded_length(
-                    phoneme_logits, 
-                    phoneme_input_lengths
-                )
-                phoneme_ctc_decoded_length = torch.clamp(phoneme_ctc_decoded_length, max=80)
-                
-                error_ctc_decoded_length = calculate_ctc_decoded_length(
-                    error_logits, 
-                    error_input_lengths if error_input_lengths is not None else phoneme_input_lengths
-                )
-                error_ctc_decoded_length = torch.clamp(error_ctc_decoded_length, max=80)
-                
-                combined_ctc_decoded_length = (phoneme_ctc_decoded_length + error_ctc_decoded_length) / 2.0
-
-                length_loss = SmoothL1LengthLoss()(
-                    combined_ctc_decoded_length.detach(),
-                    phoneme_lengths.float()
-                )
-                loss = loss + config.length_weight * length_loss
 
             total_loss += loss.item() if loss > 0 else 0
             progress_bar.set_postfix({'Val_Loss': total_loss / (batch_idx + 1)})
@@ -275,6 +279,7 @@ def validate_epoch(model, dataloader, criterion, device, config):
     return total_loss / len(dataloader)
 
 def seed_everything(seed):
+    """시드 고정으로 재현 가능한 학습 환경 설정"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -283,6 +288,7 @@ def seed_everything(seed):
     torch.backends.cudnn.benchmark = False
 
 def save_checkpoint(model, wav2vec_opt, main_opt, epoch, val_loss, train_loss, metrics, path):
+    """체크포인트 저장"""
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -297,33 +303,35 @@ def save_checkpoint(model, wav2vec_opt, main_opt, epoch, val_loss, train_loss, m
     torch.save(checkpoint, path)
 
 def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, device):
-    logger.info(f"Loading checkpoint from {checkpoint_path}")
+    """체크포인트 로드"""
+    logger.info(f"체크포인트 로딩: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     wav2vec_optimizer.load_state_dict(checkpoint['wav2vec_optimizer_state_dict'])
     main_optimizer.load_state_dict(checkpoint['main_optimizer_state_dict'])
     start_epoch = checkpoint['epoch'] + 1
     best_metrics = checkpoint.get('metrics', {})
-    logger.info(f"Resumed from epoch {checkpoint['epoch']}")
+    logger.info(f"에폭 {checkpoint['epoch']}에서 재개")
     if 'saved_time' in checkpoint:
-        logger.info(f"Checkpoint saved at: {checkpoint['saved_time']}")
-    logger.info(f"Previous metrics: {best_metrics}")
+        logger.info(f"체크포인트 저장 시점: {checkpoint['saved_time']}")
+    logger.info(f"이전 메트릭: {best_metrics}")
     return start_epoch, best_metrics
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--training_mode', type=str, choices=['phoneme_only', 'phoneme_error', 'phoneme_error_length'], help='Training mode')
-    parser.add_argument('--model_type', type=str, choices=['simple', 'transformer'], help='Model architecture')
-    parser.add_argument('--config', type=str, help='Override config values in format key=value')
-    parser.add_argument('--train_data', type=str, help='Override train data path')
-    parser.add_argument('--val_data', type=str, help='Override validation data path')
-    parser.add_argument('--eval_data', type=str, help='Override evaluation data path')
-    parser.add_argument('--phoneme_map', type=str, help='Override phoneme map path')
-    parser.add_argument('--output_dir', type=str, help='Override output directory')
-    parser.add_argument('--resume', type=str, help='Resume training from checkpoint path')
-    parser.add_argument('--experiment_name', type=str, help='Override experiment name')
+    parser.add_argument('--training_mode', type=str, choices=['phoneme_only', 'phoneme_error', 'phoneme_error_length'], help='훈련 모드')
+    parser.add_argument('--model_type', type=str, choices=['simple', 'transformer'], help='모델 아키텍처')
+    parser.add_argument('--config', type=str, help='config 값 오버라이드 (key=value 형식)')
+    parser.add_argument('--train_data', type=str, help='훈련 데이터 경로 오버라이드')
+    parser.add_argument('--val_data', type=str, help='검증 데이터 경로 오버라이드')
+    parser.add_argument('--eval_data', type=str, help='평가 데이터 경로 오버라이드')
+    parser.add_argument('--phoneme_map', type=str, help='음소 맵 경로 오버라이드')
+    parser.add_argument('--output_dir', type=str, help='출력 디렉토리 오버라이드')
+    parser.add_argument('--resume', type=str, help='체크포인트에서 훈련 재개')
+    parser.add_argument('--experiment_name', type=str, help='실험 이름 오버라이드')
     args = parser.parse_args()
 
+    # 설정 로드 및 오버라이드
     config = Config()
 
     if args.training_mode:
@@ -341,10 +349,11 @@ def main():
     if args.output_dir:
         config.output_dir = args.output_dir
 
+    # 체크포인트에서 재개하는 경우 모델 타입 자동 감지
     if args.resume:
         detected_model_type = detect_model_type_from_checkpoint(args.resume)
         config.model_type = detected_model_type
-        logger.info(f"Auto-detected model type from checkpoint: {detected_model_type}")
+        logger.info(f"체크포인트에서 모델 타입 자동 감지: {detected_model_type}")
 
     if args.experiment_name:
         config.experiment_name = args.experiment_name
@@ -352,6 +361,7 @@ def main():
         resume_exp_dir = os.path.dirname(os.path.dirname(args.resume))
         config.experiment_name = os.path.basename(resume_exp_dir)
 
+    # 추가 설정 오버라이드
     if args.config:
         for override in args.config.split(','):
             key, value = override.split('=')
@@ -364,14 +374,17 @@ def main():
 
     config.__post_init__()
 
+    # 실험 환경 설정
     seed_everything(config.seed)
     setup_experiment_dirs(config, resume=bool(args.resume))
 
+    # 음소 맵 로드
     with open(config.phoneme_map, 'r') as f:
         phoneme_to_id = json.load(f)
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     error_type_names = {0: 'blank', 1: 'incorrect', 2: 'correct'}
 
+    # 모델 및 손실 함수 초기화
     model_class, loss_class = get_model_class(config.model_type)
     model = model_class(
         pretrained_model_name=config.pretrained_model,
@@ -380,19 +393,25 @@ def main():
         **config.get_model_config()
     )
 
+    # 멀티 GPU 지원
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
 
     model = model.to(config.device)
 
+    # 손실 함수 설정 (길이 손실 포함)
     criterion = loss_class(
         training_mode=config.training_mode,
         error_weight=config.error_weight,
         phoneme_weight=config.phoneme_weight,
+        length_weight=config.length_weight,
         focal_alpha=config.focal_alpha,
-        focal_gamma=config.focal_gamma
+        focal_gamma=config.focal_gamma,
+        length_loss_type='smooth_l1',  # 길이 손실 타입
+        length_beta=1.0  # SmoothL1Loss beta 파라미터
     )
 
+    # 옵티마이저 설정 (차별적 학습률)
     wav2vec_params = []
     main_params = []
     for name, param in model.named_parameters():
@@ -404,8 +423,10 @@ def main():
     wav2vec_optimizer = optim.AdamW(wav2vec_params, lr=config.wav2vec_lr)
     main_optimizer = optim.AdamW(main_params, lr=config.main_lr)
 
+    # Mixed precision 학습을 위한 스케일러
     scaler = torch.amp.GradScaler('cuda')
 
+    # 데이터셋 및 데이터로더 설정
     train_dataset = UnifiedDataset(
         config.train_data, phoneme_to_id,
         training_mode=config.training_mode,
@@ -440,11 +461,13 @@ def main():
         collate_fn=lambda batch: collate_fn(batch, training_mode=config.training_mode)
     )
 
+    # 최적 성능 추적 변수들
     best_val_loss = float('inf')
     best_error_accuracy = 0.0
     best_phoneme_accuracy = 0.0
     start_epoch = 1
 
+    # 체크포인트에서 재개
     if args.resume:
         start_epoch, resume_metrics = load_checkpoint(
             args.resume, model, wav2vec_optimizer, main_optimizer, config.device
@@ -457,36 +480,41 @@ def main():
         if 'val_loss' in checkpoint:
             best_val_loss = checkpoint['val_loss']
         logger.info("=" * 50)
-        logger.info("RESUMING TRAINING")
+        logger.info("훈련 재개")
         logger.info("=" * 50)
-        logger.info(f"Training mode: {config.training_mode}")
-        logger.info(f"Resuming from epoch {start_epoch}")
-        logger.info(f"Best error accuracy so far: {best_error_accuracy:.4f}")
-        logger.info(f"Best phoneme accuracy so far: {best_phoneme_accuracy:.4f}")
-        logger.info(f"Best validation loss so far: {best_val_loss:.4f}")
+        logger.info(f"훈련 모드: {config.training_mode}")
+        logger.info(f"에폭 {start_epoch}에서 재개")
+        logger.info(f"현재까지 최고 에러 정확도: {best_error_accuracy:.4f}")
+        logger.info(f"현재까지 최고 음소 정확도: {best_phoneme_accuracy:.4f}")
+        logger.info(f"현재까지 최고 검증 손실: {best_val_loss:.4f}")
         logger.info("=" * 50)
     else:
-        logger.info(f"Starting training with training mode: {config.training_mode}")
-        logger.info(f"Model type: {config.model_type}")
-        logger.info(f"Experiment: {config.experiment_name}")
-        logger.info(f"Starting training for {config.num_epochs} epochs")
-        logger.info(f"SpecAugment enabled: {config.wav2vec2_specaug}")
-        logger.info(f"Length Loss enabled: {config.has_length_component()}")
-        logger.info(f"Error Detection enabled: {config.has_error_component()}")
-        logger.info(f"Using Focal Loss with default parameters")
+        logger.info(f"훈련 모드로 학습 시작: {config.training_mode}")
+        logger.info(f"모델 타입: {config.model_type}")
+        logger.info(f"실험명: {config.experiment_name}")
+        logger.info(f"{config.num_epochs} 에폭 동안 훈련 시작")
+        logger.info(f"SpecAugment 활성화: {config.wav2vec2_specaug}")
+        logger.info(f"길이 손실 활성화: {config.has_length_component()}")
+        logger.info(f"에러 감지 활성화: {config.has_error_component()}")
+        logger.info(f"Focal Loss 사용 (기본 파라미터)")
         if config.has_length_component():
-            logger.info(f"Length penalty uses average of phoneme and error decoded lengths")
+            logger.info(f"길이 예측 헤드를 통한 직접적인 길이 학습")
 
+    # 메인 훈련 루프
     for epoch in range(start_epoch, config.num_epochs + 1):
+        # 훈련
         train_loss = train_epoch(
             model, train_dataloader, criterion, wav2vec_optimizer, main_optimizer,
             config.device, epoch, scaler, config.gradient_accumulation, config
         )
+        
+        # 검증
         val_loss = validate_epoch(model, val_dataloader, criterion, config.device, config)
-        logger.info(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        logger.info(f"에폭 {epoch}: 훈련 손실: {train_loss:.4f}, 검증 손실: {val_loss:.4f}")
 
-        if True:
-            logger.info(f"Epoch {epoch} - Sample Predictions")
+        # 샘플 예측 출력
+        if True:  # 매 에폭마다 샘플 예측 확인
+            logger.info(f"에폭 {epoch} - 샘플 예측")
             logger.info("=" * 50)
             show_sample_predictions(
                 model=model,
@@ -498,7 +526,8 @@ def main():
                 error_type_names=error_type_names
             )
 
-        logger.info(f"Epoch {epoch}: Evaluating phoneme recognition...")
+        # 음소 인식 성능 평가
+        logger.info(f"에폭 {epoch}: 음소 인식 평가 중...")
         phoneme_recognition_results = evaluate_phoneme_recognition(
             model=model,
             dataloader=eval_dataloader,
@@ -506,14 +535,15 @@ def main():
             training_mode=config.training_mode,
             id_to_phoneme=id_to_phoneme
         )
-        logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
-        logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
+        logger.info(f"음소 에러율 (PER): {phoneme_recognition_results['per']:.4f}")
+        logger.info(f"음소 정확도: {1.0 - phoneme_recognition_results['per']:.4f}")
 
         current_phoneme_accuracy = 1.0 - phoneme_recognition_results['per']
         current_error_accuracy = 0.0
 
+        # 에러 감지 성능 평가 (필요한 경우)
         if config.has_error_component():
-            logger.info(f"Epoch {epoch}: Evaluating error detection...")
+            logger.info(f"에폭 {epoch}: 에러 감지 평가 중...")
             error_detection_results = evaluate_error_detection(
                 model=model,
                 dataloader=eval_dataloader,
@@ -521,13 +551,14 @@ def main():
                 training_mode=config.training_mode,
                 error_type_names=error_type_names
             )
-            logger.info(f"Error Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
-            logger.info(f"Error Weighted F1: {error_detection_results['weighted_f1']:.4f}")
+            logger.info(f"에러 토큰 정확도: {error_detection_results['token_accuracy']:.4f}")
+            logger.info(f"에러 가중 F1: {error_detection_results['weighted_f1']:.4f}")
             for error_type, metrics in error_detection_results['class_metrics'].items():
                 if error_type != 'blank':
-                    logger.info(f"  {error_type}: Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1']:.4f}")
+                    logger.info(f"  {error_type}: 정밀도={metrics['precision']:.4f}, 재현율={metrics['recall']:.4f}, F1={metrics['f1']:.4f}")
             current_error_accuracy = error_detection_results['token_accuracy']
 
+        # 최적 모델 저장
         if config.save_best_error and current_error_accuracy > best_error_accuracy:
             best_error_accuracy = current_error_accuracy
             metrics = {
@@ -538,7 +569,7 @@ def main():
             model_path = os.path.join(config.output_dir, 'best_error.pth')
             save_checkpoint(model, wav2vec_optimizer, main_optimizer,
                           epoch, val_loss, train_loss, metrics, model_path)
-            logger.info(f"New best error accuracy: {best_error_accuracy:.4f}")
+            logger.info(f"새로운 최고 에러 정확도: {best_error_accuracy:.4f}")
 
         if config.save_best_phoneme and current_phoneme_accuracy > best_phoneme_accuracy:
             best_phoneme_accuracy = current_phoneme_accuracy
@@ -550,7 +581,7 @@ def main():
             model_path = os.path.join(config.output_dir, 'best_phoneme.pth')
             save_checkpoint(model, wav2vec_optimizer, main_optimizer,
                           epoch, val_loss, train_loss, metrics, model_path)
-            logger.info(f"New best phoneme accuracy: {best_phoneme_accuracy:.4f} (PER: {phoneme_recognition_results['per']:.4f})")
+            logger.info(f"새로운 최고 음소 정확도: {best_phoneme_accuracy:.4f} (PER: {phoneme_recognition_results['per']:.4f})")
 
         if config.save_best_loss and val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -562,8 +593,9 @@ def main():
             model_path = os.path.join(config.output_dir, 'best_loss.pth')
             save_checkpoint(model, wav2vec_optimizer, main_optimizer,
                           epoch, val_loss, train_loss, metrics, model_path)
-            logger.info(f"New best validation loss: {best_val_loss:.4f}")
+            logger.info(f"새로운 최고 검증 손실: {best_val_loss:.4f}")
 
+        # 최신 체크포인트 저장
         latest_metrics = {
             'error_accuracy': best_error_accuracy,
             'phoneme_accuracy': best_phoneme_accuracy,
@@ -573,9 +605,11 @@ def main():
         save_checkpoint(model, wav2vec_optimizer, main_optimizer,
                       epoch, val_loss, train_loss, latest_metrics, latest_path)
 
+        # 메모리 정리
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # 훈련 완료 후 최종 메트릭 저장
     final_metrics = {
         'best_error_accuracy': best_error_accuracy,
         'best_phoneme_accuracy': best_phoneme_accuracy,
@@ -589,11 +623,11 @@ def main():
     with open(metrics_path, 'w') as f:
         json.dump(final_metrics, f, indent=2)
 
-    logger.info("Training completed!")
-    logger.info(f"Training mode: {config.training_mode}")
-    logger.info(f"Best Error Accuracy: {best_error_accuracy:.4f}")
-    logger.info(f"Best Phoneme Accuracy: {best_phoneme_accuracy:.4f}")
-    logger.info(f"Final metrics saved to: {metrics_path}")
+    logger.info("훈련 완료!")
+    logger.info(f"훈련 모드: {config.training_mode}")
+    logger.info(f"최고 에러 정확도: {best_error_accuracy:.4f}")
+    logger.info(f"최고 음소 정확도: {best_phoneme_accuracy:.4f}")
+    logger.info(f"최종 메트릭 저장 위치: {metrics_path}")
 
 if __name__ == "__main__":
     main()

@@ -1,8 +1,9 @@
 from .model import UnifiedModel
-from .loss_functions import UnifiedLoss, SmoothL1LengthLoss, FocalCTCLoss
+from .loss_functions import UnifiedLoss, FocalCTCLoss, LengthRegressionLoss
 from .utils_models import (
     ErrorDetectionHead,
     PhonemeRecognitionHead,
+    LengthPredictionHead,
     Wav2VecEncoder,
     SimpleEncoder,
     TransformerEncoder
@@ -11,10 +12,11 @@ from .utils_models import (
 __all__ = [
     'UnifiedModel',
     'UnifiedLoss',
-    'SmoothL1LengthLoss',
     'FocalCTCLoss',
+    'LengthRegressionLoss',
     'ErrorDetectionHead',
     'PhonemeRecognitionHead',
+    'LengthPredictionHead',
     'Wav2VecEncoder',
     'SimpleEncoder',
     'TransformerEncoder'
