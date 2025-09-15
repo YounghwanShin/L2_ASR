@@ -4,7 +4,6 @@ from datetime import datetime
 from dataclasses import dataclass
 from pytz import timezone
 
-
 @dataclass
 class Config:
     """모델 훈련 및 평가를 위한 설정 클래스"""
@@ -53,13 +52,13 @@ class Config:
     seed = 42
 
     # 디렉토리 및 파일 경로
-    base_experiment_dir = "experiments"
+    base_experiment_dir = "../shared/experiments"
     experiment_name = None
 
-    train_data = "../shared/data/train_labels.json"
-    val_data = "../shared/data/val_labels.json"
-    eval_data = "../shared/data/test_labels.json"
-    phoneme_map = "../shared/data/phoneme_map.json"
+    train_data = "data/train_labels.json"
+    val_data = "data/val_labels.json"
+    eval_data = "data/test_labels.json"
+    phoneme_map = "data/phoneme_map.json"
 
     device = "cuda"
 

@@ -1,0 +1,64 @@
+# PyTorch와 관련 라이브러리
+torch>=1.12.0
+torchaudio>=0.12.0
+torchvision>=0.13.0
+
+# Transformers 라이브러리
+transformers>=4.20.0
+
+# 데이터 처리
+numpy>=1.21.0
+pandas>=1.4.0
+scipy>=1.8.0
+
+# 머신러닝
+scikit-learn>=1.1.0
+
+# 오디오 처리
+librosa>=0.9.0
+soundfile>=0.10.0
+
+# 프로그레스 바
+tqdm>=4.64.0
+
+# 시간대 처리
+pytz>=2022.1
+
+# JSON 처리 (기본 라이브러리)
+# json (내장)
+
+# 로깅 (기본 라이브러리)
+# logging (내장)
+
+# 경로 처리 (기본 라이브러리)
+# os (내장)
+# pathlib (내장)
+
+# 수학적 연산
+# math (내장)
+# random (내장)
+
+# 데이터 타입
+# typing (내장)
+# dataclasses (내장)
+
+# 날짜 시간
+# datetime (내장)
+
+# 정규 표현식
+# re (내장)
+
+# 선택적 의존성 (개발 및 평가용)
+jupyter>=1.0.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+tensorboard>=2.8.0
+
+# 코드 품질
+flake8>=4.0.0
+black>=22.0.0
+isort>=5.10.0
+
+# 테스트
+pytest>=7.0.0
+pytest-cov>=3.0.0
