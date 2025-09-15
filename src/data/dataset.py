@@ -3,9 +3,28 @@ import json
 import torchaudio
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from typing import Dict, List, Optional
+
 
 class UnifiedDataset(Dataset):
-    def __init__(self, json_path, phoneme_to_id, training_mode, max_length=None, sampling_rate=16000, device='cuda'):
+    """통합 음성 데이터셋 클래스"""
+    
+    def __init__(self, 
+                 json_path: str, 
+                 phoneme_to_id: Dict[str, int], 
+                 training_mode: str,
+                 max_length: Optional[int] = None, 
+                 sampling_rate: int = 16000, 
+                 device: str = 'cuda'):
+        """
+        Args:
+            json_path: 데이터 JSON 파일 경로
+            phoneme_to_id: 음소-ID 매핑 딕셔너리
+            training_mode: 훈련 모드 ('phoneme_only', 'phoneme_error', 'phoneme_error_length')
+            max_length: 최대 오디오 길이 (샘플 단위)
+            sampling_rate: 샘플링 레이트
+            device: 디바이스 ('cuda' or 'cpu')
+        """
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
 
@@ -15,26 +34,38 @@ class UnifiedDataset(Dataset):
         self.sampling_rate = sampling_rate
         self.max_length = max_length
         self.device = device
-        self.error_mapping = {'C': 2, 'I': 1}
+        
+        # 새로운 에러 라벨 매핑
+        self.error_mapping = {
+            'D': 1,  # Deletion
+            'I': 2,  # Insertion
+            'S': 3,  # Substitution
+            'C': 4   # Correct
+        }
 
         self.valid_files = []
+        self._filter_valid_files()
+
+        if self.max_length:
+            self._filter_by_length()
+
+    def _filter_valid_files(self):
+        """유효한 파일들을 필터링합니다."""
         for wav_file in self.wav_files:
             item = self.data[wav_file]
             has_error_labels = 'error_labels' in item and item['error_labels'] and item['error_labels'].strip()
             has_phoneme_labels = 'perceived_train_target' in item and item['perceived_train_target'] and item['perceived_train_target'].strip()
 
-            if training_mode == 'phoneme_only' and has_phoneme_labels:
+            if self.training_mode == 'phoneme_only' and has_phoneme_labels:
                 self.valid_files.append(wav_file)
-            elif training_mode in ['phoneme_error', 'phoneme_error_length']:
+            elif self.training_mode in ['phoneme_error', 'phoneme_error_length']:
                 if has_phoneme_labels or has_error_labels:
                     self.valid_files.append(wav_file)
             else:
                 self.valid_files.append(wav_file)
 
-        if self.max_length:
-            self._filter_by_length()
-
     def _filter_by_length(self):
+        """오디오 길이로 파일들을 필터링합니다."""
         filtered_files = []
         excluded_count = 0
         resamplers_cache = {}
@@ -76,7 +107,8 @@ class UnifiedDataset(Dataset):
     def __len__(self):
         return len(self.valid_files)
 
-    def load_waveform(self, wav_file):
+    def load_waveform(self, wav_file: str) -> torch.Tensor:
+        """오디오 파일을 로드하고 전처리합니다."""
         waveform, sample_rate = torchaudio.load(wav_file)
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
@@ -87,7 +119,8 @@ class UnifiedDataset(Dataset):
 
         return waveform.squeeze(0)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Dict:
+        """데이터셋의 단일 아이템을 반환합니다."""
         wav_file = self.valid_files[idx]
         item = self.data[wav_file]
 
@@ -98,8 +131,9 @@ class UnifiedDataset(Dataset):
             'wav_file': wav_file
         }
 
+        # 음소 라벨 처리
         perceived = item.get('perceived_train_target', '')
-        canonical = item.get('canonical_aligned', '')
+        canonical = item.get('canonical_train_target', '')
 
         if perceived and perceived.strip():
             perceived_tokens = perceived.split()
@@ -123,6 +157,7 @@ class UnifiedDataset(Dataset):
 
         result['canonical_length'] = torch.tensor(len(result['canonical_labels']))
 
+        # 에러 라벨 처리
         if self.training_mode in ['phoneme_error', 'phoneme_error_length']:
             errors = item.get('error_labels', '')
             if errors and errors.strip():
@@ -138,12 +173,15 @@ class UnifiedDataset(Dataset):
 
         return result
 
-def collate_fn(batch, training_mode='phoneme_only'):
+
+def collate_fn(batch: List[Dict], training_mode: str = 'phoneme_only') -> Optional[Dict]:
+    """배치 데이터를 콜레이션합니다."""
     valid_samples = [item for item in batch if item['phoneme_labels'] is not None and len(item['phoneme_labels']) > 0]
 
     if not valid_samples:
         return None
 
+    # 오디오 데이터 패딩
     waveforms = [sample['waveform'] for sample in valid_samples]
     max_len = max(waveform.shape[0] for waveform in waveforms)
     padded_waveforms = torch.stack([
@@ -158,6 +196,7 @@ def collate_fn(batch, training_mode='phoneme_only'):
         'spk_ids': [sample['spk_id'] for sample in valid_samples]
     }
 
+    # 음소 라벨 패딩
     phoneme_labels = [sample['phoneme_labels'] for sample in valid_samples]
     if phoneme_labels and all(len(l) > 0 for l in phoneme_labels):
         max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
@@ -170,6 +209,7 @@ def collate_fn(batch, training_mode='phoneme_only'):
 
     result['phoneme_lengths'] = torch.tensor([sample['phoneme_length'] for sample in valid_samples])
 
+    # 정규 음소 라벨 패딩
     canonical_labels = [sample.get('canonical_labels', torch.tensor([], dtype=torch.long)) for sample in valid_samples]
     valid_canonical = [l for l in canonical_labels if len(l) > 0]
 
@@ -192,6 +232,7 @@ def collate_fn(batch, training_mode='phoneme_only'):
         result['canonical_labels'] = torch.stack(padded_canonical)
         result['canonical_lengths'] = torch.tensor(canonical_lengths)
 
+    # 에러 라벨 패딩
     if training_mode in ['phoneme_error', 'phoneme_error_length']:
         error_labels = [sample.get('error_labels', torch.tensor([], dtype=torch.long)) for sample in valid_samples]
         valid_error_labels = [l for l in error_labels if len(l) > 0]
