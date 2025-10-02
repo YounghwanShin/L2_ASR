@@ -11,7 +11,7 @@ class Config:
     # 모델 설정
     pretrained_model = "facebook/wav2vec2-large-xlsr-53"
     sampling_rate = 16000
-    max_length = 160000
+    max_length = 140000
 
     # 출력 차원 설정
     num_phonemes = 42
@@ -26,7 +26,7 @@ class Config:
     # 훈련 하이퍼파라미터
     batch_size = 16
     eval_batch_size = 16
-    num_epochs = 50
+    num_epochs = 100
     gradient_accumulation = 2
 
     # 학습률 설정

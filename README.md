@@ -74,7 +74,7 @@ python train.py \
 ### 훈련 재개
 
 ```bash
-python train.py --resume experiments/my_experiment/checkpoints/latest.pth
+python train.py --resume ../shared/experiments/phoneme_error_transformer0406_20250915154806/checkpoints/latest.pth
 ```
 
 ## 평가
