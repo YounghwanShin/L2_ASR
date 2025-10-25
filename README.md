@@ -33,6 +33,11 @@ pip install -r requirements.txt
 Preprocess your data before training:
 
 ```bash
+chmod +x download_dataset.sh
+./download_dataset.sh
+```
+
+```bash
 python data_preprocessing.py
 ```
 
