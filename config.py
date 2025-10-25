@@ -1,57 +1,88 @@
+"""Configuration module for L2 pronunciation assessment model training and evaluation.
+
+This module defines the configuration class that manages all hyperparameters,
+model settings, and paths for the unified pronunciation assessment system.
+"""
+
 import os
 import json
 from datetime import datetime
 from dataclasses import dataclass
 from pytz import timezone
 
+
 @dataclass
 class Config:
-    """모델 훈련 및 평가를 위한 설정 클래스"""
+    """Configuration class for model training and evaluation.
     
-    # 모델 설정
+    Attributes:
+        pretrained_model: Name of the pretrained Wav2Vec2 model.
+        sampling_rate: Audio sampling rate in Hz.
+        max_length: Maximum audio length in samples.
+        num_phonemes: Number of phoneme classes.
+        num_error_types: Number of error types (blank, D, I, S, C).
+        training_mode: Training mode ('phoneme_only' or 'phoneme_error').
+        model_type: Model architecture type ('simple' or 'transformer').
+        batch_size: Training batch size.
+        eval_batch_size: Evaluation batch size.
+        num_epochs: Number of training epochs.
+        gradient_accumulation: Number of gradient accumulation steps.
+        main_lr: Learning rate for main model parameters.
+        wav2vec_lr: Learning rate for Wav2Vec2 parameters.
+        error_weight: Weight for error detection loss.
+        phoneme_weight: Weight for phoneme recognition loss.
+        focal_alpha: Alpha parameter for Focal Loss.
+        focal_gamma: Gamma parameter for Focal Loss.
+        save_best_error: Whether to save best error detection checkpoint.
+        save_best_phoneme: Whether to save best phoneme recognition checkpoint.
+        save_best_loss: Whether to save best validation loss checkpoint.
+        wav2vec2_specaug: Whether to use SpecAugment.
+        seed: Random seed for reproducibility.
+    """
+    
+    # Model configuration
     pretrained_model = "facebook/wav2vec2-large-xlsr-53"
     sampling_rate = 16000
     max_length = 140000
 
-    # 출력 차원 설정
+    # Output dimensions
     num_phonemes = 42
     num_error_types = 5  # blank(0), D(1), I(2), S(3), C(4)
 
-    # 훈련 모드: 'phoneme_only', 'phoneme_error', 'phoneme_error_length'
+    # Training mode: 'phoneme_only' or 'phoneme_error'
     training_mode = 'phoneme_error'
 
-    # 모델 아키텍처: 'simple' or 'transformer'
+    # Model architecture: 'simple' or 'transformer'
     model_type = 'transformer'
 
-    # 훈련 하이퍼파라미터
+    # Training hyperparameters
     batch_size = 16
     eval_batch_size = 16
     num_epochs = 100
     gradient_accumulation = 2
 
-    # 학습률 설정
+    # Learning rates
     main_lr = 3e-4
     wav2vec_lr = 1e-5
 
-    # 손실 함수 가중치 (error + phoneme = 1.0 for multitask, length separate)
+    # Loss weights (error_weight + phoneme_weight = 1.0 for multitask learning)
     error_weight = 0.4
     phoneme_weight = 0.6
-    length_weight = 1.0
 
-    # Focal Loss 파라미터
+    # Focal Loss parameters
     focal_alpha = 0.25
     focal_gamma = 2.0
 
-    # 체크포인트 저장 옵션
+    # Checkpoint saving options
     save_best_error = True
     save_best_phoneme = True
     save_best_loss = True
 
-    # 기타 설정
+    # Other settings
     wav2vec2_specaug = True
     seed = 42
 
-    # 디렉토리 및 파일 경로
+    # Directory and file paths
     base_experiment_dir = "../shared/experiments"
     experiment_name = None
 
@@ -62,7 +93,7 @@ class Config:
 
     device = "cuda"
 
-    # 모델 설정
+    # Model architecture configurations
     model_configs = {
         'simple': {
             'hidden_dim': 1024,
@@ -77,13 +108,17 @@ class Config:
     }
 
     def __post_init__(self):
-        """초기화 후 처리"""
+        """Post-initialization processing.
+        
+        Validates weights and generates experiment name based on training mode
+        and model type.
+        """
         self._validate_weights()
 
         if self.experiment_name is None or not hasattr(self, '_last_model_type') or self._last_model_type != self.model_type:
             current_date = datetime.now(timezone('Asia/Seoul')).strftime('%Y%m%d%H%M%S')
 
-            # 훈련 모드와 모델 타입에 따른 실험명 생성
+            # Generate experiment name based on training mode and model type
             if self.training_mode == 'phoneme_only':
                 model_prefix = f'phoneme_{self.model_type}'
                 self.experiment_name = f"{model_prefix}_{current_date}"
@@ -92,29 +127,27 @@ class Config:
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
                 phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
                 self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_{current_date}"
-            elif self.training_mode == 'phoneme_error_length':
-                model_prefix = f'phoneme_error_length_{self.model_type}'
-                error_ratio = str(int(self.error_weight * 10)).zfill(2)
-                phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
-                length_ratio = str(int(self.length_weight * 100)).zfill(2)
-                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}l{length_ratio}_{current_date}"
 
             self._last_model_type = self.model_type
 
-        # 디렉토리 경로 설정
+        # Set directory paths
         self.experiment_dir = os.path.join(self.base_experiment_dir, self.experiment_name)
         self.checkpoint_dir = os.path.join(self.experiment_dir, 'checkpoints')
-        self.length_logs_dir = os.path.join(self.experiment_dir, 'length_logs')
         self.log_dir = os.path.join(self.experiment_dir, 'logs')
         self.result_dir = os.path.join(self.experiment_dir, 'results')
         self.output_dir = self.checkpoint_dir
 
     def _validate_weights(self):
-        """가중치 유효성 검사 및 정규화"""
+        """Validates and normalizes loss weights.
+        
+        For multitask learning (phoneme_error mode), ensures that phoneme_weight
+        and error_weight sum to 1.0.
+        """
         if self.training_mode == 'phoneme_only':
+            # No weight validation needed for single-task learning
             pass
-        elif self.training_mode in ['phoneme_error', 'phoneme_error_length']:
-            # phoneme_weight + error_weight should equal 1.0
+        elif self.training_mode == 'phoneme_error':
+            # Validate that weights sum to 1.0 for multitask learning
             total = self.phoneme_weight + self.error_weight
             if abs(total - 1.0) > 1e-6:
                 print(f"Warning: phoneme_weight ({self.phoneme_weight}) + error_weight ({self.error_weight}) = {total} != 1.0")
@@ -122,25 +155,32 @@ class Config:
                 self.phoneme_weight = self.phoneme_weight / total
                 self.error_weight = self.error_weight / total
                 print(f"Normalized weights: phoneme_weight={self.phoneme_weight:.3f}, error_weight={self.error_weight:.3f}")
-                if self.training_mode == 'phoneme_error_length':
-                    print(f"Length weight (separate penalty): {self.length_weight:.3f}")
 
     def get_model_config(self):
-        """모델 설정을 반환하며 use_transformer 플래그를 설정합니다."""
+        """Returns model configuration with transformer flag.
+        
+        Returns:
+            dict: Model configuration including architecture-specific parameters
+                and use_transformer flag.
+        """
         config = self.model_configs.get(self.model_type, self.model_configs['simple']).copy()
         config['use_transformer'] = (self.model_type == 'transformer')
         return config
 
     def has_error_component(self):
-        """현재 훈련 모드에 에러 탐지가 포함되어 있는지 확인합니다."""
-        return self.training_mode in ['phoneme_error', 'phoneme_error_length']
-
-    def has_length_component(self):
-        """현재 훈련 모드에 길이 손실이 포함되어 있는지 확인합니다."""
-        return self.training_mode == 'phoneme_error_length'
+        """Checks if current training mode includes error detection.
+        
+        Returns:
+            bool: True if training mode includes error detection, False otherwise.
+        """
+        return self.training_mode == 'phoneme_error'
 
     def save_config(self, path):
-        """설정을 JSON 파일로 저장합니다."""
+        """Saves configuration to JSON file.
+        
+        Args:
+            path: Path where configuration will be saved.
+        """
         config_dict = {
             attr: getattr(self, attr) for attr in dir(self)
             if not attr.startswith('_') and not callable(getattr(self, attr))
@@ -149,7 +189,11 @@ class Config:
             json.dump(config_dict, f, indent=2)
 
     def get_error_mapping(self):
-        """에러 라벨 매핑을 반환합니다."""
+        """Returns error label mapping.
+        
+        Returns:
+            dict: Mapping from error type strings to integer indices.
+        """
         return {
             'blank': 0,
             'D': 1,  # Deletion
@@ -159,7 +203,11 @@ class Config:
         }
 
     def get_error_type_names(self):
-        """에러 타입 이름 매핑을 반환합니다."""
+        """Returns error type name mapping.
+        
+        Returns:
+            dict: Mapping from integer indices to error type names.
+        """
         return {
             0: 'blank',
             1: 'deletion',

@@ -1,15 +1,29 @@
+"""Encoder architectures for pronunciation assessment model.
+
+This module implements various encoder architectures including Wav2Vec2,
+simple feed-forward, and Transformer-based encoders.
+"""
+
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import Wav2Vec2Model, Wav2Vec2Config
 
 
 class Wav2VecEncoder(nn.Module):
-    """Wav2Vec2 기반 오디오 인코더"""
+    """Wav2Vec2-based audio encoder.
+    
+    Uses pretrained Wav2Vec2 model for robust audio feature extraction.
+    Masking is disabled to provide consistent features during training and inference.
+    
+    Attributes:
+        wav2vec2: Pretrained Wav2Vec2 model.
+    """
     
     def __init__(self, pretrained_model_name: str = "facebook/wav2vec2-large-xlsr-53"):
-        """
+        """Initializes the Wav2Vec2 encoder.
+        
         Args:
-            pretrained_model_name: 사용할 Wav2Vec2 사전훈련 모델명
+            pretrained_model_name: Name of pretrained Wav2Vec2 model to use.
         """
         super().__init__()
         config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
@@ -18,20 +32,39 @@ class Wav2VecEncoder(nn.Module):
         self.wav2vec2 = Wav2Vec2Model.from_pretrained(pretrained_model_name, config=config)
 
     def forward(self, x, attention_mask=None):
-        """Wav2Vec2 인코딩 수행"""
+        """Performs Wav2Vec2 encoding.
+        
+        Args:
+            x: Input audio waveform [batch_size, seq_len].
+            attention_mask: Attention mask for padding [batch_size, seq_len].
+            
+        Returns:
+            Encoded features [batch_size, seq_len, hidden_dim].
+        """
         outputs = self.wav2vec2(x, attention_mask=attention_mask)
         return outputs.last_hidden_state
 
 
 class SimpleEncoder(nn.Module):
-    """간단한 피드포워드 인코더"""
+    """Simple feed-forward encoder.
+    
+    Uses two linear layers with ReLU activation and layer normalization
+    for feature transformation.
+    
+    Attributes:
+        linear1: First linear transformation.
+        linear2: Second linear transformation.
+        layer_norm: Layer normalization.
+        dropout: Dropout layer.
+    """
     
     def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.1):
-        """
+        """Initializes the simple encoder.
+        
         Args:
-            input_dim: 입력 차원
-            hidden_dim: 은닉층 차원
-            dropout: 드롭아웃 비율
+            input_dim: Input feature dimension.
+            hidden_dim: Hidden layer dimension.
+            dropout: Dropout rate.
         """
         super().__init__()
         self.linear1 = nn.Linear(input_dim, hidden_dim)
@@ -40,7 +73,14 @@ class SimpleEncoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        """간단한 인코딩 수행"""
+        """Performs simple encoding.
+        
+        Args:
+            x: Input features [batch_size, seq_len, input_dim].
+            
+        Returns:
+            Encoded features [batch_size, seq_len, hidden_dim].
+        """
         x = F.relu(self.linear1(x))
         x = self.dropout(x)
         x = self.linear2(x)
@@ -48,7 +88,17 @@ class SimpleEncoder(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    """Transformer 기반 인코더"""
+    """Transformer-based encoder.
+    
+    Uses multi-head self-attention and feed-forward layers for
+    contextual feature enhancement.
+    
+    Attributes:
+        input_projection: Projects input to hidden dimension.
+        transformer: Transformer encoder layers.
+        layer_norm: Layer normalization.
+        dropout: Dropout layer.
+    """
     
     def __init__(self, 
                  input_dim: int, 
@@ -56,13 +106,14 @@ class TransformerEncoder(nn.Module):
                  num_layers: int = 2, 
                  num_heads: int = 8, 
                  dropout: float = 0.1):
-        """
+        """Initializes the Transformer encoder.
+        
         Args:
-            input_dim: 입력 차원
-            hidden_dim: 은닉층 차원
-            num_layers: Transformer 레이어 수
-            num_heads: 어텐션 헤드 수
-            dropout: 드롭아웃 비율
+            input_dim: Input feature dimension.
+            hidden_dim: Hidden dimension for Transformer.
+            num_layers: Number of Transformer layers.
+            num_heads: Number of attention heads.
+            dropout: Dropout rate.
         """
         super().__init__()
         self.input_projection = nn.Linear(input_dim, hidden_dim)
@@ -80,9 +131,16 @@ class TransformerEncoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, attention_mask=None):
-        """Transformer 인코딩 수행"""
+        """Performs Transformer encoding.
+        
+        Args:
+            x: Input features [batch_size, seq_len, input_dim].
+            attention_mask: Attention mask for padding [batch_size, seq_len].
+            
+        Returns:
+            Encoded features [batch_size, seq_len, hidden_dim].
+        """
         x = self.input_projection(x)
         x = self.dropout(x)
-
         x = self.transformer(x)
         return self.layer_norm(x)

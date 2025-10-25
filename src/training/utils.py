@@ -1,3 +1,9 @@
+"""Training utility functions for pronunciation assessment model.
+
+This module provides utilities for experiment setup, checkpoint management,
+model type detection, and reproducibility.
+"""
+
 import os
 import json
 import random
@@ -9,7 +15,11 @@ import pytz
 
 
 def seed_everything(seed: int):
-    """모든 랜덤 시드를 설정합니다."""
+    """Sets random seeds for reproducibility across all libraries.
+    
+    Args:
+        seed: Random seed value.
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -19,7 +29,15 @@ def seed_everything(seed: int):
 
 
 def setup_experiment_dirs(config, resume: bool = False):
-    """실험 디렉토리를 설정합니다."""
+    """Sets up experiment directories and logging.
+    
+    Creates necessary directories for checkpoints, logs, and results.
+    Configures logging to both file and console.
+    
+    Args:
+        config: Configuration object containing directory paths.
+        resume: Whether resuming from a checkpoint.
+    """
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     os.makedirs(config.log_dir, exist_ok=True)
     os.makedirs(config.result_dir, exist_ok=True)
@@ -43,7 +61,18 @@ def setup_experiment_dirs(config, resume: bool = False):
 
 
 def save_checkpoint(model, wav2vec_opt, main_opt, epoch, val_loss, train_loss, metrics, path):
-    """모델 체크포인트를 저장합니다."""
+    """Saves model checkpoint with training state.
+    
+    Args:
+        model: Model to save.
+        wav2vec_opt: Optimizer for Wav2Vec2 parameters.
+        main_opt: Optimizer for other parameters.
+        epoch: Current epoch number.
+        val_loss: Validation loss.
+        train_loss: Training loss.
+        metrics: Dictionary of evaluation metrics.
+        path: Path where checkpoint will be saved.
+    """
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -59,7 +88,19 @@ def save_checkpoint(model, wav2vec_opt, main_opt, epoch, val_loss, train_loss, m
 
 
 def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, device):
-    """체크포인트를 로드합니다."""
+    """Loads checkpoint and restores training state.
+    
+    Args:
+        checkpoint_path: Path to checkpoint file.
+        model: Model to load state into.
+        wav2vec_optimizer: Optimizer for Wav2Vec2 parameters.
+        main_optimizer: Optimizer for other parameters.
+        device: Device to load checkpoint to.
+        
+    Returns:
+        tuple: (start_epoch, best_metrics) where start_epoch is the epoch
+            to resume from and best_metrics contains previous best metrics.
+    """
     logger = logging.getLogger(__name__)
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     
@@ -80,14 +121,31 @@ def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, d
 
 
 def get_model_class(model_type: str):
-    """모델 타입에 따른 모델 클래스와 손실 함수를 반환합니다."""
+    """Returns model class and loss function based on model type.
+    
+    Args:
+        model_type: Type of model architecture.
+        
+    Returns:
+        tuple: (model_class, loss_class)
+    """
     from ..models.unified_model import UnifiedModel
     from ..models.losses import UnifiedLoss
     return UnifiedModel, UnifiedLoss
 
 
 def detect_model_type_from_checkpoint(checkpoint_path: str) -> str:
-    """체크포인트에서 모델 타입을 자동 감지합니다."""
+    """Auto-detects model architecture type from checkpoint.
+    
+    Examines the state dict keys to determine whether the model uses
+    simple or transformer architecture.
+    
+    Args:
+        checkpoint_path: Path to model checkpoint.
+        
+    Returns:
+        str: Model type ('simple' or 'transformer').
+    """
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
     if 'model_state_dict' in checkpoint:
@@ -98,6 +156,7 @@ def detect_model_type_from_checkpoint(checkpoint_path: str) -> str:
     state_dict = remove_module_prefix(state_dict)
     keys = list(state_dict.keys())
 
+    # Check for transformer-specific keys
     if any('feature_encoder.transformer' in key for key in keys):
         return 'transformer'
     else:
@@ -105,7 +164,17 @@ def detect_model_type_from_checkpoint(checkpoint_path: str) -> str:
 
 
 def remove_module_prefix(state_dict):
-    """DataParallel에서 사용되는 'module.' 접두사를 제거합니다."""
+    """Removes 'module.' prefix from state dict keys.
+    
+    This prefix is added by DataParallel and needs to be removed
+    when loading into a non-DataParallel model.
+    
+    Args:
+        state_dict: Model state dictionary.
+        
+    Returns:
+        dict: State dictionary with 'module.' prefix removed.
+    """
     new_state_dict = {}
     for key, value in state_dict.items():
         if key.startswith('module.'):

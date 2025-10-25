@@ -1,3 +1,10 @@
+"""Evaluation script for L2 pronunciation assessment model.
+
+This script evaluates a trained model on test data and generates comprehensive
+metrics including phoneme recognition accuracy, error detection performance,
+and per-country analysis.
+"""
+
 import os
 import json
 import argparse
@@ -17,29 +24,29 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """메인 평가 함수"""
-    parser = argparse.ArgumentParser(description='L2 발음 평가 모델 평가')
+    """Main evaluation function."""
+    parser = argparse.ArgumentParser(description='L2 Pronunciation Assessment Model Evaluation')
     parser.add_argument('--model_checkpoint', type=str, required=True, 
-                       help='모델 체크포인트 경로')
+                       help='Model checkpoint path')
     parser.add_argument('--training_mode', type=str, 
-                       choices=['phoneme_only', 'phoneme_error', 'phoneme_error_length'], 
-                       help='모델의 훈련 모드')
+                       choices=['phoneme_only', 'phoneme_error'], 
+                       help='Model training mode')
     parser.add_argument('--eval_data', type=str, 
-                       help='평가 데이터 경로 오버라이드')
+                       help='Evaluation data path override')
     parser.add_argument('--phoneme_map', type=str, 
-                       help='음소 맵 경로 오버라이드')
+                       help='Phoneme map path override')
     parser.add_argument('--model_type', type=str, 
-                       help='모델 타입 강제 지정 (simple/transformer)')
+                       help='Force model type (simple/transformer)')
     parser.add_argument('--batch_size', type=int, default=8, 
-                       help='평가 배치 크기')
+                       help='Evaluation batch size')
     parser.add_argument('--save_predictions', action='store_true', 
-                       help='상세 예측 결과 저장')
+                       help='Save detailed predictions')
 
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
 
-    # 설정 로드
+    # Load configuration
     config = Config()
 
     if args.training_mode:
@@ -51,32 +58,32 @@ def main():
     if args.batch_size:
         config.eval_batch_size = args.batch_size
 
-    # 모델 타입 자동 감지 또는 지정
+    # Auto-detect or specify model type
     model_type = args.model_type
     if model_type is None:
         model_type = detect_model_type_from_checkpoint(args.model_checkpoint)
-        logger.info(f"체크포인트에서 모델 타입 자동 감지: {model_type}")
+        logger.info(f"Auto-detected model type from checkpoint: {model_type}")
     else:
         detected_type = detect_model_type_from_checkpoint(args.model_checkpoint)
         if model_type != detected_type:
-            logger.warning(f"지정된 모델 타입 '{model_type}'이 체크포인트 '{detected_type}'과 일치하지 않습니다. 체크포인트 타입을 사용합니다.")
+            logger.warning(f"Specified model type '{model_type}' doesn't match checkpoint '{detected_type}'. Using checkpoint type.")
             model_type = detected_type
 
     config.model_type = model_type
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"사용 디바이스: {device}")
-    logger.info(f"훈련 모드: {config.training_mode}")
-    logger.info(f"모델 타입: {model_type}")
-    logger.info(f"체크포인트: {args.model_checkpoint}")
+    logger.info(f"Using device: {device}")
+    logger.info(f"Training mode: {config.training_mode}")
+    logger.info(f"Model type: {model_type}")
+    logger.info(f"Checkpoint: {args.model_checkpoint}")
 
-    # 음소 맵 로드
+    # Load phoneme mapping
     with open(config.phoneme_map, 'r') as f:
         phoneme_to_id = json.load(f)
     id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
     error_type_names = config.get_error_type_names()
 
-    # 모델 생성 및 로드
+    # Create and load model
     model_config = config.model_configs[model_type]
     model = UnifiedModel(
         pretrained_model_name=config.pretrained_model,
@@ -85,14 +92,14 @@ def main():
         **model_config
     )
 
-    # 체크포인트 로드
+    # Load checkpoint
     checkpoint = torch.load(args.model_checkpoint, map_location=device)
 
     if 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
-        logger.info(f"에포크 {checkpoint.get('epoch', 'unknown')}에서 모델 로드")
+        logger.info(f"Loading model from epoch {checkpoint.get('epoch', 'unknown')}")
         if 'metrics' in checkpoint:
-            logger.info(f"훈련 메트릭: {checkpoint['metrics']}")
+            logger.info(f"Training metrics: {checkpoint['metrics']}")
     else:
         state_dict = checkpoint
 
@@ -101,16 +108,16 @@ def main():
     try:
         model.load_state_dict(state_dict)
     except RuntimeError as e:
-        logger.error(f"체크포인트 로드 실패. 오류: {str(e)}")
-        logger.error(f"모델 아키텍처: {model_type}")
-        logger.error("다른 모델 아키텍처로 저장된 체크포인트입니다.")
-        logger.error("--model_type 없이 실행하여 자동 감지하거나 체크포인트 경로를 확인하세요.")
+        logger.error(f"Failed to load checkpoint. Error: {str(e)}")
+        logger.error(f"Model architecture: {model_type}")
+        logger.error("This checkpoint may have been saved with a different model architecture.")
+        logger.error("Try running without --model_type to auto-detect or check the checkpoint path.")
         raise
 
     model = model.to(device)
     model.eval()
 
-    # 평가 데이터셋 로드
+    # Load evaluation dataset
     eval_dataset = UnifiedDataset(
         config.eval_data, phoneme_to_id,
         training_mode=config.training_mode,
@@ -123,13 +130,13 @@ def main():
         collate_fn=lambda batch: collate_fn(batch, training_mode=config.training_mode)
     )
 
-    # 평가자 생성
+    # Create evaluator
     evaluator = UnifiedEvaluator(device)
 
-    logger.info("평가 시작...")
+    logger.info("Starting evaluation...")
 
-    # 음소 인식 평가
-    logger.info("음소 인식 평가 중...")
+    # Evaluate phoneme recognition
+    logger.info("Evaluating phoneme recognition...")
     phoneme_recognition_results = evaluator.evaluate_phoneme_recognition(
         model=model,
         dataloader=eval_dataloader,
@@ -137,10 +144,10 @@ def main():
         id_to_phoneme=id_to_phoneme
     )
 
-    # 에러 탐지 평가
+    # Evaluate error detection if applicable
     error_detection_results = None
     if config.has_error_component():
-        logger.info("에러 탐지 평가 중...")
+        logger.info("Evaluating error detection...")
         error_detection_results = evaluator.evaluate_error_detection(
             model=model,
             dataloader=eval_dataloader,
@@ -148,51 +155,51 @@ def main():
             error_type_names=error_type_names
         )
 
-    # 결과 출력
+    # Print results
     logger.info("\n" + "="*80)
-    logger.info("전체 평가 결과")
+    logger.info("Overall Evaluation Results")
     logger.info("="*80)
 
-    logger.info("\n--- 음소 인식 결과 ---")
-    logger.info(f"음소 에러율 (PER): {phoneme_recognition_results['per']:.4f}")
-    logger.info(f"음소 정확도: {1.0 - phoneme_recognition_results['per']:.4f}")
-    logger.info(f"전체 음소 수: {phoneme_recognition_results['total_phonemes']}")
-    logger.info(f"전체 에러 수: {phoneme_recognition_results['total_errors']}")
-    logger.info(f"삽입: {phoneme_recognition_results['insertions']}")
-    logger.info(f"삭제: {phoneme_recognition_results['deletions']}")
-    logger.info(f"대체: {phoneme_recognition_results['substitutions']}")
+    logger.info("\n--- Phoneme Recognition Results ---")
+    logger.info(f"Phoneme Error Rate (PER): {phoneme_recognition_results['per']:.4f}")
+    logger.info(f"Phoneme Accuracy: {1.0 - phoneme_recognition_results['per']:.4f}")
+    logger.info(f"Total Phonemes: {phoneme_recognition_results['total_phonemes']}")
+    logger.info(f"Total Errors: {phoneme_recognition_results['total_errors']}")
+    logger.info(f"Insertions: {phoneme_recognition_results['insertions']}")
+    logger.info(f"Deletions: {phoneme_recognition_results['deletions']}")
+    logger.info(f"Substitutions: {phoneme_recognition_results['substitutions']}")
 
-    logger.info("\n--- 잘못된 발음 탐지 메트릭 ---")
-    logger.info(f"정밀도: {phoneme_recognition_results['mispronunciation_precision']:.4f}")
-    logger.info(f"재현율: {phoneme_recognition_results['mispronunciation_recall']:.4f}")
-    logger.info(f"F1-점수: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
+    logger.info("\n--- Mispronunciation Detection Metrics ---")
+    logger.info(f"Precision: {phoneme_recognition_results['mispronunciation_precision']:.4f}")
+    logger.info(f"Recall: {phoneme_recognition_results['mispronunciation_recall']:.4f}")
+    logger.info(f"F1-Score: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
 
-    logger.info("\n--- 혼동 행렬 ---")
+    logger.info("\n--- Confusion Matrix ---")
     cm = phoneme_recognition_results['confusion_matrix']
-    logger.info(f"참 수락 (TA): {cm['true_acceptance']}")
-    logger.info(f"거짓 거부 (FR): {cm['false_rejection']}")
-    logger.info(f"거짓 수락 (FA): {cm['false_acceptance']}")
-    logger.info(f"참 거부 (TR): {cm['true_rejection']}")
+    logger.info(f"True Acceptance (TA): {cm['true_acceptance']}")
+    logger.info(f"False Rejection (FR): {cm['false_rejection']}")
+    logger.info(f"False Acceptance (FA): {cm['false_acceptance']}")
+    logger.info(f"True Rejection (TR): {cm['true_rejection']}")
 
     if error_detection_results:
-        logger.info("\n--- 에러 탐지 결과 ---")
-        logger.info(f"시퀀스 정확도: {error_detection_results['sequence_accuracy']:.4f}")
-        logger.info(f"토큰 정확도: {error_detection_results['token_accuracy']:.4f}")
-        logger.info(f"평균 편집 거리: {error_detection_results['avg_edit_distance']:.4f}")
-        logger.info(f"가중 F1: {error_detection_results['weighted_f1']:.4f}")
-        logger.info(f"매크로 F1: {error_detection_results['macro_f1']:.4f}")
-        logger.info(f"전체 시퀀스: {error_detection_results['total_sequences']}")
-        logger.info(f"전체 토큰: {error_detection_results['total_tokens']}")
+        logger.info("\n--- Error Detection Results ---")
+        logger.info(f"Sequence Accuracy: {error_detection_results['sequence_accuracy']:.4f}")
+        logger.info(f"Token Accuracy: {error_detection_results['token_accuracy']:.4f}")
+        logger.info(f"Average Edit Distance: {error_detection_results['avg_edit_distance']:.4f}")
+        logger.info(f"Weighted F1: {error_detection_results['weighted_f1']:.4f}")
+        logger.info(f"Macro F1: {error_detection_results['macro_f1']:.4f}")
+        logger.info(f"Total Sequences: {error_detection_results['total_sequences']}")
+        logger.info(f"Total Tokens: {error_detection_results['total_tokens']}")
 
-        logger.info("\n--- 에러 타입별 메트릭 ---")
+        logger.info("\n--- Per Error Type Metrics ---")
         for error_type, metrics in error_detection_results['class_metrics'].items():
             logger.info(f"{error_type.upper()}:")
-            logger.info(f"  정밀도: {metrics['precision']:.4f}")
-            logger.info(f"  재현율: {metrics['recall']:.4f}")
-            logger.info(f"  F1-점수: {metrics['f1']:.4f}")
-            logger.info(f"  지지도: {metrics['support']}")
+            logger.info(f"  Precision: {metrics['precision']:.4f}")
+            logger.info(f"  Recall: {metrics['recall']:.4f}")
+            logger.info(f"  F1-Score: {metrics['f1']:.4f}")
+            logger.info(f"  Support: {metrics['support']}")
 
-    # 실험 정보
+    # Experiment information
     experiment_dir_name = os.path.basename(os.path.dirname(os.path.dirname(args.model_checkpoint)))
 
     config_info = {
@@ -204,20 +211,20 @@ def main():
         'model_config': config.model_configs.get(model_type, {})
     }
 
-    # 국가별 결과
-    logger.info("\n--- 국가별 결과 ---")
+    # Per-country results
+    logger.info("\n--- Per-Country Results ---")
     for country in sorted(phoneme_recognition_results.get('by_country', {}).keys()):
         logger.info(f"\n{country}:")
         phoneme_country = phoneme_recognition_results['by_country'][country]
-        logger.info(f"  음소 정확도: {1.0 - phoneme_country['per']:.4f}")
-        logger.info(f"  잘못된 발음 F1: {phoneme_country['mispronunciation_f1']:.4f}")
+        logger.info(f"  Phoneme Accuracy: {1.0 - phoneme_country['per']:.4f}")
+        logger.info(f"  Mispronunciation F1: {phoneme_country['mispronunciation_f1']:.4f}")
 
         if error_detection_results and country in error_detection_results.get('by_country', {}):
             error_country = error_detection_results['by_country'][country]
-            logger.info(f"  에러 토큰 정확도: {error_country['token_accuracy']:.4f}")
-            logger.info(f"  에러 가중 F1: {error_country['weighted_f1']:.4f}")
+            logger.info(f"  Error Token Accuracy: {error_country['token_accuracy']:.4f}")
+            logger.info(f"  Error Weighted F1: {error_country['weighted_f1']:.4f}")
 
-    # 결과 정리
+    # Organize results
     evaluation_results = {
         'phoneme_recognition': {
             'per': phoneme_recognition_results['per'],
@@ -253,15 +260,15 @@ def main():
         'evaluation_results': evaluation_results
     }
 
-    # 요약
-    logger.info("\n--- 요약 ---")
-    logger.info(f"훈련 모드: {config.training_mode}")
-    logger.info(f"전체 음소 인식 성능: {1.0 - phoneme_recognition_results['per']:.4f} (정확도)")
-    logger.info(f"잘못된 발음 탐지 F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
+    # Summary
+    logger.info("\n--- Summary ---")
+    logger.info(f"Training mode: {config.training_mode}")
+    logger.info(f"Overall phoneme recognition performance: {1.0 - phoneme_recognition_results['per']:.4f} (accuracy)")
+    logger.info(f"Mispronunciation detection F1: {phoneme_recognition_results['mispronunciation_f1']:.4f}")
     if error_detection_results:
-        logger.info(f"전체 에러 탐지 성능: {error_detection_results['weighted_f1']:.4f} (가중 F1)")
+        logger.info(f"Overall error detection performance: {error_detection_results['weighted_f1']:.4f} (weighted F1)")
 
-    # 결과 저장
+    # Save results
     evaluation_results_dir = 'evaluation_results'
     os.makedirs(evaluation_results_dir, exist_ok=True)
 
@@ -271,8 +278,8 @@ def main():
     with open(results_path, 'w') as f:
         json.dump(final_results, f, indent=2)
 
-    logger.info(f"\n전체 평가 결과 저장 위치: {results_path}")
-    logger.info(f"결과에는 설정 정보와 국가별 분석을 포함한 전체 평가 메트릭이 포함됩니다")
+    logger.info(f"\nFull evaluation results saved to: {results_path}")
+    logger.info(f"Results include configuration info and per-country analysis with complete evaluation metrics")
 
 
 if __name__ == "__main__":

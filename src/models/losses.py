@@ -1,17 +1,34 @@
+"""Loss functions for L2 pronunciation assessment model.
+
+This module implements Focal CTC Loss for handling class imbalance and
+a unified loss class for multitask learning.
+"""
+
 import torch
 import torch.nn as nn
 
 
 class FocalCTCLoss(nn.Module):
-    """Focal Loss를 적용한 CTC Loss"""
+    """Focal Loss applied to CTC Loss for handling class imbalance.
+    
+    Focal Loss helps the model focus on hard-to-classify samples by down-weighting
+    easy examples. This is particularly useful for pronunciation assessment where
+    some phoneme or error classes are much more frequent than others.
+    
+    Attributes:
+        alpha: Weight factor for class balancing.
+        gamma: Focusing parameter for hard examples.
+        ctc_loss: Underlying CTC loss function.
+    """
     
     def __init__(self, alpha: float = 1.0, gamma: float = 2.0, blank: int = 0, zero_infinity: bool = True):
-        """
+        """Initializes the Focal CTC Loss.
+        
         Args:
-            alpha: 클래스 균형을 위한 가중치
-            gamma: 어려운 샘플에 집중하기 위한 지수
-            blank: CTC blank 토큰 인덱스
-            zero_infinity: 무한대 손실을 0으로 처리할지 여부
+            alpha: Weight factor for class balancing.
+            gamma: Focusing parameter (higher values focus more on hard examples).
+            blank: Index of the CTC blank token.
+            zero_infinity: Whether to set infinite losses to zero.
         """
         super().__init__()
         self.alpha = alpha
@@ -20,10 +37,23 @@ class FocalCTCLoss(nn.Module):
 
     def forward(self, log_probs: torch.Tensor, targets: torch.Tensor, 
                 input_lengths: torch.Tensor, target_lengths: torch.Tensor) -> torch.Tensor:
-        """Focal CTC Loss 계산"""
+        """Computes the Focal CTC Loss.
+        
+        Args:
+            log_probs: Log probabilities from the model [T, N, C] where T is
+                sequence length, N is batch size, C is number of classes.
+            targets: Target sequences [N, S] where S is target sequence length.
+            input_lengths: Length of each input sequence [N].
+            target_lengths: Length of each target sequence [N].
+            
+        Returns:
+            Scalar tensor containing the mean focal CTC loss.
+        """
+        # Compute standard CTC loss per sample
         ctc_losses = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
         ctc_losses = torch.clamp(ctc_losses, min=1e-6)
         
+        # Compute focal weight: (1 - p_t)^gamma where p_t = exp(-loss)
         p_t = torch.exp(-ctc_losses)
         p_t = torch.clamp(p_t, min=1e-6, max=1.0)
         focal_losses = ctc_losses * (self.alpha * (1 - p_t) ** self.gamma)
@@ -32,7 +62,18 @@ class FocalCTCLoss(nn.Module):
 
 
 class UnifiedLoss(nn.Module):
-    """통합 손실 함수 클래스"""
+    """Unified loss function for multitask pronunciation assessment.
+    
+    Combines phoneme recognition and error detection losses with configurable
+    weights. Uses Focal CTC Loss for both tasks to handle class imbalance.
+    
+    Attributes:
+        training_mode: Current training mode ('phoneme_only' or 'phoneme_error').
+        error_weight: Weight for error detection loss.
+        phoneme_weight: Weight for phoneme recognition loss.
+        error_criterion: Focal CTC loss for error detection.
+        phoneme_criterion: Focal CTC loss for phoneme recognition.
+    """
     
     def __init__(self, 
                  training_mode: str = 'phoneme_only', 
@@ -40,19 +81,21 @@ class UnifiedLoss(nn.Module):
                  phoneme_weight: float = 1.0, 
                  focal_alpha: float = 1.0, 
                  focal_gamma: float = 2.0):
-        """
+        """Initializes the Unified Loss.
+        
         Args:
-            training_mode: 훈련 모드
-            error_weight: 에러 탐지 손실 가중치
-            phoneme_weight: 음소 인식 손실 가중치
-            focal_alpha: Focal Loss alpha 파라미터
-            focal_gamma: Focal Loss gamma 파라미터
+            training_mode: Training mode ('phoneme_only' or 'phoneme_error').
+            error_weight: Weight for error detection loss.
+            phoneme_weight: Weight for phoneme recognition loss.
+            focal_alpha: Alpha parameter for Focal Loss.
+            focal_gamma: Gamma parameter for Focal Loss.
         """
         super().__init__()
         self.training_mode = training_mode
         self.error_weight = error_weight
         self.phoneme_weight = phoneme_weight
         
+        # Initialize Focal CTC Loss for both tasks
         self.error_criterion = FocalCTCLoss(
             alpha=focal_alpha, gamma=focal_gamma, blank=0, zero_infinity=True
         )
@@ -62,11 +105,26 @@ class UnifiedLoss(nn.Module):
 
     def forward(self, outputs, phoneme_targets, phoneme_input_lengths, phoneme_target_lengths,
                 error_targets=None, error_input_lengths=None, error_target_lengths=None):
-        """통합 손실 계산"""
+        """Computes the unified loss.
+        
+        Args:
+            outputs: Dictionary containing model outputs with keys 'phoneme_logits'
+                and optionally 'error_logits'.
+            phoneme_targets: Target phoneme sequences.
+            phoneme_input_lengths: Length of each input sequence for phoneme task.
+            phoneme_target_lengths: Length of each target phoneme sequence.
+            error_targets: Target error sequences (optional, for phoneme_error mode).
+            error_input_lengths: Length of each input sequence for error task (optional).
+            error_target_lengths: Length of each target error sequence (optional).
+            
+        Returns:
+            tuple: (total_loss, loss_dict) where total_loss is the weighted sum of
+                individual losses and loss_dict contains breakdown of loss components.
+        """
         total_loss = 0.0
         loss_dict = {}
 
-        # 음소 인식 손실
+        # Compute phoneme recognition loss
         phoneme_log_probs = torch.log_softmax(outputs['phoneme_logits'], dim=-1)
         phoneme_loss = self.phoneme_criterion(
             phoneme_log_probs.transpose(0, 1),
@@ -78,8 +136,8 @@ class UnifiedLoss(nn.Module):
         total_loss += weighted_phoneme_loss
         loss_dict['phoneme_loss'] = phoneme_loss.item()
 
-        # 에러 탐지 손실
-        if self.training_mode in ['phoneme_error', 'phoneme_error_length'] and 'error_logits' in outputs:
+        # Compute error detection loss if in phoneme_error mode
+        if self.training_mode == 'phoneme_error' and 'error_logits' in outputs:
             if error_targets is not None and error_input_lengths is not None and error_target_lengths is not None:
                 error_log_probs = torch.log_softmax(outputs['error_logits'], dim=-1)
                 error_loss = self.error_criterion(
@@ -94,28 +152,3 @@ class UnifiedLoss(nn.Module):
 
         loss_dict['total_loss'] = total_loss.item()
         return total_loss, loss_dict
-
-
-class SmoothL1LengthLoss(nn.Module):
-    """길이 예측을 위한 Smooth L1 Loss"""
-    
-    def __init__(self, beta: float = 1.0):
-        """
-        Args:
-            beta: Smooth L1 Loss의 beta 파라미터
-        """
-        super().__init__()
-        self.beta = beta
-
-    def forward(self, input_lengths: torch.Tensor, target_lengths: torch.Tensor) -> torch.Tensor:
-        """Smooth L1 길이 손실 계산"""
-        diff = input_lengths - target_lengths
-        abs_diff = torch.abs(diff)
-        
-        smooth_l1 = torch.where(
-            abs_diff < self.beta,
-            0.5 * diff ** 2 / self.beta,
-            abs_diff - 0.5 * self.beta
-        )
-        
-        return torch.mean(smooth_l1)

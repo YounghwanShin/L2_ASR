@@ -1,3 +1,10 @@
+"""Metrics module for pronunciation assessment evaluation.
+
+This module implements various evaluation metrics including edit distance,
+phoneme error rate (PER), mispronunciation detection metrics, and
+error classification metrics.
+"""
+
 import torch
 import numpy as np
 from typing import List, Dict, Tuple
@@ -6,14 +13,17 @@ from sklearn.metrics import classification_report, f1_score
 
 
 def edit_distance_with_details(ref: List, hyp: List) -> Tuple[int, int, int, int, int]:
-    """편집 거리와 세부 에러 타입을 계산합니다.
+    """Computes edit distance with detailed error breakdown.
+    
+    Uses dynamic programming to compute Levenshtein distance and then
+    backtracks to count specific error types.
     
     Args:
-        ref: 참조 시퀀스
-        hyp: 가설 시퀀스
+        ref: Reference sequence.
+        hyp: Hypothesis sequence.
         
     Returns:
-        (총 에러수, 대체수, 삭제수, 삽입수, 참조 길이)
+        Tuple of (total_errors, substitutions, deletions, insertions, ref_length).
     """
     len_ref, len_hyp = len(ref), len(hyp)
 
@@ -22,7 +32,7 @@ def edit_distance_with_details(ref: List, hyp: List) -> Tuple[int, int, int, int
     if len_hyp == 0:
         return len_ref, 0, len_ref, 0, len_ref
 
-    # DP 테이블 초기화
+    # Initialize DP table
     dp = [[0] * (len_hyp + 1) for _ in range(len_ref + 1)]
 
     for i in range(len_ref + 1):
@@ -30,21 +40,21 @@ def edit_distance_with_details(ref: List, hyp: List) -> Tuple[int, int, int, int
     for j in range(len_hyp + 1):
         dp[0][j] = j
 
-    # DP 테이블 채우기
+    # Fill DP table
     for i in range(1, len_ref + 1):
         for j in range(1, len_hyp + 1):
             if ref[i-1] == hyp[j-1]:
                 dp[i][j] = dp[i-1][j-1]
             else:
                 dp[i][j] = 1 + min(
-                    dp[i-1][j],      # 삭제
-                    dp[i][j-1],      # 삽입
-                    dp[i-1][j-1]     # 대체
+                    dp[i-1][j],      # Deletion
+                    dp[i][j-1],      # Insertion
+                    dp[i-1][j-1]     # Substitution
                 )
 
     total_errors = dp[len_ref][len_hyp]
 
-    # 백트래킹으로 에러 타입 계산
+    # Backtrack to count error types
     i, j = len_ref, len_hyp
     substitutions = deletions = insertions = 0
 
@@ -69,7 +79,16 @@ def edit_distance_with_details(ref: List, hyp: List) -> Tuple[int, int, int, int
 
 
 def calculate_wer_details(ids: List, refs: List[List], hyps: List[List]) -> List[Dict]:
-    """배치에 대한 WER 세부 정보를 계산합니다."""
+    """Calculates Word Error Rate (WER) details for a batch.
+    
+    Args:
+        ids: List of sample IDs.
+        refs: List of reference sequences.
+        hyps: List of hypothesis sequences.
+        
+    Returns:
+        List of dictionaries containing WER metrics for each sample.
+    """
     details = []
 
     for i, (id_val, ref, hyp) in enumerate(zip(ids, refs, hyps)):
@@ -99,12 +118,27 @@ def calculate_wer_details(ids: List, refs: List[List], hyps: List[List]) -> List
 
 
 def convert_ids_to_phonemes(sequences: List[List[int]], id_to_phoneme: Dict[str, str]) -> List[List[str]]:
-    """ID 시퀀스를 음소 문자열로 변환합니다."""
+    """Converts ID sequences to phoneme strings.
+    
+    Args:
+        sequences: List of phoneme ID sequences.
+        id_to_phoneme: Mapping from IDs to phoneme strings.
+        
+    Returns:
+        List of phoneme string sequences.
+    """
     return [[id_to_phoneme.get(str(token_id), f"UNK_{token_id}") for token_id in seq] for seq in sequences]
 
 
 def remove_sil_tokens(sequences: List[List[str]]) -> List[List[str]]:
-    """sil 토큰을 제거합니다."""
+    """Removes silence tokens from sequences.
+    
+    Args:
+        sequences: List of phoneme sequences.
+        
+    Returns:
+        List of sequences with silence tokens removed.
+    """
     return [[token for token in seq if token != "sil"] for seq in sequences]
 
 
@@ -112,7 +146,20 @@ def calculate_mispronunciation_metrics(all_predictions: List[List[int]],
                                      all_canonical: List[List[int]], 
                                      all_perceived: List[List[int]], 
                                      id_to_phoneme: Dict[str, str]) -> Dict:
-    """잘못된 발음 탐지 메트릭을 계산합니다."""
+    """Calculates mispronunciation detection metrics.
+    
+    Computes precision, recall, and F1 score for detecting pronunciation
+    errors by comparing predicted phonemes to canonical and perceived forms.
+    
+    Args:
+        all_predictions: Predicted phoneme sequences.
+        all_canonical: Canonical (correct) phoneme sequences.
+        all_perceived: Perceived (actual) phoneme sequences.
+        id_to_phoneme: Mapping from IDs to phoneme strings.
+        
+    Returns:
+        Dictionary containing mispronunciation detection metrics.
+    """
     pred_phonemes = convert_ids_to_phonemes(all_predictions, id_to_phoneme)
     canonical_phonemes = convert_ids_to_phonemes(all_canonical, id_to_phoneme)
     perceived_phonemes = convert_ids_to_phonemes(all_perceived, id_to_phoneme)
@@ -149,7 +196,7 @@ def calculate_mispronunciation_metrics(all_predictions: List[List[int]],
             elif not is_correct and not pred_correct:
                 total_tr += 1
 
-    # 메트릭 계산
+    # Compute metrics
     if (total_tr + total_fa) > 0:
         recall = total_tr / (total_tr + total_fa)
     else:
@@ -180,7 +227,17 @@ def calculate_error_metrics(all_predictions: List[List[int]],
                           all_targets: List[List[int]], 
                           all_ids: List[str], 
                           error_type_names: Dict[int, str]) -> Dict:
-    """에러 탐지 메트릭을 계산합니다."""
+    """Calculates error detection metrics.
+    
+    Args:
+        all_predictions: Predicted error sequences.
+        all_targets: Target error sequences.
+        all_ids: Sample IDs.
+        error_type_names: Mapping from error IDs to names.
+        
+    Returns:
+        Dictionary containing error detection metrics.
+    """
     wer_details = calculate_wer_details(
         ids=all_ids,
         refs=all_targets,
@@ -197,7 +254,7 @@ def calculate_error_metrics(all_predictions: List[List[int]],
     token_accuracy = 1 - (total_errors / total_tokens) if total_tokens > 0 else 0
     avg_edit_distance = total_errors / total_sequences if total_sequences > 0 else 0
 
-    # 분류 메트릭 계산
+    # Compute classification metrics
     flat_predictions = [token for pred in all_predictions for token in pred]
     flat_targets = [token for target in all_targets for token in target]
 
@@ -215,7 +272,7 @@ def calculate_error_metrics(all_predictions: List[List[int]],
 
             class_report = classification_report(flat_targets, flat_predictions, output_dict=True, zero_division=0)
 
-            # 블랭크를 제외한 에러 타입들에 대한 메트릭
+            # Exclude blank from evaluation
             eval_error_types = {k: v for k, v in error_type_names.items() if k != 0}
             for class_id, class_name in eval_error_types.items():
                 if str(class_id) in class_report:
@@ -246,7 +303,19 @@ def calculate_phoneme_metrics(all_predictions: List[List[int]],
                             all_perceived: List[List[int]], 
                             all_ids: List[str], 
                             id_to_phoneme: Dict[str, str]) -> Dict:
-    """음소 인식 메트릭을 계산합니다."""
+    """Calculates phoneme recognition metrics.
+    
+    Args:
+        all_predictions: Predicted phoneme sequences.
+        all_targets: Target phoneme sequences.
+        all_canonical: Canonical phoneme sequences.
+        all_perceived: Perceived phoneme sequences.
+        all_ids: Sample IDs.
+        id_to_phoneme: Mapping from IDs to phoneme strings.
+        
+    Returns:
+        Dictionary containing phoneme recognition metrics.
+    """
     pred_phonemes = convert_ids_to_phonemes(all_predictions, id_to_phoneme)
     target_phonemes = convert_ids_to_phonemes(all_targets, id_to_phoneme)
 
@@ -267,7 +336,7 @@ def calculate_phoneme_metrics(all_predictions: List[List[int]],
 
     per = total_errors / total_phonemes if total_phonemes > 0 else 0
 
-    # 잘못된 발음 탐지 메트릭
+    # Mispronunciation detection metrics
     misp_metrics = {'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'ta': 0, 'fr': 0, 'fa': 0, 'tr': 0}
     if all_canonical and all_perceived:
         misp_metrics = calculate_mispronunciation_metrics(all_predictions, all_canonical, all_perceived, id_to_phoneme)

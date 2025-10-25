@@ -1,3 +1,9 @@
+"""Evaluator module for pronunciation assessment model.
+
+This module implements comprehensive evaluation for phoneme recognition
+and error detection, including per-country analysis and sample predictions.
+"""
+
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -9,17 +15,33 @@ from ..utils.audio import decode_ctc, get_wav2vec2_output_lengths, enable_wav2ve
 
 
 class UnifiedEvaluator:
-    """통합 모델 평가자 클래스"""
+    """Evaluator class for unified pronunciation assessment model.
+    
+    Provides comprehensive evaluation metrics for both phoneme recognition
+    and error detection tasks, including per-country breakdown.
+    
+    Attributes:
+        device: Device for evaluation.
+    """
     
     def __init__(self, device: str = 'cuda'):
-        """
+        """Initializes the evaluator.
+        
         Args:
-            device: 평가에 사용할 디바이스
+            device: Device for evaluation ('cuda' or 'cpu').
         """
         self.device = device
 
     def clean_targets(self, labels: torch.Tensor, label_lengths: torch.Tensor) -> List[List[int]]:
-        """타겟 라벨을 정리합니다."""
+        """Cleans target labels by removing padding.
+        
+        Args:
+            labels: Padded label tensor [batch_size, max_len].
+            label_lengths: Length of each label sequence [batch_size].
+            
+        Returns:
+            List of label sequences without padding.
+        """
         return [labels[i][:length].cpu().numpy().tolist() for i, length in enumerate(label_lengths)]
 
     def evaluate_error_detection(self, 
@@ -27,7 +49,17 @@ class UnifiedEvaluator:
                                 dataloader: DataLoader, 
                                 training_mode: str = 'phoneme_error', 
                                 error_type_names: Optional[Dict[int, str]] = None) -> Dict:
-        """에러 탐지 성능을 평가합니다."""
+        """Evaluates error detection performance.
+        
+        Args:
+            model: Model to evaluate.
+            dataloader: Data loader for evaluation.
+            training_mode: Training mode.
+            error_type_names: Mapping from error IDs to names.
+            
+        Returns:
+            Dictionary containing error detection metrics.
+        """
         if error_type_names is None:
             error_type_names = {0: 'blank', 1: 'deletion', 2: 'insertion', 3: 'substitution', 4: 'correct'}
 
@@ -67,10 +99,10 @@ class UnifiedEvaluator:
                 all_ids.extend(batch_data['wav_files'])
                 all_spk_ids.extend(batch_data['spk_ids'])
 
-        # 전체 메트릭 계산
+        # Compute overall metrics
         results = calculate_error_metrics(all_predictions, all_targets, all_ids, error_type_names)
 
-        # 국가별 메트릭 계산
+        # Compute per-country metrics
         by_country_results = {}
         country_data = defaultdict(lambda: {'predictions': [], 'targets': [], 'ids': []})
 
@@ -92,7 +124,17 @@ class UnifiedEvaluator:
                                    dataloader: DataLoader, 
                                    training_mode: str = 'phoneme_only', 
                                    id_to_phoneme: Optional[Dict[str, str]] = None) -> Dict:
-        """음소 인식 성능을 평가합니다."""
+        """Evaluates phoneme recognition performance.
+        
+        Args:
+            model: Model to evaluate.
+            dataloader: Data loader for evaluation.
+            training_mode: Training mode.
+            id_to_phoneme: Mapping from phoneme IDs to phoneme strings.
+            
+        Returns:
+            Dictionary containing phoneme recognition metrics.
+        """
         model.eval()
         enable_wav2vec2_specaug(model, False)
         all_predictions, all_targets, all_canonical, all_perceived, all_ids, all_spk_ids = [], [], [], [], [], []
@@ -129,12 +171,12 @@ class UnifiedEvaluator:
                 all_ids.extend(batch_data['wav_files'])
                 all_spk_ids.extend(batch_data['spk_ids'])
 
-        # 전체 메트릭 계산
+        # Compute overall metrics
         results = calculate_phoneme_metrics(
             all_predictions, all_targets, all_canonical, all_perceived, all_ids, id_to_phoneme
         )
 
-        # 국가별 메트릭 계산
+        # Compute per-country metrics
         by_country_results = {}
         country_data = defaultdict(lambda: {'predictions': [], 'targets': [], 'canonical': [], 'perceived': [], 'ids': []})
 
@@ -163,7 +205,17 @@ class UnifiedEvaluator:
                               training_mode: str = 'phoneme_only', 
                               error_type_names: Optional[Dict[int, str]] = None, 
                               num_samples: int = 3):
-        """샘플 예측 결과를 출력합니다."""
+        """Shows sample predictions for debugging and analysis.
+        
+        Args:
+            model: Model to evaluate.
+            eval_dataloader: Evaluation data loader.
+            id_to_phoneme: Mapping from phoneme IDs to strings.
+            logger: Logger for output.
+            training_mode: Training mode.
+            error_type_names: Mapping from error IDs to names.
+            num_samples: Number of samples to show.
+        """
         model.eval()
         enable_wav2vec2_specaug(model, False)
         samples_shown = 0
@@ -187,7 +239,7 @@ class UnifiedEvaluator:
                 phoneme_log_probs = torch.log_softmax(phoneme_logits, dim=-1)
                 phoneme_predictions = decode_ctc(phoneme_log_probs, phoneme_input_lengths)
 
-                if training_mode in ['phoneme_error', 'phoneme_error_length'] and 'error_logits' in outputs:
+                if training_mode == 'phoneme_error' and 'error_logits' in outputs:
                     error_logits = outputs['error_logits']
                     error_input_lengths = torch.clamp(input_lengths, min=1, max=error_logits.size(1))
                     error_log_probs = torch.log_softmax(error_logits, dim=-1)
@@ -205,7 +257,7 @@ class UnifiedEvaluator:
                     logger.info(f"Phoneme Actual:    {' '.join(phoneme_actual)}")
                     logger.info(f"Phoneme Predicted: {' '.join(phoneme_pred)}")
 
-                    if training_mode in ['phoneme_error', 'phoneme_error_length'] and 'error_labels' in batch_data:
+                    if training_mode == 'phoneme_error' and 'error_labels' in batch_data:
                         error_actual = [error_type_names.get(int(label), str(label))
                                       for label in batch_data['error_labels'][i][:batch_data['error_lengths'][i]]]
                         error_pred = [error_type_names.get(int(pred), str(pred))
