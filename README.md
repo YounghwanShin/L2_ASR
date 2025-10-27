@@ -1,154 +1,266 @@
-# Multi-task L2 Pronunciation Assessment
+# L2 Pronunciation Assessment Model
 
-다중 과제 학습 기반 L2 발음 평가 모델
+Deep learning model for assessing pronunciation of second language learners. Uses a Wav2Vec2-based unified architecture to perform phoneme recognition and error detection simultaneously.
 
-## 설치
+## Key Features
 
+- **Phoneme Recognition**: CTC-based phoneme sequence prediction
+- **Error Detection**: Classification of pronunciation error types (deletion, insertion, substitution, correct)
+- **Unified Training**: Multitask learning for simultaneous optimization of both tasks
+- **Flexible Architecture**: Support for both Simple and Transformer encoders
+
+## System Requirements
+
+- Python 3.8 or higher
+- CUDA-capable GPU (recommended)
+- Minimum 8GB GPU memory
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/YounghwanShin/L2_ASR.git
+cd L2_ASR
+```
+
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-## 데이터 준비
+## Data Preprocessing
 
-```
-data/
-├── train_labels.json
-├── val_labels.json  
-├── test_labels.json
-└── phoneme_map.json
-```
-
-## 기본 사용법
-
-### 1. Multi-task 모델 학습
+Preprocess your data before training:
 
 ```bash
-# 기본 학습 (Simple 모델)
-python train.py
-
-# Transformer 모델
-python train.py --config model_type=transformer
-
-# 가중치 조정
-python train.py --config error_weight=0.5,phoneme_weight=0.5
+chmod +x download_dataset.sh
+./download_dataset.sh
 ```
-
-### 2. Phoneme-only 모델 학습
 
 ```bash
-# Simple Phoneme 모델
-python phoneme_train.py
-
-# Transformer Phoneme 모델
-python phoneme_train.py --config model_type=transformer
+python data_preprocessing.py
 ```
 
-### 3. 학습 이어서 하기
+This script performs:
+- Generation of canonical_train_target from canonical_aligned
+- Creation of error labels (D: deletion, I: insertion, S: substitution, C: correct)
+- Sequence compression suitable for CTC characteristics
+
+## Training
+
+### Basic Training
 
 ```bash
-# Multi-task 모델 resume
-python train.py --resume experiments/simple0406/checkpoints/best_phoneme.pth
-
-# Phoneme 모델 resume
-python phoneme_train.py --resume experiments/phoneme_simple/checkpoints/latest.pth
-
-# 실험명 직접 지정하여 resume
-python train.py --resume path/to/checkpoint.pth --experiment_name custom_name
+python train.py --training_mode phoneme_error --model_type transformer
 ```
 
-### 4. 모델 평가
+### Training Modes
+
+- `phoneme_only`: Phoneme recognition only
+- `phoneme_error`: Phoneme recognition + error detection
+
+### Model Architectures
+
+- `simple`: Basic feed-forward encoder
+- `transformer`: Transformer-based encoder
+
+### Advanced Options
 
 ```bash
-# Multi-task 모델 평가 (자동으로 evaluation_results/에 저장)
-python eval.py --model_checkpoint experiments/trm0406/checkpoints/best_phoneme.pth
-
-# Phoneme 모델 평가  
-python phoneme_eval.py --model_checkpoint experiments/phoneme_transformer/checkpoints/best_phoneme.pth
-
-# 기존 방식으로 체크포인트 디렉토리에 저장
-python eval.py --model_checkpoint path/to/model.pth --save_predictions
+python train.py \
+    --training_mode phoneme_error \
+    --model_type transformer \
+    --config "batch_size=32,num_epochs=100,main_lr=5e-4" \
+    --experiment_name my_experiment
 ```
 
-## 평가 결과
+### Resume Training
 
-평가 결과는 `evaluation_results/` 디렉토리에 자동 저장됩니다:
+```bash
+python train.py --resume ../shared/experiments/phoneme_error_transformer0406_20250915154806/checkpoints/latest.pth
+```
 
-- `trm0406_eval_results.json`: Transformer 모델 평가 결과
-- `phoneme_simple_eval_results.json`: Phoneme-only Simple 모델 결과
+## Evaluation
 
-각 JSON 파일 구조:
+```bash
+python eval.py --model_checkpoint experiments/my_experiment/checkpoints/best_phoneme.pth
+```
+
+### Evaluation Options
+
+```bash
+python eval.py \
+    --model_checkpoint path/to/checkpoint.pth \
+    --eval_data path/to/test_data.json \
+    --batch_size 16 \
+    --save_predictions
+```
+
+## Configuration
+
+You can modify key settings in `config.py`:
+
+- **Model Settings**: Hidden layer size, dropout, etc.
+- **Training Settings**: Learning rate, batch size, number of epochs
+- **Loss Weights**: Balance between phoneme and error losses
+- **Data Paths**: Location of training/validation/test data
+
+## Project Structure
+
+```
+l2_pronunciation_assessment/
+├── config.py                    # Configuration file
+├── train.py                     # Training script
+├── eval.py                      # Evaluation script
+├── data_preprocessing.py        # Data preprocessing
+├── src/
+│   ├── data/                    # Data processing modules
+│   │   ├── dataset.py
+│   │   └── preprocessing.py
+│   ├── models/                  # Model-related modules
+│   │   ├── unified_model.py
+│   │   ├── encoders.py
+│   │   ├── heads.py
+│   │   └── losses.py
+│   ├── training/                # Training-related modules
+│   │   ├── trainer.py
+│   │   └── utils.py
+│   ├── evaluation/              # Evaluation-related modules
+│   │   ├── evaluator.py
+│   │   └── metrics.py
+│   └── utils/                   # Utility modules
+│       └── audio.py
+├── data/                        # Data files
+├── experiments/                 # Experiment results
+└── evaluation_results/          # Evaluation results
+```
+
+## Data Format
+
+### Input Data
+
+JSON format with the following fields:
+
 ```json
 {
-  "config": {
-    "model_type": "transformer",
-    "experiment_name": "trm0406",
-    "evaluation_date": "2025-06-20 15:30:00"
-  },
-  "sample_predictions": [
-    {
-      "file": "sample1.wav",
-      "error_actual": ["correct", "incorrect"],
-      "error_predicted": ["correct", "correct"],
-      "phoneme_actual": ["ae", "n", "d"],
-      "phoneme_predicted": ["ae", "n", "t"]
-    }
-  ],
-  "evaluation_results": {
-    "error_detection": {...},
-    "phoneme_recognition": {...}
+  "path/to/audio.wav": {
+    "wav": "path/to/audio.wav",
+    "duration": 4.5,
+    "spk_id": "SPEAKER_ID",
+    "canonical_aligned": "sil hh iy w ih l ...",
+    "perceived_aligned": "sil hh iy w ih l ...",
+    "perceived_train_target": "sil hh iy w ih l ...",
+    "canonical_train_target": "sil hh iy w ih l ...",
+    "wrd": "He will follow us soon",
+    "error_labels": "C C C C C C ..."
   }
 }
 ```
 
-## 실험 결과
+### Error Labels
 
-학습된 모델은 `experiments/` 에 자동으로 저장됩니다:
+- `C`: Correct pronunciation
+- `D`: Deletion (present in canonical but missing in perceived)
+- `I`: Insertion (present in perceived but not in canonical)
+- `S`: Substitution (pronounced as different phoneme)
 
-- `simple0406/`: Simple 모델, error=0.4, phoneme=0.6
-- `trm0505/`: Transformer 모델, error=0.5, phoneme=0.5  
-- `phoneme_simple/`: Phoneme-only Simple 모델
-- `phoneme_transformer/`: Phoneme-only Transformer 모델
+## Evaluation Metrics
 
-각 폴더 구조:
-```
-experiments/simple0406/
-├── checkpoints/
-│   ├── best_error.pth
-│   ├── best_phoneme.pth
-│   ├── best_loss.pth
-│   └── latest.pth
-├── logs/training.log
-└── results/final_metrics.json
-```
+### Phoneme Recognition
 
-## 주요 옵션
+- **PER (Phoneme Error Rate)**: Phoneme error rate
+- **Phoneme Accuracy**: 1 - PER
+- **Mispronunciation Detection**: Precision, recall, F1-score
 
-| 옵션 | 설명 | 기본값 |
-|------|------|-------|
-| `model_type` | simple, transformer, hierarchical | simple |
-| `error_weight` | Error detection 가중치 | 0.4 |
-| `phoneme_weight` | Phoneme recognition 가중치 | 0.6 |
-| `batch_size` | 배치 크기 | 16 |
-| `num_epochs` | 에포크 수 | 50 |
-| `--resume` | 체크포인트에서 이어서 학습 | - |
-| `--experiment_name` | 실험명 직접 지정 | auto |
+### Error Detection
 
-## 빠른 시작
+- **Token Accuracy**: Individual error label accuracy
+- **Sequence Accuracy**: Proportion of completely correct sequences
+- **Per-Class Metrics**: Performance for each error type
+
+## Experiment Results
+
+Experiment results are saved in:
+
+- **Checkpoints**: `experiments/{experiment_name}/checkpoints/`
+- **Logs**: `experiments/{experiment_name}/logs/`
+- **Final Metrics**: `experiments/{experiment_name}/results/`
+- **Evaluation Results**: `evaluation_results/`
+
+## Model Architecture
+
+### Encoder
+
+1. **Wav2Vec2**: Pretrained speech representation learning
+2. **Feature Encoder**: Speech feature enhancement
+   - Simple: Feed-forward network
+   - Transformer: Multi-head attention
+
+### Output Heads
+
+1. **Phoneme Recognition Head**: 42 phoneme classification
+2. **Error Detection Head**: 5 error type classification
+
+### Loss Functions
+
+- **Focal CTC Loss**: Handles class imbalance
+- **Weighted Combination**: Loss weighting for multitask learning
+
+## Performance Optimization
+
+### Memory Optimization
+
+- Use gradient accumulation
+- Mixed precision training
+- Regular GPU memory cleanup
+
+### Training Stability
+
+- Separate learning rates (Wav2Vec2 vs other parts)
+- Focus on hard samples with Focal Loss
+- Data augmentation with SpecAugment
+
+## Troubleshooting
+
+### Common Issues
+
+1. **GPU Memory Shortage**
+   - Reduce batch size
+   - Increase gradient accumulation
+
+2. **Training Instability**
+   - Lower learning rate
+   - Adjust Focal Loss parameters
+
+3. **Overfitting**
+   - Increase dropout
+   - Adjust regularization weights
+
+### Log Inspection
+
+Check logs during training issues:
 
 ```bash
-# 1. 기본 모델 학습
-python train.py
+tail -f experiments/{experiment_name}/logs/training.log
+```
 
-# 2. 결과 확인 (evaluation_results/simple0406_eval_results.json에 저장)
-python eval.py --model_checkpoint experiments/simple0406/checkpoints/best_phoneme.pth
+## Contributing
 
-# 3. Phoneme 전용 모델 비교
-python phoneme_train.py
-python phoneme_eval.py --model_checkpoint experiments/phoneme_simple/checkpoints/best_phoneme.pth
+Please submit bug reports or feature suggestions through issues.
 
-# 4. 학습 중단 후 재개
-python train.py --resume experiments/simple0406/checkpoints/latest.pth
+## License
 
-# 5. 결과 비교 (evaluation_results/ 디렉토리에서 확인)
-ls evaluation_results/
+This project is licensed under the MIT License.
+
+## Citation
+
+If you use this code in your research, please cite:
+
+```bibtex
+@misc{l2pronunciation2024,
+  title={L2 Pronunciation Assessment with Unified Neural Architecture},
+  author={Research Team},
+  year={2024},
+  url={https://github.com/YounghwanShin/L2_ASR.git}
+}
 ```
