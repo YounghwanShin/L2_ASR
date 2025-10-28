@@ -1,8 +1,8 @@
 """Evaluation script for pronunciation assessment model.
 
 This script evaluates a trained model on test data and generates comprehensive
-metrics including phoneme recognition accuracy, error detection performance,
-and per-speaker analysis.
+metrics for canonical phoneme recognition, perceived phoneme recognition,
+and error detection with per-speaker analysis.
 """
 
 import os
@@ -83,16 +83,27 @@ def evaluate_model(checkpoint_path, config, save_predictions=False):
 
     logger.info("Starting evaluation...")
 
-    # Evaluate phoneme recognition
-    logger.info("Evaluating phoneme recognition...")
-    phoneme_results = evaluator.evaluate_phoneme_recognition(
+    # Evaluate canonical phoneme recognition (multitask only)
+    canonical_results = None
+    if config.has_canonical_component():
+        logger.info("Evaluating canonical phoneme recognition...")
+        canonical_results = evaluator.evaluate_canonical_recognition(
+            model=model,
+            dataloader=eval_dataloader,
+            training_mode=config.training_mode,
+            id_to_phoneme=id_to_phoneme
+        )
+
+    # Evaluate perceived phoneme recognition
+    logger.info("Evaluating perceived phoneme recognition...")
+    perceived_results = evaluator.evaluate_perceived_recognition(
         model=model,
         dataloader=eval_dataloader,
         training_mode=config.training_mode,
         id_to_phoneme=id_to_phoneme
     )
 
-    # Evaluate error detection if applicable
+    # Evaluate error detection
     error_results = None
     if config.has_error_component():
         logger.info("Evaluating error detection...")
@@ -108,9 +119,14 @@ def evaluate_model(checkpoint_path, config, save_predictions=False):
     logger.info("Evaluation Results")
     logger.info("="*80)
 
-    logger.info("\n--- Phoneme Recognition ---")
-    logger.info(f"PER: {phoneme_results['per']:.4f}")
-    logger.info(f"Accuracy: {1.0 - phoneme_results['per']:.4f}")
+    if canonical_results:
+        logger.info("\n--- Canonical Phoneme Recognition ---")
+        logger.info(f"PER: {canonical_results['per']:.4f}")
+        logger.info(f"Accuracy: {1.0 - canonical_results['per']:.4f}")
+    
+    logger.info("\n--- Perceived Phoneme Recognition ---")
+    logger.info(f"PER: {perceived_results['per']:.4f}")
+    logger.info(f"Accuracy: {1.0 - perceived_results['per']:.4f}")
     
     if error_results:
         logger.info("\n--- Error Detection ---")
@@ -132,7 +148,8 @@ def evaluate_model(checkpoint_path, config, save_predictions=False):
             'checkpoint_path': checkpoint_path,
             'evaluation_date': datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S')
         },
-        'phoneme_recognition': phoneme_results,
+        'canonical_recognition': canonical_results,
+        'perceived_recognition': perceived_results,
         'error_detection': error_results
     }
 

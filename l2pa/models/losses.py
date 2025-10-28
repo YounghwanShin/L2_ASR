@@ -1,7 +1,7 @@
 """Loss functions for pronunciation assessment model.
 
 This module implements Focal CTC Loss for handling class imbalance and
-a unified loss class for multitask learning.
+a unified loss class for multi-task learning with up to three objectives.
 """
 
 import torch
@@ -11,9 +11,9 @@ import torch.nn as nn
 class FocalCTCLoss(nn.Module):
     """Focal Loss applied to CTC Loss for handling class imbalance.
     
-    Focal Loss helps the model focus on hard-to-classify samples by down-weighting
-    easy examples. This is particularly useful for pronunciation assessment where
-    some phoneme or error classes are much more frequent than others.
+    Focal Loss helps focus on hard-to-classify samples by down-weighting
+    easy examples, particularly useful for pronunciation assessment where
+    some classes are more frequent than others.
     
     Attributes:
         alpha: Weight factor for class balancing.
@@ -40,9 +40,8 @@ class FocalCTCLoss(nn.Module):
         """Computes the Focal CTC Loss.
         
         Args:
-            log_probs: Log probabilities from the model [T, N, C] where T is
-                sequence length, N is batch size, C is number of classes.
-            targets: Target sequences [N, S] where S is target sequence length.
+            log_probs: Log probabilities from model [T, N, C].
+            targets: Target sequences [N, S].
             input_lengths: Length of each input sequence [N].
             target_lengths: Length of each target sequence [N].
             
@@ -53,7 +52,7 @@ class FocalCTCLoss(nn.Module):
         ctc_losses = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
         ctc_losses = torch.clamp(ctc_losses, min=1e-6)
         
-        # Compute focal weight: (1 - p_t)^gamma where p_t = exp(-loss)
+        # Compute focal weight
         probability = torch.exp(-ctc_losses)
         probability = torch.clamp(probability, min=1e-6, max=1.0)
         focal_losses = ctc_losses * (self.alpha * (1 - probability) ** self.gamma)
@@ -62,83 +61,120 @@ class FocalCTCLoss(nn.Module):
 
 
 class UnifiedLoss(nn.Module):
-    """Unified loss function for multitask pronunciation assessment.
+    """Unified loss function for multi-task pronunciation assessment.
     
-    Combines phoneme recognition and error detection losses with configurable
-    weights. Uses Focal CTC Loss for both tasks to handle class imbalance.
+    Combines canonical phoneme, perceived phoneme, and error detection
+    losses with configurable weights. Uses Focal CTC Loss for all tasks.
     
     Attributes:
-        training_mode: Current training mode ('phoneme_only' or 'phoneme_error').
+        training_mode: Current training mode.
+        canonical_weight: Weight for canonical phoneme loss.
+        perceived_weight: Weight for perceived phoneme loss.
         error_weight: Weight for error detection loss.
-        phoneme_weight: Weight for phoneme recognition loss.
+        canonical_criterion: Focal CTC loss for canonical prediction.
+        perceived_criterion: Focal CTC loss for perceived prediction.
         error_criterion: Focal CTC loss for error detection.
-        phoneme_criterion: Focal CTC loss for phoneme recognition.
     """
     
     def __init__(self, 
                  training_mode: str = 'phoneme_only', 
-                 error_weight: float = 1.0, 
-                 phoneme_weight: float = 1.0, 
+                 canonical_weight: float = 0.3,
+                 perceived_weight: float = 0.3,
+                 error_weight: float = 0.4, 
                  focal_alpha: float = 1.0, 
                  focal_gamma: float = 2.0):
         """Initializes the Unified Loss.
         
         Args:
-            training_mode: Training mode ('phoneme_only' or 'phoneme_error').
+            training_mode: Training mode selection.
+            canonical_weight: Weight for canonical phoneme loss.
+            perceived_weight: Weight for perceived phoneme loss.
             error_weight: Weight for error detection loss.
-            phoneme_weight: Weight for phoneme recognition loss.
             focal_alpha: Alpha parameter for Focal Loss.
             focal_gamma: Gamma parameter for Focal Loss.
         """
         super().__init__()
         self.training_mode = training_mode
+        self.canonical_weight = canonical_weight
+        self.perceived_weight = perceived_weight
         self.error_weight = error_weight
-        self.phoneme_weight = phoneme_weight
         
-        # Initialize Focal CTC Loss for both tasks
+        # Initialize Focal CTC Loss for all tasks
+        self.canonical_criterion = FocalCTCLoss(
+            alpha=focal_alpha, gamma=focal_gamma, blank=0, zero_infinity=True
+        )
+        self.perceived_criterion = FocalCTCLoss(
+            alpha=focal_alpha, gamma=focal_gamma, blank=0, zero_infinity=True
+        )
         self.error_criterion = FocalCTCLoss(
             alpha=focal_alpha, gamma=focal_gamma, blank=0, zero_infinity=True
         )
-        self.phoneme_criterion = FocalCTCLoss(
-            alpha=focal_alpha, gamma=focal_gamma, blank=0, zero_infinity=True
-        )
 
-    def forward(self, outputs, phoneme_targets, phoneme_input_lengths, phoneme_target_lengths,
+    def forward(self, outputs, 
+                canonical_targets=None, canonical_input_lengths=None, canonical_target_lengths=None,
+                perceived_targets=None, perceived_input_lengths=None, perceived_target_lengths=None,
                 error_targets=None, error_input_lengths=None, error_target_lengths=None):
         """Computes the unified loss.
         
         Args:
-            outputs: Dictionary containing model outputs with keys 'phoneme_logits'
-                and optionally 'error_logits'.
-            phoneme_targets: Target phoneme sequences.
-            phoneme_input_lengths: Length of each input sequence for phoneme task.
-            phoneme_target_lengths: Length of each target phoneme sequence.
-            error_targets: Target error sequences (optional, for phoneme_error mode).
-            error_input_lengths: Length of each input sequence for error task (optional).
-            error_target_lengths: Length of each target error sequence (optional).
+            outputs: Dictionary containing model outputs.
+            canonical_targets: Target canonical phoneme sequences.
+            canonical_input_lengths: Input sequence lengths for canonical task.
+            canonical_target_lengths: Target sequence lengths for canonical task.
+            perceived_targets: Target perceived phoneme sequences.
+            perceived_input_lengths: Input sequence lengths for perceived task.
+            perceived_target_lengths: Target sequence lengths for perceived task.
+            error_targets: Target error sequences.
+            error_input_lengths: Input sequence lengths for error task.
+            error_target_lengths: Target sequence lengths for error task.
             
         Returns:
-            Tuple of (total_loss, loss_dict) where total_loss is the weighted sum of
-            individual losses and loss_dict contains breakdown of loss components.
+            Tuple of (total_loss, loss_dict) where total_loss is the weighted sum
+            and loss_dict contains breakdown of individual losses.
         """
         total_loss = 0.0
         loss_dict = {}
 
-        # Compute phoneme recognition loss
-        phoneme_log_probs = torch.log_softmax(outputs['phoneme_logits'], dim=-1)
-        phoneme_loss = self.phoneme_criterion(
-            phoneme_log_probs.transpose(0, 1),
-            phoneme_targets,
-            phoneme_input_lengths,
-            phoneme_target_lengths
-        )
-        weighted_phoneme_loss = self.phoneme_weight * phoneme_loss
-        total_loss += weighted_phoneme_loss
-        loss_dict['phoneme_loss'] = phoneme_loss.item()
+        # Canonical phoneme loss
+        if self.training_mode == 'multitask' and 'canonical_logits' in outputs:
+            if canonical_targets is not None and canonical_input_lengths is not None:
+                canonical_log_probs = torch.log_softmax(outputs['canonical_logits'], dim=-1)
+                canonical_loss = self.canonical_criterion(
+                    canonical_log_probs.transpose(0, 1),
+                    canonical_targets,
+                    canonical_input_lengths,
+                    canonical_target_lengths
+                )
+                weighted_canonical_loss = self.canonical_weight * canonical_loss
+                total_loss += weighted_canonical_loss
+                loss_dict['canonical_loss'] = canonical_loss.item()
 
-        # Compute error detection loss if in phoneme_error mode
-        if self.training_mode == 'phoneme_error' and 'error_logits' in outputs:
-            if error_targets is not None and error_input_lengths is not None and error_target_lengths is not None:
+        # Perceived phoneme loss
+        if 'perceived_logits' in outputs:
+            logits_key = 'perceived_logits'
+        elif 'phoneme_logits' in outputs:
+            # Backward compatibility
+            logits_key = 'phoneme_logits'
+        else:
+            logits_key = None
+
+        if logits_key and perceived_targets is not None and perceived_input_lengths is not None:
+            perceived_log_probs = torch.log_softmax(outputs[logits_key], dim=-1)
+            perceived_loss = self.perceived_criterion(
+                perceived_log_probs.transpose(0, 1),
+                perceived_targets,
+                perceived_input_lengths,
+                perceived_target_lengths
+            )
+            weighted_perceived_loss = self.perceived_weight * perceived_loss
+            total_loss += weighted_perceived_loss
+            loss_dict['perceived_loss'] = perceived_loss.item()
+            # Backward compatibility
+            loss_dict['phoneme_loss'] = perceived_loss.item()
+
+        # Error detection loss
+        if self.training_mode in ['phoneme_error', 'multitask'] and 'error_logits' in outputs:
+            if error_targets is not None and error_input_lengths is not None:
                 error_log_probs = torch.log_softmax(outputs['error_logits'], dim=-1)
                 error_loss = self.error_criterion(
                     error_log_probs.transpose(0, 1),

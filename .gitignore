@@ -30,11 +30,12 @@ ENV/
 env.bak/
 venv.bak/
 
-# PyCharm
+# IDEs
 .idea/
-
-# VS Code
 .vscode/
+*.swp
+*.swo
+*~
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -63,9 +64,6 @@ Thumbs.db
 
 # Temporary files
 *.tmp
-*.swp
-*.swo
-*~
 
 # Downloaded datasets
 *.tar.gz
@@ -74,7 +72,3 @@ Thumbs.db
 
 # NLTK data
 nltk_data/
-
-# Compiled files
-*.pyc
-*.pyo

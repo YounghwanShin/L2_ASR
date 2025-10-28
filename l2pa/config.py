@@ -1,7 +1,7 @@
 """Configuration module for pronunciation assessment model.
 
-This module defines all hyperparameters, model settings, and paths for the
-unified pronunciation assessment system.
+This module defines hyperparameters, model settings, and paths for the
+unified pronunciation assessment system with cross-validation support.
 """
 
 import os
@@ -16,27 +16,32 @@ class Config:
     """Configuration for model training and evaluation.
     
     Attributes:
-        pretrained_model: Name of the pretrained Wav2Vec2 model.
+        pretrained_model: Pretrained Wav2Vec2 model identifier.
         sampling_rate: Audio sampling rate in Hz.
         max_length: Maximum audio length in samples.
         num_phonemes: Number of phoneme classes.
-        num_error_types: Number of error types (blank, D, I, S, C).
-        training_mode: Training mode ('phoneme_only' or 'phoneme_error').
-        model_type: Model architecture type ('simple' or 'transformer').
+        num_error_types: Number of error types.
+        training_mode: Training mode selection.
+        model_type: Model architecture type.
         batch_size: Training batch size.
         eval_batch_size: Evaluation batch size.
         num_epochs: Number of training epochs.
-        gradient_accumulation: Number of gradient accumulation steps.
-        main_lr: Learning rate for main model parameters.
-        wav2vec_lr: Learning rate for Wav2Vec2 parameters.
-        error_weight: Weight for error detection loss.
-        phoneme_weight: Weight for phoneme recognition loss.
-        focal_alpha: Alpha parameter for Focal Loss.
-        focal_gamma: Gamma parameter for Focal Loss.
-        save_best_error: Whether to save best error detection checkpoint.
-        save_best_phoneme: Whether to save best phoneme recognition checkpoint.
-        save_best_loss: Whether to save best validation loss checkpoint.
-        wav2vec2_specaug: Whether to use SpecAugment.
+        gradient_accumulation: Gradient accumulation steps.
+        main_lr: Learning rate for main parameters.
+        wav2vec_lr: Learning rate for Wav2Vec2.
+        canonical_weight: Weight for canonical loss.
+        perceived_weight: Weight for perceived loss.
+        error_weight: Weight for error loss.
+        focal_alpha: Focal loss alpha parameter.
+        focal_gamma: Focal loss gamma parameter.
+        use_cross_validation: Enable cross-validation.
+        num_folds: Number of cross-validation folds.
+        current_fold: Current fold index.
+        save_best_canonical: Save best canonical checkpoint.
+        save_best_perceived: Save best perceived checkpoint.
+        save_best_error: Save best error checkpoint.
+        save_best_loss: Save best validation loss checkpoint.
+        wav2vec2_specaug: Enable SpecAugment.
         seed: Random seed for reproducibility.
     """
     
@@ -47,10 +52,10 @@ class Config:
 
     # Output dimensions
     num_phonemes = 42
-    num_error_types = 5  # blank(0), D(1), I(2), S(3), C(4)
+    num_error_types = 5
 
-    # Training mode: 'phoneme_only' or 'phoneme_error'
-    training_mode = 'phoneme_error'
+    # Training mode: 'phoneme_only', 'phoneme_error', 'multitask'
+    training_mode = 'multitask'
 
     # Model architecture: 'simple' or 'transformer'
     model_type = 'transformer'
@@ -65,24 +70,31 @@ class Config:
     main_lr = 3e-4
     wav2vec_lr = 1e-5
 
-    # Loss weights (error_weight + phoneme_weight = 1.0 for multitask learning)
+    # Loss weights (should sum to 1.0 for multitask mode)
+    canonical_weight = 0.3
+    perceived_weight = 0.3
     error_weight = 0.4
-    phoneme_weight = 0.6
 
-    # Focal Loss parameters
+    # Focal loss parameters
     focal_alpha = 0.25
     focal_gamma = 2.0
 
+    # Cross-validation settings
+    use_cross_validation = False
+    num_folds = 5
+    current_fold = 0
+
     # Checkpoint saving options
+    save_best_canonical = True
+    save_best_perceived = True
     save_best_error = True
-    save_best_phoneme = True
     save_best_loss = True
 
     # Other settings
     wav2vec2_specaug = True
     seed = 42
 
-    # Directory and file paths
+    # Directory paths
     base_experiment_dir = "experiments"
     experiment_name = None
 
@@ -108,25 +120,35 @@ class Config:
     }
 
     def __post_init__(self):
-        """Post-initialization processing.
+        """Performs post-initialization processing.
         
-        Validates weights and generates experiment name based on training mode
-        and model type.
+        Validates weights and generates experiment name based on configuration.
         """
         self._validate_weights()
 
         if self.experiment_name is None or not hasattr(self, '_last_model_type') or self._last_model_type != self.model_type:
             current_date = datetime.now(timezone('Asia/Seoul')).strftime('%Y%m%d%H%M%S')
 
-            # Generate experiment name based on training mode and model type
+            # Generate experiment name
+            if self.use_cross_validation:
+                cv_suffix = f"_fold{self.current_fold}"
+            else:
+                cv_suffix = ""
+
             if self.training_mode == 'phoneme_only':
                 model_prefix = f'phoneme_{self.model_type}'
-                self.experiment_name = f"{model_prefix}_{current_date}"
+                self.experiment_name = f"{model_prefix}_{current_date}{cv_suffix}"
             elif self.training_mode == 'phoneme_error':
                 model_prefix = f'phoneme_error_{self.model_type}'
                 error_ratio = str(int(self.error_weight * 10)).zfill(2)
-                phoneme_ratio = str(int(self.phoneme_weight * 10)).zfill(2)
-                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_{current_date}"
+                phoneme_ratio = str(int(self.perceived_weight * 10)).zfill(2)
+                self.experiment_name = f"{model_prefix}{error_ratio}{phoneme_ratio}_{current_date}{cv_suffix}"
+            elif self.training_mode == 'multitask':
+                model_prefix = f'multitask_{self.model_type}'
+                c_ratio = str(int(self.canonical_weight * 10)).zfill(2)
+                p_ratio = str(int(self.perceived_weight * 10)).zfill(2)
+                e_ratio = str(int(self.error_weight * 10)).zfill(2)
+                self.experiment_name = f"{model_prefix}{c_ratio}{p_ratio}{e_ratio}_{current_date}{cv_suffix}"
 
             self._last_model_type = self.model_type
 
@@ -137,46 +159,68 @@ class Config:
         self.result_dir = os.path.join(self.experiment_dir, 'results')
         self.output_dir = self.checkpoint_dir
 
+        # Update data paths for cross-validation
+        if self.use_cross_validation:
+            self.train_data = f"data/fold_{self.current_fold}_train.json"
+            self.val_data = f"data/fold_{self.current_fold}_val.json"
+
     def _validate_weights(self):
         """Validates and normalizes loss weights.
         
-        For multitask learning (phoneme_error mode), ensures that phoneme_weight
-        and error_weight sum to 1.0.
+        Ensures weights sum to 1.0 for multitask learning modes.
         """
         if self.training_mode == 'phoneme_only':
             pass
         elif self.training_mode == 'phoneme_error':
-            total = self.phoneme_weight + self.error_weight
+            total = self.perceived_weight + self.error_weight
             if abs(total - 1.0) > 1e-6:
-                print(f"Warning: phoneme_weight ({self.phoneme_weight}) + error_weight ({self.error_weight}) = {total} != 1.0")
+                print(f"Warning: Loss weights sum to {total} != 1.0")
                 print("Auto-normalizing weights...")
-                self.phoneme_weight = self.phoneme_weight / total
+                self.perceived_weight = self.perceived_weight / total
                 self.error_weight = self.error_weight / total
-                print(f"Normalized weights: phoneme_weight={self.phoneme_weight:.3f}, error_weight={self.error_weight:.3f}")
+                print(f"Normalized: perceived={self.perceived_weight:.3f}, error={self.error_weight:.3f}")
+        elif self.training_mode == 'multitask':
+            total = self.canonical_weight + self.perceived_weight + self.error_weight
+            if abs(total - 1.0) > 1e-6:
+                print(f"Warning: Loss weights sum to {total} != 1.0")
+                print("Auto-normalizing weights...")
+                self.canonical_weight = self.canonical_weight / total
+                self.perceived_weight = self.perceived_weight / total
+                self.error_weight = self.error_weight / total
+                print(f"Normalized: canonical={self.canonical_weight:.3f}, "
+                      f"perceived={self.perceived_weight:.3f}, error={self.error_weight:.3f}")
 
     def get_model_config(self):
-        """Returns model configuration with transformer flag.
+        """Returns model configuration dictionary.
         
         Returns:
-            Dictionary containing architecture-specific parameters and use_transformer flag.
+            Dictionary containing architecture parameters and transformer flag.
         """
         config = self.model_configs.get(self.model_type, self.model_configs['simple']).copy()
         config['use_transformer'] = (self.model_type == 'transformer')
         return config
 
     def has_error_component(self):
-        """Checks if current training mode includes error detection.
+        """Checks if training mode includes error detection.
         
         Returns:
-            True if training mode includes error detection, False otherwise.
+            Boolean indicating presence of error detection component.
         """
-        return self.training_mode == 'phoneme_error'
+        return self.training_mode in ['phoneme_error', 'multitask']
+
+    def has_canonical_component(self):
+        """Checks if training mode includes canonical phoneme recognition.
+        
+        Returns:
+            Boolean indicating presence of canonical component.
+        """
+        return self.training_mode == 'multitask'
 
     def save_config(self, path):
         """Saves configuration to JSON file.
         
         Args:
-            path: Path where configuration will be saved.
+            path: Output file path for configuration.
         """
         config_dict = {
             attr: getattr(self, attr) for attr in dir(self)
@@ -186,10 +230,10 @@ class Config:
             json.dump(config_dict, f, indent=2)
 
     def get_error_mapping(self):
-        """Returns error label mapping.
+        """Returns error label to index mapping.
         
         Returns:
-            Mapping from error type strings to integer indices.
+            Dictionary mapping error types to indices.
         """
         return {
             'blank': 0,
@@ -200,10 +244,10 @@ class Config:
         }
 
     def get_error_type_names(self):
-        """Returns error type name mapping.
+        """Returns error index to name mapping.
         
         Returns:
-            Mapping from integer indices to error type names.
+            Dictionary mapping indices to error type names.
         """
         return {
             0: 'blank',

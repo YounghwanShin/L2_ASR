@@ -1,7 +1,7 @@
 """Trainer module for pronunciation assessment model.
 
 This module implements the training loop, validation, and optimization
-procedures for the multitask pronunciation assessment system.
+procedures for the multi-task pronunciation assessment system.
 """
 
 import torch
@@ -19,13 +19,12 @@ class ModelTrainer:
     """Trainer class for pronunciation assessment model.
     
     Handles training and validation loops with mixed precision training,
-    gradient accumulation, and separate learning rates for Wav2Vec2 and
-    other model components.
+    gradient accumulation, and separate learning rates for different components.
     
     Attributes:
         model: The model to train.
         config: Configuration object containing hyperparameters.
-        device: Device for training ('cuda' or 'cpu').
+        device: Device for training.
         logger: Logger for training information.
         wav2vec_optimizer: Optimizer for Wav2Vec2 parameters.
         main_optimizer: Optimizer for other model parameters.
@@ -59,9 +58,8 @@ class ModelTrainer:
     def _setup_optimizers(self):
         """Sets up optimizers with different learning rates.
         
-        Wav2Vec2 parameters use a smaller learning rate to avoid disrupting
-        the pretrained representations, while other parameters use a larger
-        learning rate for faster adaptation.
+        Wav2Vec2 parameters use a smaller learning rate while other
+        parameters use a larger rate for faster adaptation.
         """
         wav2vec_params = []
         main_params = []
@@ -94,10 +92,8 @@ class ModelTrainer:
             enable_specaugment(self.model, True)
 
         total_loss = 0.0
-        error_loss_sum = 0.0
-        phoneme_loss_sum = 0.0
-        error_count = 0
-        phoneme_count = 0
+        loss_components = {'canonical': 0.0, 'perceived': 0.0, 'error': 0.0}
+        loss_counts = {'canonical': 0, 'perceived': 0, 'error': 0}
 
         progress_bar = tqdm(dataloader, desc=f'Epoch {epoch}')
 
@@ -108,10 +104,8 @@ class ModelTrainer:
             # Prepare input data
             waveforms = batch_data['waveforms'].to(self.device)
             audio_lengths = batch_data['audio_lengths'].to(self.device)
-            phoneme_labels = batch_data['phoneme_labels'].to(self.device)
-            phoneme_lengths = batch_data['phoneme_lengths'].to(self.device)
 
-            # Compute input lengths after Wav2Vec2 feature extraction
+            # Compute input lengths after feature extraction
             input_lengths = compute_output_lengths(self.model, audio_lengths)
             normalized_lengths = audio_lengths.float() / waveforms.shape[1]
             attention_mask = create_attention_mask(waveforms, normalized_lengths)
@@ -120,13 +114,27 @@ class ModelTrainer:
             with torch.amp.autocast('cuda'):
                 outputs = self.model(waveforms, attention_mask=attention_mask, training_mode=self.config.training_mode)
 
-                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
+                # Prepare loss arguments
+                loss_kwargs = {}
 
-                # Prepare error detection targets if applicable
-                error_targets = None
-                error_input_lengths = None
-                error_target_lengths = None
+                # Canonical phoneme targets
+                if 'canonical_labels' in batch_data:
+                    canonical_labels = batch_data['canonical_labels'].to(self.device)
+                    canonical_lengths = batch_data['canonical_lengths'].to(self.device)
+                    canonical_input_lengths = torch.clamp(input_lengths, min=1, max=outputs.get('canonical_logits', outputs['perceived_logits']).size(1))
+                    loss_kwargs['canonical_targets'] = canonical_labels
+                    loss_kwargs['canonical_input_lengths'] = canonical_input_lengths
+                    loss_kwargs['canonical_target_lengths'] = canonical_lengths
 
+                # Perceived phoneme targets
+                perceived_labels = batch_data['perceived_labels'].to(self.device)
+                perceived_lengths = batch_data['perceived_lengths'].to(self.device)
+                perceived_input_lengths = torch.clamp(input_lengths, min=1, max=outputs.get('perceived_logits', outputs.get('phoneme_logits')).size(1))
+                loss_kwargs['perceived_targets'] = perceived_labels
+                loss_kwargs['perceived_input_lengths'] = perceived_input_lengths
+                loss_kwargs['perceived_target_lengths'] = perceived_lengths
+
+                # Error detection targets
                 if self.config.has_error_component() and 'error_labels' in batch_data:
                     error_labels = batch_data['error_labels'].to(self.device)
                     error_lengths = batch_data['error_lengths'].to(self.device)
@@ -135,31 +143,26 @@ class ModelTrainer:
                     # Filter out samples with empty error labels
                     valid_error_mask = error_lengths > 0
                     if valid_error_mask.any():
-                        error_targets = error_labels[valid_error_mask]
-                        error_input_lengths = error_input_lengths[valid_error_mask]
-                        error_target_lengths = error_lengths[valid_error_mask]
+                        loss_kwargs['error_targets'] = error_labels[valid_error_mask]
+                        loss_kwargs['error_input_lengths'] = error_input_lengths[valid_error_mask]
+                        loss_kwargs['error_target_lengths'] = error_lengths[valid_error_mask]
 
                 # Compute loss
-                loss, loss_dict = criterion(
-                    outputs,
-                    phoneme_targets=phoneme_labels,
-                    phoneme_input_lengths=phoneme_input_lengths,
-                    phoneme_target_lengths=phoneme_lengths,
-                    error_targets=error_targets,
-                    error_input_lengths=error_input_lengths,
-                    error_target_lengths=error_target_lengths
-                )
+                loss, loss_dict = criterion(outputs, **loss_kwargs)
 
                 # Scale loss for gradient accumulation
                 scaled_loss = loss / self.config.gradient_accumulation
                 
                 # Accumulate individual loss components
+                if 'canonical_loss' in loss_dict:
+                    loss_components['canonical'] += loss_dict['canonical_loss']
+                    loss_counts['canonical'] += 1
+                if 'perceived_loss' in loss_dict:
+                    loss_components['perceived'] += loss_dict['perceived_loss']
+                    loss_counts['perceived'] += 1
                 if 'error_loss' in loss_dict:
-                    error_loss_sum += loss_dict['error_loss']
-                    error_count += 1
-                if 'phoneme_loss' in loss_dict:
-                    phoneme_loss_sum += loss_dict['phoneme_loss']
-                    phoneme_count += 1
+                    loss_components['error'] += loss_dict['error_loss']
+                    loss_counts['error'] += 1
 
             # Backward pass
             if scaled_loss > 0:
@@ -180,8 +183,7 @@ class ModelTrainer:
                 torch.cuda.empty_cache()
 
             # Update progress bar
-            self._update_progress_bar(progress_bar, total_loss, error_loss_sum, phoneme_loss_sum, 
-                                    error_count, phoneme_count, batch_idx)
+            self._update_progress_bar(progress_bar, total_loss, loss_components, loss_counts, batch_idx)
 
         torch.cuda.empty_cache()
         return total_loss / (len(dataloader) // self.config.gradient_accumulation)
@@ -212,10 +214,8 @@ class ModelTrainer:
                 # Prepare input data
                 waveforms = batch_data['waveforms'].to(self.device)
                 audio_lengths = batch_data['audio_lengths'].to(self.device)
-                phoneme_labels = batch_data['phoneme_labels'].to(self.device)
-                phoneme_lengths = batch_data['phoneme_lengths'].to(self.device)
 
-                # Compute input lengths after Wav2Vec2 feature extraction
+                # Compute input lengths
                 input_lengths = compute_output_lengths(self.model, audio_lengths)
                 normalized_lengths = audio_lengths.float() / waveforms.shape[1]
                 attention_mask = create_attention_mask(waveforms, normalized_lengths)
@@ -223,13 +223,27 @@ class ModelTrainer:
                 # Forward pass
                 outputs = self.model(waveforms, attention_mask=attention_mask, training_mode=self.config.training_mode)
 
-                phoneme_input_lengths = torch.clamp(input_lengths, min=1, max=outputs['phoneme_logits'].size(1))
+                # Prepare loss arguments
+                loss_kwargs = {}
 
-                # Prepare error detection targets if applicable
-                error_targets = None
-                error_input_lengths = None
-                error_target_lengths = None
+                # Canonical phoneme targets
+                if 'canonical_labels' in batch_data:
+                    canonical_labels = batch_data['canonical_labels'].to(self.device)
+                    canonical_lengths = batch_data['canonical_lengths'].to(self.device)
+                    canonical_input_lengths = torch.clamp(input_lengths, min=1, max=outputs.get('canonical_logits', outputs['perceived_logits']).size(1))
+                    loss_kwargs['canonical_targets'] = canonical_labels
+                    loss_kwargs['canonical_input_lengths'] = canonical_input_lengths
+                    loss_kwargs['canonical_target_lengths'] = canonical_lengths
 
+                # Perceived phoneme targets
+                perceived_labels = batch_data['perceived_labels'].to(self.device)
+                perceived_lengths = batch_data['perceived_lengths'].to(self.device)
+                perceived_input_lengths = torch.clamp(input_lengths, min=1, max=outputs.get('perceived_logits', outputs.get('phoneme_logits')).size(1))
+                loss_kwargs['perceived_targets'] = perceived_labels
+                loss_kwargs['perceived_input_lengths'] = perceived_input_lengths
+                loss_kwargs['perceived_target_lengths'] = perceived_lengths
+
+                # Error detection targets
                 if self.config.has_error_component() and 'error_labels' in batch_data:
                     error_labels = batch_data['error_labels'].to(self.device)
                     error_lengths = batch_data['error_lengths'].to(self.device)
@@ -238,20 +252,12 @@ class ModelTrainer:
                     # Filter out samples with empty error labels
                     valid_error_mask = error_lengths > 0
                     if valid_error_mask.any():
-                        error_targets = error_labels[valid_error_mask]
-                        error_input_lengths = error_input_lengths[valid_error_mask]
-                        error_target_lengths = error_lengths[valid_error_mask]
+                        loss_kwargs['error_targets'] = error_labels[valid_error_mask]
+                        loss_kwargs['error_input_lengths'] = error_input_lengths[valid_error_mask]
+                        loss_kwargs['error_target_lengths'] = error_lengths[valid_error_mask]
 
                 # Compute loss
-                loss, _ = criterion(
-                    outputs,
-                    phoneme_targets=phoneme_labels,
-                    phoneme_input_lengths=phoneme_input_lengths,
-                    phoneme_target_lengths=phoneme_lengths,
-                    error_targets=error_targets,
-                    error_input_lengths=error_input_lengths,
-                    error_target_lengths=error_target_lengths
-                )
+                loss, _ = criterion(outputs, **loss_kwargs)
 
                 total_loss += loss.item() if loss > 0 else 0
                 progress_bar.set_postfix({'Val_Loss': total_loss / (batch_idx + 1)})
@@ -259,29 +265,32 @@ class ModelTrainer:
         torch.cuda.empty_cache()
         return total_loss / len(dataloader)
 
-    def _update_progress_bar(self, progress_bar, total_loss, error_loss_sum, phoneme_loss_sum,
-                           error_count, phoneme_count, batch_idx):
+    def _update_progress_bar(self, progress_bar, total_loss, loss_components, loss_counts, batch_idx):
         """Updates progress bar with loss information.
         
         Args:
             progress_bar: tqdm progress bar object.
             total_loss: Accumulated total loss.
-            error_loss_sum: Sum of error detection losses.
-            phoneme_loss_sum: Sum of phoneme recognition losses.
-            error_count: Number of error loss computations.
-            phoneme_count: Number of phoneme loss computations.
+            loss_components: Dictionary of individual loss sums.
+            loss_counts: Dictionary of loss computation counts.
             batch_idx: Current batch index.
         """
         avg_total = total_loss / max(((batch_idx + 1) // self.config.gradient_accumulation), 1)
-        avg_error = error_loss_sum / max(error_count, 1)
-        avg_phoneme = phoneme_loss_sum / max(phoneme_count, 1)
-
-        progress_dict = {
-            'Total': f'{avg_total:.4f}',
-            'Phoneme': f'{avg_phoneme:.4f}'
-        }
-        if self.config.has_error_component():
-            progress_dict['Error'] = f'{avg_error:.4f}'
+        
+        progress_dict = {'Total': f'{avg_total:.4f}'}
+        
+        if self.config.training_mode == 'multitask':
+            if loss_counts['canonical'] > 0:
+                progress_dict['Canon'] = f"{loss_components['canonical'] / loss_counts['canonical']:.4f}"
+            if loss_counts['perceived'] > 0:
+                progress_dict['Perceiv'] = f"{loss_components['perceived'] / loss_counts['perceived']:.4f}"
+            if loss_counts['error'] > 0:
+                progress_dict['Error'] = f"{loss_components['error'] / loss_counts['error']:.4f}"
+        else:
+            if loss_counts['perceived'] > 0:
+                progress_dict['Phoneme'] = f"{loss_components['perceived'] / loss_counts['perceived']:.4f}"
+            if loss_counts['error'] > 0:
+                progress_dict['Error'] = f"{loss_components['error'] / loss_counts['error']:.4f}"
 
         progress_bar.set_postfix(progress_dict)
 

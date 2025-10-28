@@ -1,13 +1,15 @@
 # L2 Pronunciation Assessment
 
-A state-of-the-art deep learning system for assessing pronunciation quality of second language learners. This system uses a Wav2Vec2-based unified architecture to perform phoneme recognition and error detection simultaneously.
+A state-of-the-art deep learning system for assessing pronunciation quality of second language learners. This system uses a Wav2Vec2-based unified architecture for multi-task learning with cross-validation support.
 
 ## Features
 
-- **Phoneme Recognition**: CTC-based phoneme sequence prediction with 42 phoneme classes
-- **Error Detection**: Classification of pronunciation errors (deletion, insertion, substitution, correct)
-- **Unified Training**: Multitask learning framework for joint optimization
-- **Flexible Architecture**: Support for both Simple and Transformer-based encoders
+- **Canonical Phoneme Recognition**: CTC-based prediction of correct phoneme sequences
+- **Perceived Phoneme Recognition**: Prediction of actual learner phoneme sequences
+- **Error Detection**: Classification of pronunciation errors (D, I, S, C)
+- **Multi-Task Learning**: Joint optimization of all three tasks
+- **Cross-Validation**: K-fold cross-validation for robust evaluation
+- **Flexible Architecture**: Support for Simple and Transformer-based encoders
 - **Comprehensive Evaluation**: Per-speaker metrics and detailed error analysis
 
 ## System Requirements
@@ -51,9 +53,14 @@ chmod +x download_dataset.sh
 
 ### 2. Preprocess Data
 
-Run all preprocessing steps (extraction, error label generation, train/test split):
+**Option A: Standard Train/Val/Test Split**
 ```bash
 python preprocess.py all --data_root data/l2arctic --output_dir data
+```
+
+**Option B: Cross-Validation Splits**
+```bash
+python preprocess.py all --data_root data/l2arctic --output_dir data --use_cv --num_folds 5
 ```
 
 Or run each step individually:
@@ -64,61 +71,77 @@ python preprocess.py extract --data_root data/l2arctic --output data/preprocesse
 # Step 2: Generate error labels
 python preprocess.py labels --input data/preprocessed.json --output data/processed_with_error.json
 
-# Step 3: Split into train/test sets
+# Step 3a: Standard split
 python preprocess.py split --input data/processed_with_error.json --output_dir data
+
+# Step 3b: Cross-validation folds
+python preprocess.py cv --input data/processed_with_error.json --output_dir data --num_folds 5
 ```
 
 ### 3. Train Model
 
-Train with default settings:
+**Standard Training (Single Split)**
 ```bash
+# Multi-task mode (all three tasks)
+python main.py train --training_mode multitask --model_type transformer
+
+# Perceived phoneme + error detection
 python main.py train --training_mode phoneme_error --model_type transformer
+
+# Perceived phoneme only
+python main.py train --training_mode phoneme_only --model_type transformer
 ```
 
-Train with custom configuration:
+**Cross-Validation Training**
+```bash
+python main.py train --training_mode multitask --model_type transformer --use_cv --num_folds 5
+```
+
+**With Custom Configuration**
 ```bash
 python main.py train \
-    --training_mode phoneme_error \
+    --training_mode multitask \
     --model_type transformer \
     --config "batch_size=32,num_epochs=100,main_lr=5e-4" \
     --experiment_name my_experiment
 ```
 
-Resume training from checkpoint:
+**Resume Training**
 ```bash
 python main.py train --resume experiments/my_experiment/checkpoints/latest.pth
 ```
 
 ### 4. Evaluate Model
 ```bash
-python main.py eval --checkpoint experiments/my_experiment/checkpoints/best_phoneme.pth
+python main.py eval --checkpoint experiments/my_experiment/checkpoints/best_perceived.pth
 ```
 
 With specific configuration:
 ```bash
 python main.py eval \
-    --checkpoint experiments/my_experiment/checkpoints/best_phoneme.pth \
-    --training_mode phoneme_error \
+    --checkpoint experiments/my_experiment/checkpoints/best_canonical.pth \
+    --training_mode multitask \
     --save_predictions
 ```
 
 ## Project Structure
 ```
 l2-pronunciation-assessment/
-├── main.py                          # Main entry point for training/evaluation
+├── main.py                          # Main entry point
 ├── preprocess.py                    # Preprocessing entry point
 ├── download_dataset.sh              # Dataset download script
 ├── requirements.txt                 # Python dependencies
 ├── setup_nltk.py                    # NLTK data setup
 ├── README.md                        # This file
-├── .gitignore                       # Git ignore rules
 ├── data/                            # Data directory
-│   ├── l2arctic/                    # L2-ARCTIC dataset (downloaded)
+│   ├── l2arctic/                    # L2-ARCTIC dataset
 │   ├── preprocessed.json            # Extracted phoneme data
 │   ├── processed_with_error.json   # Data with error labels
-│   ├── train_labels.json            # Training set
-│   ├── val_labels.json              # Validation set
+│   ├── train_labels.json            # Training set (standard split)
+│   ├── val_labels.json              # Validation set (standard split)
 │   ├── test_labels.json             # Test set
+│   ├── fold_0_train.json            # CV fold 0 training
+│   ├── fold_0_val.json              # CV fold 0 validation
 │   └── phoneme_map.json             # Phoneme to ID mapping
 ├── experiments/                     # Experiment outputs
 │   └── [experiment_name]/
@@ -156,6 +179,16 @@ l2-pronunciation-assessment/
 
 Key configuration parameters can be modified in `l2pa/config.py`:
 
+### Training Modes
+```python
+# Training mode options
+training_mode = 'multitask'  # 'phoneme_only', 'phoneme_error', or 'multitask'
+```
+
+- **phoneme_only**: Perceived phoneme recognition only
+- **phoneme_error**: Perceived phoneme + error detection
+- **multitask**: Canonical + perceived phoneme + error detection
+
 ### Model Architecture
 ```python
 model_type = 'transformer'  # 'simple' or 'transformer'
@@ -176,40 +209,82 @@ wav2vec_lr = 1e-5
 
 ### Loss Configuration
 ```python
-training_mode = 'phoneme_error'  # 'phoneme_only' or 'phoneme_error'
+# For multitask mode (should sum to 1.0)
+canonical_weight = 0.3
+perceived_weight = 0.3
 error_weight = 0.4
-phoneme_weight = 0.6
+
+# Focal loss parameters
 focal_alpha = 0.25
 focal_gamma = 2.0
+```
+
+### Cross-Validation
+```python
+use_cross_validation = False  # Enable cross-validation
+num_folds = 5                 # Number of folds
 ```
 
 ## Training Modes
 
 ### Phoneme-Only Mode
-
-Trains only phoneme recognition:
+Trains only perceived phoneme recognition:
 ```bash
 python main.py train --training_mode phoneme_only --model_type transformer
 ```
 
 ### Phoneme-Error Mode
-
-Trains both phoneme recognition and error detection:
+Trains perceived phoneme recognition and error detection:
 ```bash
 python main.py train --training_mode phoneme_error --model_type transformer
 ```
 
+### Multi-Task Mode
+Trains all three tasks simultaneously:
+```bash
+python main.py train --training_mode multitask --model_type transformer
+```
+
+## Cross-Validation
+
+### Creating CV Folds
+```bash
+python preprocess.py cv \
+    --input data/processed_with_error.json \
+    --output_dir data \
+    --num_folds 5 \
+    --seed 42
+```
+
+### Training with CV
+```bash
+python main.py train \
+    --training_mode multitask \
+    --model_type transformer \
+    --use_cv \
+    --num_folds 5
+```
+
+This will:
+1. Train 5 separate models (one per fold)
+2. Save checkpoints for each fold
+3. Generate fold-specific metrics
+4. Compute average and standard deviation across folds
+
+### CV Results
+Results are saved in:
+- Individual fold metrics: `experiments/[experiment]_fold{i}/results/final_metrics.json`
+- CV summary: `experiments/[experiment]_cv_summary.json`
+
 ## Model Architectures
 
 ### Simple Encoder
-
 Feed-forward architecture with two linear layers:
 ```bash
 python main.py train --model_type simple
 ```
 
 ### Transformer Encoder
-
 Multi-head self-attention with configurable layers:
 ```bash
 python main.py train --model_type transformer
@@ -217,21 +292,21 @@ python main.py train --model_type transformer
 
 ## Evaluation Metrics
 
-### Phoneme Recognition
+### Canonical Phoneme Recognition (Multitask Only)
+- **PER (Phoneme Error Rate)**: Overall prediction accuracy
 
-- **PER (Phoneme Error Rate)**: Overall phoneme prediction accuracy
-- **Mispronunciation Detection**: Precision, recall, and F1 for error detection
+### Perceived Phoneme Recognition
+- **PER**: Phoneme prediction accuracy
+- **Mispronunciation Detection**: Precision, recall, and F1
 - **Confusion Matrix**: True/False acceptance and rejection rates
 
 ### Error Classification
-
 - **Token Accuracy**: Per-token error classification accuracy
 - **Sequence Accuracy**: Percentage of perfectly predicted sequences
-- **Per-Class Metrics**: F1, precision, recall for each error type (D, I, S, C)
+- **Per-Class Metrics**: F1, precision, recall for each error type
 - **Weighted/Macro F1**: Aggregate performance metrics
 
 ### Per-Speaker Analysis
-
 Results are automatically computed for each speaker in the test set.
 
 ## Data Format
@@ -254,33 +329,29 @@ Results are automatically computed for each speaker in the test set.
 ```
 
 ### Error Label Types
-
 - **C**: Correct pronunciation
-- **D**: Deletion (phoneme missing from perceived speech)
-- **I**: Insertion (extra phoneme in perceived speech)
-- **S**: Substitution (phoneme replaced with different phoneme)
+- **D**: Deletion (phoneme missing)
+- **I**: Insertion (extra phoneme)
+- **S**: Substitution (phoneme replaced)
 
 ## Troubleshooting
 
 ### GPU Memory Issues
-
 Reduce batch size or increase gradient accumulation:
 ```bash
 python main.py train --config "batch_size=8,gradient_accumulation=4"
 ```
 
 ### Training Instability
-
 Lower learning rate:
 ```bash
 python main.py train --config "main_lr=1e-4,wav2vec_lr=5e-6"
 ```
 
 ### Overfitting
-
 Increase dropout or adjust loss weights:
 ```bash
-python main.py train --config "dropout=0.2,error_weight=0.5,phoneme_weight=0.5"
+python main.py train --config "dropout=0.2,canonical_weight=0.2,perceived_weight=0.4,error_weight=0.4"
 ```
 
 ## Citation
@@ -288,7 +359,7 @@ python main.py train --config "dropout=0.2,error_weight=0.5,phoneme_weight=0.5"
 If you use this code in your research, please cite:
 ```bibtex
 @misc{l2pronunciation2025,
-  title={L2 Pronunciation Assessment with Unified Neural Architecture},
+  title={L2 Pronunciation Assessment with Multi-Task Learning and Cross-Validation},
   author={Research Team},
   year={2025},
   publisher={GitHub},
@@ -326,4 +397,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Contact
 
-For questions or issues, please open an issue on GitHub or contact [your-email@example.com].
+For questions or issues, please open an issue on GitHub.

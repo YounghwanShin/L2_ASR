@@ -1,30 +1,31 @@
 """Unified model architecture for pronunciation assessment.
 
 This module implements the main model combining Wav2Vec2 encoder,
-feature processing, and task-specific output heads for phoneme recognition
-and error detection.
+feature processing, and task-specific output heads for canonical phoneme,
+perceived phoneme, and error detection.
 """
 
 import torch.nn as nn
 from transformers import Wav2Vec2Config
 
 from .encoders import Wav2VecEncoder, SimpleEncoder, TransformerEncoder
-from .heads import ErrorDetectionHead, PhonemeRecognitionHead
+from .heads import CanonicalHead, PerceivedHead, ErrorDetectionHead
 
 
 class UnifiedModel(nn.Module):
-    """Unified model for phoneme recognition and error detection.
+    """Unified model for multi-task pronunciation assessment.
     
     The model consists of three main components:
     1. Wav2Vec2 encoder for audio feature extraction
-    2. Feature encoder (Simple or Transformer) for feature enhancement
-    3. Task-specific output heads for phoneme and error prediction
+    2. Feature encoder (Simple or Transformer) for enhancement
+    3. Task-specific output heads for three prediction tasks
     
     Attributes:
         encoder: Wav2Vec2 encoder for audio processing.
-        feature_encoder: Additional encoding layer (Simple or Transformer).
+        feature_encoder: Additional encoding layer.
+        canonical_head: Output head for canonical phoneme prediction.
+        perceived_head: Output head for perceived phoneme prediction.
         error_head: Output head for error detection.
-        phoneme_head: Output head for phoneme recognition.
     """
     
     def __init__(self,
@@ -39,10 +40,10 @@ class UnifiedModel(nn.Module):
         """Initializes the unified model.
         
         Args:
-            pretrained_model_name: Name of pretrained Wav2Vec2 model.
+            pretrained_model_name: Pretrained Wav2Vec2 model identifier.
             hidden_dim: Hidden dimension for feature encoder.
             num_phonemes: Number of phoneme classes.
-            num_error_types: Number of error types (blank, D, I, S, C).
+            num_error_types: Number of error types.
             dropout: Dropout rate.
             use_transformer: Whether to use Transformer encoder.
             num_layers: Number of Transformer layers.
@@ -65,9 +66,10 @@ class UnifiedModel(nn.Module):
         else:
             self.feature_encoder = SimpleEncoder(wav2vec_dim, hidden_dim, dropout)
 
-        # Output heads
+        # Output heads for three tasks
+        self.canonical_head = CanonicalHead(hidden_dim, num_phonemes, dropout)
+        self.perceived_head = PerceivedHead(hidden_dim, num_phonemes, dropout)
         self.error_head = ErrorDetectionHead(hidden_dim, num_error_types, dropout)
-        self.phoneme_head = PhonemeRecognitionHead(hidden_dim, num_phonemes, dropout)
 
     def forward(self, waveform, attention_mask=None, training_mode='phoneme_only'):
         """Forward pass through the model.
@@ -75,10 +77,10 @@ class UnifiedModel(nn.Module):
         Args:
             waveform: Input audio waveform [batch_size, sequence_length].
             attention_mask: Attention mask for padding [batch_size, sequence_length].
-            training_mode: Training mode ('phoneme_only' or 'phoneme_error').
+            training_mode: Training mode selection.
             
         Returns:
-            Dictionary containing 'phoneme_logits' and optionally 'error_logits'.
+            Dictionary containing task-specific logits based on training mode.
         """
         # Extract Wav2Vec2 features
         features = self.encoder(waveform, attention_mask)
@@ -89,11 +91,22 @@ class UnifiedModel(nn.Module):
         else:
             enhanced_features = self.feature_encoder(features)
 
-        # Compute outputs
+        # Compute outputs based on training mode
         outputs = {}
-        outputs['phoneme_logits'] = self.phoneme_head(enhanced_features)
-
-        if training_mode == 'phoneme_error':
+        
+        if training_mode == 'phoneme_only':
+            # Only perceived phonemes (backward compatibility)
+            outputs['phoneme_logits'] = self.perceived_head(enhanced_features)
+            
+        elif training_mode == 'phoneme_error':
+            # Perceived phonemes and error detection
+            outputs['phoneme_logits'] = self.perceived_head(enhanced_features)
+            outputs['error_logits'] = self.error_head(enhanced_features)
+            
+        elif training_mode == 'multitask':
+            # All three tasks
+            outputs['canonical_logits'] = self.canonical_head(enhanced_features)
+            outputs['perceived_logits'] = self.perceived_head(enhanced_features)
             outputs['error_logits'] = self.error_head(enhanced_features)
 
         return outputs

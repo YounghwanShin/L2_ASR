@@ -1,7 +1,7 @@
 """Dataset module for pronunciation assessment model.
 
 This module implements the dataset class for loading and preprocessing
-audio data with phoneme and error labels.
+audio data with canonical phoneme, perceived phoneme, and error labels.
 """
 
 import torch
@@ -15,8 +15,8 @@ from typing import Dict, List, Optional
 class PronunciationDataset(Dataset):
     """Dataset class for pronunciation assessment.
     
-    Loads audio files with corresponding phoneme and error labels.
-    Supports two training modes: phoneme_only and phoneme_error.
+    Loads audio files with corresponding labels for multiple tasks.
+    Supports three training modes: phoneme_only, phoneme_error, and multitask.
     
     Attributes:
         data: Dictionary mapping audio paths to label dictionaries.
@@ -42,10 +42,10 @@ class PronunciationDataset(Dataset):
         Args:
             json_path: Path to data JSON file.
             phoneme_to_id: Phoneme to ID mapping dictionary.
-            training_mode: Training mode ('phoneme_only' or 'phoneme_error').
+            training_mode: Training mode selection.
             max_length: Maximum audio length in samples.
             sampling_rate: Target sampling rate.
-            device: Device for data loading ('cuda' or 'cpu').
+            device: Device for data loading.
         """
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
@@ -76,12 +76,16 @@ class PronunciationDataset(Dataset):
         for file_path in self.file_paths:
             item = self.data[file_path]
             has_error_labels = 'error_labels' in item and item['error_labels'] and item['error_labels'].strip()
-            has_phoneme_labels = 'perceived_train_target' in item and item['perceived_train_target'] and item['perceived_train_target'].strip()
+            has_canonical_labels = 'canonical_train_target' in item and item['canonical_train_target'] and item['canonical_train_target'].strip()
+            has_perceived_labels = 'perceived_train_target' in item and item['perceived_train_target'] and item['perceived_train_target'].strip()
 
-            if self.training_mode == 'phoneme_only' and has_phoneme_labels:
+            if self.training_mode == 'phoneme_only' and has_perceived_labels:
                 self.valid_files.append(file_path)
             elif self.training_mode == 'phoneme_error':
-                if has_phoneme_labels or has_error_labels:
+                if has_perceived_labels or has_error_labels:
+                    self.valid_files.append(file_path)
+            elif self.training_mode == 'multitask':
+                if has_canonical_labels and has_perceived_labels and has_error_labels:
                     self.valid_files.append(file_path)
             else:
                 self.valid_files.append(file_path)
@@ -122,7 +126,7 @@ class PronunciationDataset(Dataset):
                     filtered_files.append(file_path)
                 else:
                     excluded_count += 1
-                    print(f"Excluding long file: {file_path} ({waveform.shape[1]} samples, {waveform.shape[1]/self.sampling_rate:.1f}s)")
+                    print(f"Excluding long file: {file_path} ({waveform.shape[1]} samples)")
 
             except Exception as e:
                 print(f"Error loading {file_path}: {e}")
@@ -176,21 +180,8 @@ class PronunciationDataset(Dataset):
             'file_path': file_path
         }
 
-        # Process phoneme labels
-        perceived = item.get('perceived_train_target', '')
+        # Process canonical labels
         canonical = item.get('canonical_train_target', '')
-
-        if perceived and perceived.strip():
-            perceived_tokens = perceived.split()
-            result['phoneme_labels'] = torch.tensor(
-                [self.phoneme_to_id.get(p, 0) for p in perceived_tokens],
-                dtype=torch.long
-            )
-        else:
-            result['phoneme_labels'] = torch.tensor([], dtype=torch.long)
-
-        result['phoneme_length'] = torch.tensor(len(result['phoneme_labels']))
-
         if canonical and canonical.strip():
             canonical_tokens = canonical.split()
             result['canonical_labels'] = torch.tensor(
@@ -199,11 +190,26 @@ class PronunciationDataset(Dataset):
             )
         else:
             result['canonical_labels'] = torch.tensor([], dtype=torch.long)
-
         result['canonical_length'] = torch.tensor(len(result['canonical_labels']))
 
-        # Process error labels for phoneme_error mode
-        if self.training_mode == 'phoneme_error':
+        # Process perceived labels
+        perceived = item.get('perceived_train_target', '')
+        if perceived and perceived.strip():
+            perceived_tokens = perceived.split()
+            result['perceived_labels'] = torch.tensor(
+                [self.phoneme_to_id.get(p, 0) for p in perceived_tokens],
+                dtype=torch.long
+            )
+        else:
+            result['perceived_labels'] = torch.tensor([], dtype=torch.long)
+        result['perceived_length'] = torch.tensor(len(result['perceived_labels']))
+
+        # Backward compatibility
+        result['phoneme_labels'] = result['perceived_labels']
+        result['phoneme_length'] = result['perceived_length']
+
+        # Process error labels
+        if self.training_mode in ['phoneme_error', 'multitask']:
             errors = item.get('error_labels', '')
             if errors and errors.strip():
                 error_tokens = errors.split()
@@ -211,7 +217,6 @@ class PronunciationDataset(Dataset):
                 result['error_labels'] = torch.tensor(error_ids, dtype=torch.long)
             else:
                 result['error_labels'] = torch.tensor([], dtype=torch.long)
-
             result['error_length'] = torch.tensor(len(result['error_labels']))
 
         result['speaker_id'] = item.get('spk_id', 'UNKNOWN')
@@ -229,7 +234,7 @@ def collate_batch(batch: List[Dict], training_mode: str = 'phoneme_only') -> Opt
     Returns:
         Collated batch dictionary with padded tensors, or None if batch is empty.
     """
-    valid_samples = [item for item in batch if item['phoneme_labels'] is not None and len(item['phoneme_labels']) > 0]
+    valid_samples = [item for item in batch if item['perceived_labels'] is not None and len(item['perceived_labels']) > 0]
 
     if not valid_samples:
         return None
@@ -249,44 +254,35 @@ def collate_batch(batch: List[Dict], training_mode: str = 'phoneme_only') -> Opt
         'speaker_ids': [sample['speaker_id'] for sample in valid_samples]
     }
 
-    # Pad phoneme labels
-    phoneme_labels = [sample['phoneme_labels'] for sample in valid_samples]
-    if phoneme_labels and all(len(l) > 0 for l in phoneme_labels):
-        max_phoneme_len = max(l.shape[0] for l in phoneme_labels)
-        result['phoneme_labels'] = torch.stack([
-            torch.nn.functional.pad(l, (0, max_phoneme_len - l.shape[0]), value=0)
-            for l in phoneme_labels
+    # Pad canonical labels
+    if training_mode == 'multitask':
+        canonical_labels = [sample['canonical_labels'] for sample in valid_samples]
+        if canonical_labels and all(len(l) > 0 for l in canonical_labels):
+            max_canonical_len = max(l.shape[0] for l in canonical_labels)
+            result['canonical_labels'] = torch.stack([
+                torch.nn.functional.pad(l, (0, max_canonical_len - l.shape[0]), value=0)
+                for l in canonical_labels
+            ])
+            result['canonical_lengths'] = torch.tensor([sample['canonical_length'] for sample in valid_samples])
+
+    # Pad perceived labels
+    perceived_labels = [sample['perceived_labels'] for sample in valid_samples]
+    if perceived_labels and all(len(l) > 0 for l in perceived_labels):
+        max_perceived_len = max(l.shape[0] for l in perceived_labels)
+        result['perceived_labels'] = torch.stack([
+            torch.nn.functional.pad(l, (0, max_perceived_len - l.shape[0]), value=0)
+            for l in perceived_labels
         ])
     else:
-        result['phoneme_labels'] = torch.zeros((len(valid_samples), 1), dtype=torch.long)
+        result['perceived_labels'] = torch.zeros((len(valid_samples), 1), dtype=torch.long)
+    result['perceived_lengths'] = torch.tensor([sample['perceived_length'] for sample in valid_samples])
 
-    result['phoneme_lengths'] = torch.tensor([sample['phoneme_length'] for sample in valid_samples])
+    # Backward compatibility
+    result['phoneme_labels'] = result['perceived_labels']
+    result['phoneme_lengths'] = result['perceived_lengths']
 
-    # Pad canonical labels
-    canonical_labels = [sample.get('canonical_labels', torch.tensor([], dtype=torch.long)) for sample in valid_samples]
-    valid_canonical = [l for l in canonical_labels if len(l) > 0]
-
-    if valid_canonical:
-        max_canonical_len = max(l.shape[0] for l in valid_canonical)
-        padded_canonical = []
-        canonical_lengths = []
-
-        for sample in valid_samples:
-            canonical = sample.get('canonical_labels', torch.tensor([], dtype=torch.long))
-            if len(canonical) > 0:
-                padded_canonical.append(
-                    torch.nn.functional.pad(canonical, (0, max_canonical_len - canonical.shape[0]), value=0)
-                )
-                canonical_lengths.append(sample['canonical_length'])
-            else:
-                padded_canonical.append(torch.zeros(max_canonical_len, dtype=torch.long))
-                canonical_lengths.append(torch.tensor(0))
-
-        result['canonical_labels'] = torch.stack(padded_canonical)
-        result['canonical_lengths'] = torch.tensor(canonical_lengths)
-
-    # Pad error labels for phoneme_error mode
-    if training_mode == 'phoneme_error':
+    # Pad error labels
+    if training_mode in ['phoneme_error', 'multitask']:
         error_labels = [sample.get('error_labels', torch.tensor([], dtype=torch.long)) for sample in valid_samples]
         valid_error_labels = [l for l in error_labels if len(l) > 0]
 

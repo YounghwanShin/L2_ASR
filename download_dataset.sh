@@ -1,9 +1,8 @@
 #!/bin/bash
 
 # L2-ARCTIC Dataset Download Script
-# This script downloads and extracts the L2-ARCTIC dataset for pronunciation assessment
 
-set -e  # Exit on error
+set -e
 
 echo "================================================"
 echo "L2-ARCTIC Dataset Download Script"
@@ -21,7 +20,7 @@ fi
 
 # Download dataset
 echo "Downloading L2-ARCTIC dataset..."
-echo "This may take several minutes depending on your internet connection..."
+echo "This may take several minutes..."
 gdown 1VzREuX7hP_-ksDewcbD1AGebSR5ASGiw -O dataset.tar.gz
 
 if [ $? -eq 0 ]; then
@@ -60,13 +59,10 @@ if [ -d "data/l2arctic" ]; then
     echo "Dataset successfully downloaded and extracted!"
     echo "Location: ./data/l2arctic/"
     echo ""
-    echo "Dataset statistics:"
-    speaker_count=$(find data/l2arctic -maxdepth 1 -type d | tail -n +2 | wc -l)
-    echo "  Number of speakers: $speaker_count"
-    echo ""
     echo "Next steps:"
     echo "  1. Run preprocessing: python preprocess.py all"
-    echo "  2. Start training: python main.py train --training_mode phoneme_error --model_type transformer"
+    echo "  2. Or with CV: python preprocess.py all --use_cv --num_folds 5"
+    echo "  3. Start training: python main.py train --training_mode multitask"
     echo "================================================"
 else
     echo "Error: Dataset directory not found after extraction!"
