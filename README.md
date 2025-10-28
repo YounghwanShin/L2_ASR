@@ -38,7 +38,7 @@ chmod +x download_dataset.sh
 ```
 
 ```bash
-python data_preprocessing.py
+python preprocess_l2arctic.py
 ```
 
 This script performs:
