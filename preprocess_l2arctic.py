@@ -13,13 +13,6 @@ from nltk.corpus import cmudict
 import nltk
 from g2p_en import G2p
 
-# Download CMUdict if not available
-try:
-    nltk.data.find('corpora/cmudict')
-except LookupError:
-    nltk.download('cmudict')
-
-
 # ARPA phonemes
 ARPA_PHONEMES = [
     'aa', 'ae', 'ah', 'ao', 'aw', 'ax', 'ay', 'b', 'ch', 'd', 'dh', 'eh', 'er', 'ey',

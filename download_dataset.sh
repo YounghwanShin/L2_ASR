@@ -4,15 +4,15 @@ echo "Installing gdown..."
 pip install gdown
 
 echo "Downloading dataset..."
-gdown 1VzREuX7hP_-ksDewcbD1AGebSR5ASGiw -O dataset.zip
+gdown 1VzREuX7hP_-ksDewcbD1AGebSR5ASGiw -O dataset.tar.gz
 
 echo "Creating data directory..."
 mkdir -p data
 
 echo "Extracting dataset..."
-unzip dataset.zip -d data/
+tar -xzf dataset.tar.gz -C data/
 
 echo "Cleaning up..."
-rm dataset.zip
+rm dataset.tar.gz
 
 echo "Done! Dataset is in ./data/"
