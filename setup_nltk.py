@@ -13,6 +13,7 @@ def setup_nltk_data():
     
     resources = [
         ('corpora/cmudict', 'cmudict'),
+        ('taggers/averaged_perceptron_tagger_eng', 'averaged_perceptron_tagger_eng'),
     ]
     
     for path, name in resources:
