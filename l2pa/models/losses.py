@@ -1,4 +1,4 @@
-"""Loss functions for L2 pronunciation assessment model.
+"""Loss functions for pronunciation assessment model.
 
 This module implements Focal CTC Loss for handling class imbalance and
 a unified loss class for multitask learning.
@@ -54,9 +54,9 @@ class FocalCTCLoss(nn.Module):
         ctc_losses = torch.clamp(ctc_losses, min=1e-6)
         
         # Compute focal weight: (1 - p_t)^gamma where p_t = exp(-loss)
-        p_t = torch.exp(-ctc_losses)
-        p_t = torch.clamp(p_t, min=1e-6, max=1.0)
-        focal_losses = ctc_losses * (self.alpha * (1 - p_t) ** self.gamma)
+        probability = torch.exp(-ctc_losses)
+        probability = torch.clamp(probability, min=1e-6, max=1.0)
+        focal_losses = ctc_losses * (self.alpha * (1 - probability) ** self.gamma)
 
         return focal_losses.mean()
 
@@ -118,8 +118,8 @@ class UnifiedLoss(nn.Module):
             error_target_lengths: Length of each target error sequence (optional).
             
         Returns:
-            tuple: (total_loss, loss_dict) where total_loss is the weighted sum of
-                individual losses and loss_dict contains breakdown of loss components.
+            Tuple of (total_loss, loss_dict) where total_loss is the weighted sum of
+            individual losses and loss_dict contains breakdown of loss components.
         """
         total_loss = 0.0
         loss_dict = {}

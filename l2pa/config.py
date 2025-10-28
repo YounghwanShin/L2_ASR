@@ -1,7 +1,7 @@
-"""Configuration module for L2 pronunciation assessment model training and evaluation.
+"""Configuration module for pronunciation assessment model.
 
-This module defines the configuration class that manages all hyperparameters,
-model settings, and paths for the unified pronunciation assessment system.
+This module defines all hyperparameters, model settings, and paths for the
+unified pronunciation assessment system.
 """
 
 import os
@@ -13,7 +13,7 @@ from pytz import timezone
 
 @dataclass
 class Config:
-    """Configuration class for model training and evaluation.
+    """Configuration for model training and evaluation.
     
     Attributes:
         pretrained_model: Name of the pretrained Wav2Vec2 model.
@@ -83,7 +83,7 @@ class Config:
     seed = 42
 
     # Directory and file paths
-    base_experiment_dir = "../shared/experiments"
+    base_experiment_dir = "experiments"
     experiment_name = None
 
     train_data = "data/train_labels.json"
@@ -144,10 +144,8 @@ class Config:
         and error_weight sum to 1.0.
         """
         if self.training_mode == 'phoneme_only':
-            # No weight validation needed for single-task learning
             pass
         elif self.training_mode == 'phoneme_error':
-            # Validate that weights sum to 1.0 for multitask learning
             total = self.phoneme_weight + self.error_weight
             if abs(total - 1.0) > 1e-6:
                 print(f"Warning: phoneme_weight ({self.phoneme_weight}) + error_weight ({self.error_weight}) = {total} != 1.0")
@@ -160,8 +158,7 @@ class Config:
         """Returns model configuration with transformer flag.
         
         Returns:
-            dict: Model configuration including architecture-specific parameters
-                and use_transformer flag.
+            Dictionary containing architecture-specific parameters and use_transformer flag.
         """
         config = self.model_configs.get(self.model_type, self.model_configs['simple']).copy()
         config['use_transformer'] = (self.model_type == 'transformer')
@@ -171,7 +168,7 @@ class Config:
         """Checks if current training mode includes error detection.
         
         Returns:
-            bool: True if training mode includes error detection, False otherwise.
+            True if training mode includes error detection, False otherwise.
         """
         return self.training_mode == 'phoneme_error'
 
@@ -192,21 +189,21 @@ class Config:
         """Returns error label mapping.
         
         Returns:
-            dict: Mapping from error type strings to integer indices.
+            Mapping from error type strings to integer indices.
         """
         return {
             'blank': 0,
-            'D': 1,  # Deletion
-            'I': 2,  # Insertion
-            'S': 3,  # Substitution
-            'C': 4   # Correct
+            'D': 1,
+            'I': 2,
+            'S': 3,
+            'C': 4
         }
 
     def get_error_type_names(self):
         """Returns error type name mapping.
         
         Returns:
-            dict: Mapping from integer indices to error type names.
+            Mapping from integer indices to error type names.
         """
         return {
             0: 'blank',

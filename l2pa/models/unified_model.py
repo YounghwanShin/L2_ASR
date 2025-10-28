@@ -69,19 +69,19 @@ class UnifiedModel(nn.Module):
         self.error_head = ErrorDetectionHead(hidden_dim, num_error_types, dropout)
         self.phoneme_head = PhonemeRecognitionHead(hidden_dim, num_phonemes, dropout)
 
-    def forward(self, x, attention_mask=None, training_mode='phoneme_only'):
+    def forward(self, waveform, attention_mask=None, training_mode='phoneme_only'):
         """Forward pass through the model.
         
         Args:
-            x: Input audio waveform [batch_size, seq_len].
-            attention_mask: Attention mask for padding [batch_size, seq_len].
+            waveform: Input audio waveform [batch_size, sequence_length].
+            attention_mask: Attention mask for padding [batch_size, sequence_length].
             training_mode: Training mode ('phoneme_only' or 'phoneme_error').
             
         Returns:
             Dictionary containing 'phoneme_logits' and optionally 'error_logits'.
         """
         # Extract Wav2Vec2 features
-        features = self.encoder(x, attention_mask)
+        features = self.encoder(waveform, attention_mask)
 
         # Enhance features
         if hasattr(self.feature_encoder, 'transformer'):

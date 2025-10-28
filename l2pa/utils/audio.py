@@ -1,4 +1,4 @@
-"""Audio utility functions for pronunciation assessment model.
+"""Audio utility functions.
 
 This module provides utilities for audio processing, attention mask generation,
 CTC decoding, and Wav2Vec2 output length computation.
@@ -9,25 +9,25 @@ import torch.nn as nn
 from typing import List
 
 
-def make_attn_mask(wavs: torch.Tensor, wav_lens: torch.Tensor) -> torch.Tensor:
+def create_attention_mask(waveforms: torch.Tensor, normalized_lengths: torch.Tensor) -> torch.Tensor:
     """Creates attention mask for audio inputs.
     
     Args:
-        wavs: Batched audio tensor [batch_size, seq_len].
-        wav_lens: Normalized audio lengths [batch_size] with values in [0, 1].
+        waveforms: Batched audio tensor [batch_size, sequence_length].
+        normalized_lengths: Normalized audio lengths [batch_size] with values in [0, 1].
         
     Returns:
-        Attention mask [batch_size, seq_len] with 1 for valid positions and
-        0 for padded positions.
+        Attention mask [batch_size, sequence_length] with 1 for valid positions
+        and 0 for padded positions.
     """
-    abs_lens = (wav_lens * wavs.shape[1]).long()
-    attn_mask = wavs.new(wavs.shape).zero_().long()
-    for i in range(len(abs_lens)):
-        attn_mask[i, :abs_lens[i]] = 1
-    return attn_mask
+    absolute_lengths = (normalized_lengths * waveforms.shape[1]).long()
+    attention_mask = waveforms.new(waveforms.shape).zero_().long()
+    for i in range(len(absolute_lengths)):
+        attention_mask[i, :absolute_lengths[i]] = 1
+    return attention_mask
 
 
-def enable_wav2vec2_specaug(model: nn.Module, enable: bool = True):
+def enable_specaugment(model: nn.Module, enable: bool = True):
     """Enables or disables SpecAugment in Wav2Vec2 model.
     
     SpecAugment is a data augmentation technique that masks parts of the
@@ -42,7 +42,7 @@ def enable_wav2vec2_specaug(model: nn.Module, enable: bool = True):
         actual_model.encoder.wav2vec2.config.apply_spec_augment = enable
 
 
-def get_wav2vec2_output_lengths(model: nn.Module, input_lengths: torch.Tensor) -> torch.Tensor:
+def compute_output_lengths(model: nn.Module, input_lengths: torch.Tensor) -> torch.Tensor:
     """Computes Wav2Vec2 output lengths.
     
     Wav2Vec2 applies convolutions that downsample the input, so the output
@@ -61,36 +61,36 @@ def get_wav2vec2_output_lengths(model: nn.Module, input_lengths: torch.Tensor) -
     return wav2vec_model._get_feat_extract_output_lengths(input_lengths)
 
 
-def decode_ctc(log_probs: torch.Tensor, input_lengths: torch.Tensor, blank_idx: int = 0) -> List[List[int]]:
+def greedy_ctc_decode(log_probs: torch.Tensor, input_lengths: torch.Tensor, blank_idx: int = 0) -> List[List[int]]:
     """Performs CTC greedy decoding.
     
     CTC (Connectionist Temporal Classification) decoding removes repeated tokens
     and blank tokens to produce the final sequence.
     
     Args:
-        log_probs: Log probabilities [batch_size, seq_len, vocab_size].
+        log_probs: Log probabilities [batch_size, sequence_length, vocab_size].
         input_lengths: Input lengths [batch_size].
         blank_idx: Index of the blank token.
         
     Returns:
         List of decoded sequences, where each sequence is a list of token IDs.
     """
-    greedy_preds = torch.argmax(log_probs, dim=-1).cpu().numpy()
-    batch_size = greedy_preds.shape[0]
-    decoded_seqs = []
+    predictions = torch.argmax(log_probs, dim=-1).cpu().numpy()
+    batch_size = predictions.shape[0]
+    decoded_sequences = []
 
-    for b in range(batch_size):
-        seq = []
-        prev = blank_idx
-        actual_length = min(input_lengths[b].item(), greedy_preds.shape[1])
+    for batch_idx in range(batch_size):
+        sequence = []
+        previous_token = blank_idx
+        actual_length = min(input_lengths[batch_idx].item(), predictions.shape[1])
 
-        for t in range(actual_length):
-            pred = greedy_preds[b, t]
+        for time_step in range(actual_length):
+            current_token = predictions[batch_idx, time_step]
             # Add token if it's not blank and not a repeat of previous token
-            if pred != blank_idx and pred != prev:
-                seq.append(int(pred))
-            prev = pred
+            if current_token != blank_idx and current_token != previous_token:
+                sequence.append(int(current_token))
+            previous_token = current_token
 
-        decoded_seqs.append(seq)
+        decoded_sequences.append(sequence)
 
-    return decoded_seqs
+    return decoded_sequences

@@ -1,4 +1,4 @@
-"""Trainer module for unified pronunciation assessment model.
+"""Trainer module for pronunciation assessment model.
 
 This module implements the training loop, validation, and optimization
 procedures for the multitask pronunciation assessment system.
@@ -11,12 +11,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from ..utils.audio import (
-    make_attn_mask, enable_wav2vec2_specaug, get_wav2vec2_output_lengths
+    create_attention_mask, enable_specaugment, compute_output_lengths
 )
 
 
-class UnifiedTrainer:
-    """Trainer class for unified pronunciation assessment model.
+class ModelTrainer:
+    """Trainer class for pronunciation assessment model.
     
     Handles training and validation loops with mixed precision training,
     gradient accumulation, and separate learning rates for Wav2Vec2 and
@@ -91,7 +91,7 @@ class UnifiedTrainer:
         """
         self.model.train()
         if self.config.wav2vec2_specaug:
-            enable_wav2vec2_specaug(self.model, True)
+            enable_specaugment(self.model, True)
 
         total_loss = 0.0
         error_loss_sum = 0.0
@@ -105,8 +105,6 @@ class UnifiedTrainer:
             if batch_data is None:
                 continue
 
-            accumulated_loss = 0.0
-
             # Prepare input data
             waveforms = batch_data['waveforms'].to(self.device)
             audio_lengths = batch_data['audio_lengths'].to(self.device)
@@ -114,9 +112,9 @@ class UnifiedTrainer:
             phoneme_lengths = batch_data['phoneme_lengths'].to(self.device)
 
             # Compute input lengths after Wav2Vec2 feature extraction
-            input_lengths = get_wav2vec2_output_lengths(self.model, audio_lengths)
-            wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-            attention_mask = make_attn_mask(waveforms, wav_lens_norm)
+            input_lengths = compute_output_lengths(self.model, audio_lengths)
+            normalized_lengths = audio_lengths.float() / waveforms.shape[1]
+            attention_mask = create_attention_mask(waveforms, normalized_lengths)
 
             # Forward pass with mixed precision
             with torch.amp.autocast('cuda'):
@@ -153,7 +151,7 @@ class UnifiedTrainer:
                 )
 
                 # Scale loss for gradient accumulation
-                accumulated_loss = loss / self.config.gradient_accumulation
+                scaled_loss = loss / self.config.gradient_accumulation
                 
                 # Accumulate individual loss components
                 if 'error_loss' in loss_dict:
@@ -164,8 +162,8 @@ class UnifiedTrainer:
                     phoneme_count += 1
 
             # Backward pass
-            if accumulated_loss > 0:
-                self.scaler.scale(accumulated_loss).backward()
+            if scaled_loss > 0:
+                self.scaler.scale(scaled_loss).backward()
 
             # Optimizer step with gradient accumulation
             if (batch_idx + 1) % self.config.gradient_accumulation == 0:
@@ -175,7 +173,7 @@ class UnifiedTrainer:
                 self.wav2vec_optimizer.zero_grad()
                 self.main_optimizer.zero_grad()
 
-                total_loss += accumulated_loss.item() * self.config.gradient_accumulation if accumulated_loss > 0 else 0
+                total_loss += scaled_loss.item() * self.config.gradient_accumulation if scaled_loss > 0 else 0
 
             # Periodic memory cleanup
             if (batch_idx + 1) % 100 == 0:
@@ -201,7 +199,7 @@ class UnifiedTrainer:
             Average validation loss.
         """
         self.model.eval()
-        enable_wav2vec2_specaug(self.model, False)
+        enable_specaugment(self.model, False)
         total_loss = 0.0
 
         with torch.no_grad():
@@ -218,9 +216,9 @@ class UnifiedTrainer:
                 phoneme_lengths = batch_data['phoneme_lengths'].to(self.device)
 
                 # Compute input lengths after Wav2Vec2 feature extraction
-                input_lengths = get_wav2vec2_output_lengths(self.model, audio_lengths)
-                wav_lens_norm = audio_lengths.float() / waveforms.shape[1]
-                attention_mask = make_attn_mask(waveforms, wav_lens_norm)
+                input_lengths = compute_output_lengths(self.model, audio_lengths)
+                normalized_lengths = audio_lengths.float() / waveforms.shape[1]
+                attention_mask = create_attention_mask(waveforms, normalized_lengths)
 
                 # Forward pass
                 outputs = self.model(waveforms, attention_mask=attention_mask, training_mode=self.config.training_mode)
@@ -291,6 +289,6 @@ class UnifiedTrainer:
         """Returns the optimizers.
         
         Returns:
-            tuple: (wav2vec_optimizer, main_optimizer)
+            Tuple of (wav2vec_optimizer, main_optimizer).
         """
         return self.wav2vec_optimizer, self.main_optimizer

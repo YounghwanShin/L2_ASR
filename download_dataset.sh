@@ -1,18 +1,74 @@
 #!/bin/bash
 
-echo "Installing gdown..."
-pip install gdown
+# L2-ARCTIC Dataset Download Script
+# This script downloads and extracts the L2-ARCTIC dataset for pronunciation assessment
 
-echo "Downloading dataset..."
+set -e  # Exit on error
+
+echo "================================================"
+echo "L2-ARCTIC Dataset Download Script"
+echo "================================================"
+echo ""
+
+# Check if gdown is installed
+if ! command -v gdown &> /dev/null
+then
+    echo "gdown not found. Installing gdown..."
+    pip install gdown
+    echo "gdown installed successfully!"
+    echo ""
+fi
+
+# Download dataset
+echo "Downloading L2-ARCTIC dataset..."
+echo "This may take several minutes depending on your internet connection..."
 gdown 1VzREuX7hP_-ksDewcbD1AGebSR5ASGiw -O dataset.tar.gz
 
+if [ $? -eq 0 ]; then
+    echo "Download completed successfully!"
+    echo ""
+else
+    echo "Error: Download failed!"
+    exit 1
+fi
+
+# Create data directory
 echo "Creating data directory..."
 mkdir -p data
 
-echo "Extracting dataset..."
+# Extract dataset
+echo "Extracting dataset to data/l2arctic/..."
 tar -xzf dataset.tar.gz -C data/
 
-echo "Cleaning up..."
-rm dataset.tar.gz
+if [ $? -eq 0 ]; then
+    echo "Extraction completed successfully!"
+    echo ""
+else
+    echo "Error: Extraction failed!"
+    exit 1
+fi
 
-echo "Done! Dataset is in ./data/"
+# Clean up
+echo "Cleaning up temporary files..."
+rm dataset.tar.gz
+echo "Cleanup completed!"
+echo ""
+
+# Verify extraction
+if [ -d "data/l2arctic" ]; then
+    echo "================================================"
+    echo "Dataset successfully downloaded and extracted!"
+    echo "Location: ./data/l2arctic/"
+    echo ""
+    echo "Dataset statistics:"
+    speaker_count=$(find data/l2arctic -maxdepth 1 -type d | tail -n +2 | wc -l)
+    echo "  Number of speakers: $speaker_count"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Run preprocessing: python preprocess.py all"
+    echo "  2. Start training: python main.py train --training_mode phoneme_error --model_type transformer"
+    echo "================================================"
+else
+    echo "Error: Dataset directory not found after extraction!"
+    exit 1
+fi

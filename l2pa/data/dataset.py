@@ -12,15 +12,15 @@ from tqdm import tqdm
 from typing import Dict, List, Optional
 
 
-class UnifiedDataset(Dataset):
-    """Unified dataset class for pronunciation assessment.
+class PronunciationDataset(Dataset):
+    """Dataset class for pronunciation assessment.
     
     Loads audio files with corresponding phoneme and error labels.
     Supports two training modes: phoneme_only and phoneme_error.
     
     Attributes:
         data: Dictionary mapping audio paths to label dictionaries.
-        wav_files: List of audio file paths.
+        file_paths: List of audio file paths.
         phoneme_to_id: Mapping from phoneme strings to integer IDs.
         training_mode: Current training mode.
         sampling_rate: Target sampling rate for audio.
@@ -50,7 +50,7 @@ class UnifiedDataset(Dataset):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
 
-        self.wav_files = list(self.data.keys())
+        self.file_paths = list(self.data.keys())
         self.phoneme_to_id = phoneme_to_id
         self.training_mode = training_mode
         self.sampling_rate = sampling_rate
@@ -59,10 +59,10 @@ class UnifiedDataset(Dataset):
         
         # Error label mapping
         self.error_mapping = {
-            'D': 1,  # Deletion
-            'I': 2,  # Insertion
-            'S': 3,  # Substitution
-            'C': 4   # Correct
+            'D': 1,
+            'I': 2,
+            'S': 3,
+            'C': 4
         }
 
         self.valid_files = []
@@ -73,18 +73,18 @@ class UnifiedDataset(Dataset):
 
     def _filter_valid_files(self):
         """Filters valid files based on training mode and label availability."""
-        for wav_file in self.wav_files:
-            item = self.data[wav_file]
+        for file_path in self.file_paths:
+            item = self.data[file_path]
             has_error_labels = 'error_labels' in item and item['error_labels'] and item['error_labels'].strip()
             has_phoneme_labels = 'perceived_train_target' in item and item['perceived_train_target'] and item['perceived_train_target'].strip()
 
             if self.training_mode == 'phoneme_only' and has_phoneme_labels:
-                self.valid_files.append(wav_file)
+                self.valid_files.append(file_path)
             elif self.training_mode == 'phoneme_error':
                 if has_phoneme_labels or has_error_labels:
-                    self.valid_files.append(wav_file)
+                    self.valid_files.append(file_path)
             else:
-                self.valid_files.append(wav_file)
+                self.valid_files.append(file_path)
 
     def _filter_by_length(self):
         """Filters files by audio length.
@@ -95,9 +95,9 @@ class UnifiedDataset(Dataset):
         excluded_count = 0
         resamplers_cache = {}
 
-        for wav_file in tqdm(self.valid_files, desc="Processing audio files"):
+        for file_path in tqdm(self.valid_files, desc="Filtering by length"):
             try:
-                waveform, sample_rate = torchaudio.load(wav_file)
+                waveform, sample_rate = torchaudio.load(file_path)
 
                 if torch.cuda.is_available():
                     waveform = waveform.to(self.device)
@@ -119,13 +119,13 @@ class UnifiedDataset(Dataset):
                         waveform = resampler(waveform)
 
                 if waveform.shape[1] <= self.max_length:
-                    filtered_files.append(wav_file)
+                    filtered_files.append(file_path)
                 else:
                     excluded_count += 1
-                    print(f"Excluding long file: {wav_file} ({waveform.shape[1]} samples, {waveform.shape[1]/self.sampling_rate:.1f}s)")
+                    print(f"Excluding long file: {file_path} ({waveform.shape[1]} samples, {waveform.shape[1]/self.sampling_rate:.1f}s)")
 
             except Exception as e:
-                print(f"Error loading {wav_file}: {e}")
+                print(f"Error loading {file_path}: {e}")
                 excluded_count += 1
 
         print(f"Length filtering: {len(self.valid_files)} → {len(filtered_files)} files ({excluded_count} excluded)")
@@ -135,16 +135,16 @@ class UnifiedDataset(Dataset):
         """Returns the number of samples in the dataset."""
         return len(self.valid_files)
 
-    def load_waveform(self, wav_file: str) -> torch.Tensor:
+    def load_waveform(self, file_path: str) -> torch.Tensor:
         """Loads and preprocesses an audio file.
         
         Args:
-            wav_file: Path to audio file.
+            file_path: Path to audio file.
             
         Returns:
             Preprocessed audio waveform tensor.
         """
-        waveform, sample_rate = torchaudio.load(wav_file)
+        waveform, sample_rate = torchaudio.load(file_path)
         
         # Convert to mono
         if waveform.shape[0] > 1:
@@ -166,14 +166,14 @@ class UnifiedDataset(Dataset):
         Returns:
             Dictionary containing waveform, labels, and metadata.
         """
-        wav_file = self.valid_files[idx]
-        item = self.data[wav_file]
+        file_path = self.valid_files[idx]
+        item = self.data[file_path]
 
-        waveform = self.load_waveform(wav_file)
+        waveform = self.load_waveform(file_path)
         result = {
             'waveform': waveform,
             'audio_lengths': torch.tensor(waveform.shape[0], dtype=torch.long),
-            'wav_file': wav_file
+            'file_path': file_path
         }
 
         # Process phoneme labels
@@ -214,12 +214,12 @@ class UnifiedDataset(Dataset):
 
             result['error_length'] = torch.tensor(len(result['error_labels']))
 
-        result['spk_id'] = item.get('spk_id', 'UNKNOWN')
+        result['speaker_id'] = item.get('spk_id', 'UNKNOWN')
 
         return result
 
 
-def collate_fn(batch: List[Dict], training_mode: str = 'phoneme_only') -> Optional[Dict]:
+def collate_batch(batch: List[Dict], training_mode: str = 'phoneme_only') -> Optional[Dict]:
     """Collates batch data with proper padding.
     
     Args:
@@ -245,8 +245,8 @@ def collate_fn(batch: List[Dict], training_mode: str = 'phoneme_only') -> Option
     result = {
         'waveforms': padded_waveforms,
         'audio_lengths': torch.tensor([sample['audio_lengths'] for sample in valid_samples]),
-        'wav_files': [sample['wav_file'] for sample in valid_samples],
-        'spk_ids': [sample['spk_id'] for sample in valid_samples]
+        'file_paths': [sample['file_path'] for sample in valid_samples],
+        'speaker_ids': [sample['speaker_id'] for sample in valid_samples]
     }
 
     # Pad phoneme labels

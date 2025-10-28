@@ -1,7 +1,7 @@
-"""Encoder architectures for pronunciation assessment model.
+"""Encoder architectures for pronunciation assessment.
 
-This module implements various encoder architectures including Wav2Vec2,
-simple feed-forward, and Transformer-based encoders.
+This module implements encoder architectures including Wav2Vec2-based audio
+encoder, simple feed-forward encoder, and Transformer-based encoder.
 """
 
 import torch.nn as nn
@@ -31,17 +31,17 @@ class Wav2VecEncoder(nn.Module):
         config.mask_feature_prob = 0.0
         self.wav2vec2 = Wav2Vec2Model.from_pretrained(pretrained_model_name, config=config)
 
-    def forward(self, x, attention_mask=None):
+    def forward(self, waveform, attention_mask=None):
         """Performs Wav2Vec2 encoding.
         
         Args:
-            x: Input audio waveform [batch_size, seq_len].
-            attention_mask: Attention mask for padding [batch_size, seq_len].
+            waveform: Input audio waveform [batch_size, sequence_length].
+            attention_mask: Attention mask for padding [batch_size, sequence_length].
             
         Returns:
-            Encoded features [batch_size, seq_len, hidden_dim].
+            Encoded features [batch_size, sequence_length, hidden_dim].
         """
-        outputs = self.wav2vec2(x, attention_mask=attention_mask)
+        outputs = self.wav2vec2(waveform, attention_mask=attention_mask)
         return outputs.last_hidden_state
 
 
@@ -52,8 +52,8 @@ class SimpleEncoder(nn.Module):
     for feature transformation.
     
     Attributes:
-        linear1: First linear transformation.
-        linear2: Second linear transformation.
+        layer1: First linear transformation.
+        layer2: Second linear transformation.
         layer_norm: Layer normalization.
         dropout: Dropout layer.
     """
@@ -67,24 +67,24 @@ class SimpleEncoder(nn.Module):
             dropout: Dropout rate.
         """
         super().__init__()
-        self.linear1 = nn.Linear(input_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
+        self.layer1 = nn.Linear(input_dim, hidden_dim)
+        self.layer2 = nn.Linear(hidden_dim, hidden_dim)
         self.layer_norm = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, features):
         """Performs simple encoding.
         
         Args:
-            x: Input features [batch_size, seq_len, input_dim].
+            features: Input features [batch_size, sequence_length, input_dim].
             
         Returns:
-            Encoded features [batch_size, seq_len, hidden_dim].
+            Encoded features [batch_size, sequence_length, hidden_dim].
         """
-        x = F.relu(self.linear1(x))
-        x = self.dropout(x)
-        x = self.linear2(x)
-        return self.layer_norm(x)
+        hidden = F.relu(self.layer1(features))
+        hidden = self.dropout(hidden)
+        output = self.layer2(hidden)
+        return self.layer_norm(output)
 
 
 class TransformerEncoder(nn.Module):
@@ -130,17 +130,17 @@ class TransformerEncoder(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, attention_mask=None):
+    def forward(self, features, attention_mask=None):
         """Performs Transformer encoding.
         
         Args:
-            x: Input features [batch_size, seq_len, input_dim].
-            attention_mask: Attention mask for padding [batch_size, seq_len].
+            features: Input features [batch_size, sequence_length, input_dim].
+            attention_mask: Attention mask for padding [batch_size, sequence_length].
             
         Returns:
-            Encoded features [batch_size, seq_len, hidden_dim].
+            Encoded features [batch_size, sequence_length, hidden_dim].
         """
-        x = self.input_projection(x)
-        x = self.dropout(x)
-        x = self.transformer(x)
-        return self.layer_norm(x)
+        projected = self.input_projection(features)
+        projected = self.dropout(projected)
+        encoded = self.transformer(projected)
+        return self.layer_norm(encoded)

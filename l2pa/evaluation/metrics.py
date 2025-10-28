@@ -12,38 +12,38 @@ from collections import defaultdict
 from sklearn.metrics import classification_report, f1_score
 
 
-def edit_distance_with_details(ref: List, hyp: List) -> Tuple[int, int, int, int, int]:
+def compute_edit_distance_with_details(reference: List, hypothesis: List) -> Tuple[int, int, int, int, int]:
     """Computes edit distance with detailed error breakdown.
     
     Uses dynamic programming to compute Levenshtein distance and then
     backtracks to count specific error types.
     
     Args:
-        ref: Reference sequence.
-        hyp: Hypothesis sequence.
+        reference: Reference sequence.
+        hypothesis: Hypothesis sequence.
         
     Returns:
-        Tuple of (total_errors, substitutions, deletions, insertions, ref_length).
+        Tuple of (total_errors, substitutions, deletions, insertions, reference_length).
     """
-    len_ref, len_hyp = len(ref), len(hyp)
+    ref_len, hyp_len = len(reference), len(hypothesis)
 
-    if len_ref == 0:
-        return len_hyp, 0, 0, len_hyp, 0
-    if len_hyp == 0:
-        return len_ref, 0, len_ref, 0, len_ref
+    if ref_len == 0:
+        return hyp_len, 0, 0, hyp_len, 0
+    if hyp_len == 0:
+        return ref_len, 0, ref_len, 0, ref_len
 
     # Initialize DP table
-    dp = [[0] * (len_hyp + 1) for _ in range(len_ref + 1)]
+    dp = [[0] * (hyp_len + 1) for _ in range(ref_len + 1)]
 
-    for i in range(len_ref + 1):
+    for i in range(ref_len + 1):
         dp[i][0] = i
-    for j in range(len_hyp + 1):
+    for j in range(hyp_len + 1):
         dp[0][j] = j
 
     # Fill DP table
-    for i in range(1, len_ref + 1):
-        for j in range(1, len_hyp + 1):
-            if ref[i-1] == hyp[j-1]:
+    for i in range(1, ref_len + 1):
+        for j in range(1, hyp_len + 1):
+            if reference[i-1] == hypothesis[j-1]:
                 dp[i][j] = dp[i-1][j-1]
             else:
                 dp[i][j] = 1 + min(
@@ -52,14 +52,14 @@ def edit_distance_with_details(ref: List, hyp: List) -> Tuple[int, int, int, int
                     dp[i-1][j-1]     # Substitution
                 )
 
-    total_errors = dp[len_ref][len_hyp]
+    total_errors = dp[ref_len][hyp_len]
 
     # Backtrack to count error types
-    i, j = len_ref, len_hyp
+    i, j = ref_len, hyp_len
     substitutions = deletions = insertions = 0
 
     while i > 0 or j > 0:
-        if i > 0 and j > 0 and ref[i-1] == hyp[j-1]:
+        if i > 0 and j > 0 and reference[i-1] == hypothesis[j-1]:
             i -= 1
             j -= 1
         elif i > 0 and j > 0 and dp[i][j] == dp[i-1][j-1] + 1:
@@ -75,41 +75,40 @@ def edit_distance_with_details(ref: List, hyp: List) -> Tuple[int, int, int, int
         else:
             break
 
-    return total_errors, substitutions, deletions, insertions, len_ref
+    return total_errors, substitutions, deletions, insertions, ref_len
 
 
-def calculate_wer_details(ids: List, refs: List[List], hyps: List[List]) -> List[Dict]:
-    """Calculates Word Error Rate (WER) details for a batch.
+def calculate_sequence_error_rate(ids: List, references: List[List], hypotheses: List[List]) -> List[Dict]:
+    """Calculates sequence error rate details for a batch.
     
     Args:
         ids: List of sample IDs.
-        refs: List of reference sequences.
-        hyps: List of hypothesis sequences.
+        references: List of reference sequences.
+        hypotheses: List of hypothesis sequences.
         
     Returns:
-        List of dictionaries containing WER metrics for each sample.
+        List of dictionaries containing error rate metrics for each sample.
     """
     details = []
 
-    for i, (id_val, ref, hyp) in enumerate(zip(ids, refs, hyps)):
-        ref_tokens = [str(token) for token in ref]
-        hyp_tokens = [str(token) for token in hyp]
+    for sample_id, reference, hypothesis in zip(ids, references, hypotheses):
+        ref_tokens = [str(token) for token in reference]
+        hyp_tokens = [str(token) for token in hypothesis]
 
-        total_errors, substitutions, deletions, insertions, num_ref = edit_distance_with_details(
+        total_errors, substitutions, deletions, insertions, num_ref = compute_edit_distance_with_details(
             ref_tokens, hyp_tokens
         )
 
-        wer = total_errors / num_ref if num_ref > 0 else 0.0
+        error_rate = total_errors / num_ref if num_ref > 0 else 0.0
 
         detail = {
-            'id': id_val,
-            'WER': wer,
-            'num_ref_tokens': num_ref,
+            'id': sample_id,
+            'error_rate': error_rate,
+            'num_reference_tokens': num_ref,
             'substitutions': substitutions,
             'deletions': deletions,
             'insertions': insertions,
-            'num_scored_tokens': num_ref,
-            'num_hyp_tokens': len(hyp_tokens)
+            'num_hypothesis_tokens': len(hyp_tokens)
         }
 
         details.append(detail)
@@ -130,7 +129,7 @@ def convert_ids_to_phonemes(sequences: List[List[int]], id_to_phoneme: Dict[str,
     return [[id_to_phoneme.get(str(token_id), f"UNK_{token_id}") for token_id in seq] for seq in sequences]
 
 
-def remove_sil_tokens(sequences: List[List[str]]) -> List[List[str]]:
+def remove_silence_tokens(sequences: List[List[str]]) -> List[List[str]]:
     """Removes silence tokens from sequences.
     
     Args:
@@ -164,11 +163,14 @@ def calculate_mispronunciation_metrics(all_predictions: List[List[int]],
     canonical_phonemes = convert_ids_to_phonemes(all_canonical, id_to_phoneme)
     perceived_phonemes = convert_ids_to_phonemes(all_perceived, id_to_phoneme)
 
-    pred_phonemes = remove_sil_tokens(pred_phonemes)
-    canonical_phonemes = remove_sil_tokens(canonical_phonemes)
-    perceived_phonemes = remove_sil_tokens(perceived_phonemes)
+    pred_phonemes = remove_silence_tokens(pred_phonemes)
+    canonical_phonemes = remove_silence_tokens(canonical_phonemes)
+    perceived_phonemes = remove_silence_tokens(perceived_phonemes)
 
-    total_ta, total_fr, total_fa, total_tr = 0, 0, 0, 0
+    total_true_acceptance = 0
+    total_false_rejection = 0
+    total_false_acceptance = 0
+    total_true_rejection = 0
 
     for pred, canonical, perceived in zip(pred_phonemes, canonical_phonemes, perceived_phonemes):
         if len(canonical) == 0 or len(perceived) == 0 or len(pred) == 0:
@@ -180,46 +182,46 @@ def calculate_mispronunciation_metrics(all_predictions: List[List[int]],
         perceived_padded = perceived + ['<pad>'] * (max_len - len(perceived))
         pred_padded = pred + ['<pad>'] * (max_len - len(pred))
 
-        for c_phone, p_phone, pred_phone in zip(canonical_padded, perceived_padded, pred_padded):
-            if c_phone == '<pad>' or p_phone == '<pad>' or pred_phone == '<pad>':
+        for canonical_phone, perceived_phone, predicted_phone in zip(canonical_padded, perceived_padded, pred_padded):
+            if canonical_phone == '<pad>' or perceived_phone == '<pad>' or predicted_phone == '<pad>':
                 continue
 
-            is_correct = (c_phone == p_phone)
-            pred_correct = (c_phone == pred_phone)
+            is_correct = (canonical_phone == perceived_phone)
+            predicted_correct = (canonical_phone == predicted_phone)
 
-            if is_correct and pred_correct:
-                total_ta += 1
-            elif is_correct and not pred_correct:
-                total_fr += 1
-            elif not is_correct and pred_correct:
-                total_fa += 1
-            elif not is_correct and not pred_correct:
-                total_tr += 1
+            if is_correct and predicted_correct:
+                total_true_acceptance += 1
+            elif is_correct and not predicted_correct:
+                total_false_rejection += 1
+            elif not is_correct and predicted_correct:
+                total_false_acceptance += 1
+            elif not is_correct and not predicted_correct:
+                total_true_rejection += 1
 
     # Compute metrics
-    if (total_tr + total_fa) > 0:
-        recall = total_tr / (total_tr + total_fa)
+    if (total_true_rejection + total_false_acceptance) > 0:
+        recall = total_true_rejection / (total_true_rejection + total_false_acceptance)
     else:
         recall = 0.0
 
-    if (total_tr + total_fr) > 0:
-        precision = total_tr / (total_tr + total_fr)
+    if (total_true_rejection + total_false_rejection) > 0:
+        precision = total_true_rejection / (total_true_rejection + total_false_rejection)
     else:
         precision = 0.0
 
     if (precision + recall) > 0:
-        f1_score = 2.0 * precision * recall / (precision + recall)
+        f1_score_value = 2.0 * precision * recall / (precision + recall)
     else:
-        f1_score = 0.0
+        f1_score_value = 0.0
 
     return {
         'precision': precision,
         'recall': recall,
-        'f1_score': f1_score,
-        'ta': total_ta,
-        'fr': total_fr,
-        'fa': total_fa,
-        'tr': total_tr
+        'f1_score': f1_score_value,
+        'true_acceptance': total_true_acceptance,
+        'false_rejection': total_false_rejection,
+        'false_acceptance': total_false_acceptance,
+        'true_rejection': total_true_rejection
     }
 
 
@@ -238,17 +240,18 @@ def calculate_error_metrics(all_predictions: List[List[int]],
     Returns:
         Dictionary containing error detection metrics.
     """
-    wer_details = calculate_wer_details(
+    error_rate_details = calculate_sequence_error_rate(
         ids=all_ids,
-        refs=all_targets,
-        hyps=all_predictions
+        references=all_targets,
+        hypotheses=all_predictions
     )
 
-    total_sequences = len(wer_details)
-    correct_sequences = sum(1 for detail in wer_details if detail['WER'] == 0.0)
+    total_sequences = len(error_rate_details)
+    correct_sequences = sum(1 for detail in error_rate_details if detail['error_rate'] == 0.0)
 
-    total_tokens = sum(detail['num_ref_tokens'] for detail in wer_details)
-    total_errors = sum(detail['insertions'] + detail['deletions'] + detail['substitutions'] for detail in wer_details)
+    total_tokens = sum(detail['num_reference_tokens'] for detail in error_rate_details)
+    total_errors = sum(detail['insertions'] + detail['deletions'] + detail['substitutions'] 
+                      for detail in error_rate_details)
 
     sequence_accuracy = correct_sequences / total_sequences if total_sequences > 0 else 0
     token_accuracy = 1 - (total_errors / total_tokens) if total_tokens > 0 else 0
@@ -273,8 +276,8 @@ def calculate_error_metrics(all_predictions: List[List[int]],
             class_report = classification_report(flat_targets, flat_predictions, output_dict=True, zero_division=0)
 
             # Exclude blank from evaluation
-            eval_error_types = {k: v for k, v in error_type_names.items() if k != 0}
-            for class_id, class_name in eval_error_types.items():
+            evaluated_error_types = {k: v for k, v in error_type_names.items() if k != 0}
+            for class_id, class_name in evaluated_error_types.items():
                 if str(class_id) in class_report:
                     class_metrics[class_name] = {
                         'precision': float(class_report[str(class_id)]['precision']),
@@ -319,17 +322,18 @@ def calculate_phoneme_metrics(all_predictions: List[List[int]],
     pred_phonemes = convert_ids_to_phonemes(all_predictions, id_to_phoneme)
     target_phonemes = convert_ids_to_phonemes(all_targets, id_to_phoneme)
 
-    pred_phonemes = remove_sil_tokens(pred_phonemes)
-    target_phonemes = remove_sil_tokens(target_phonemes)
+    pred_phonemes = remove_silence_tokens(pred_phonemes)
+    target_phonemes = remove_silence_tokens(target_phonemes)
 
-    per_details = calculate_wer_details(
+    per_details = calculate_sequence_error_rate(
         ids=all_ids,
-        refs=target_phonemes,
-        hyps=pred_phonemes
+        references=target_phonemes,
+        hypotheses=pred_phonemes
     )
 
-    total_phonemes = sum(detail['num_ref_tokens'] for detail in per_details)
-    total_errors = sum(detail['insertions'] + detail['deletions'] + detail['substitutions'] for detail in per_details)
+    total_phonemes = sum(detail['num_reference_tokens'] for detail in per_details)
+    total_errors = sum(detail['insertions'] + detail['deletions'] + detail['substitutions'] 
+                      for detail in per_details)
     total_insertions = sum(detail['insertions'] for detail in per_details)
     total_deletions = sum(detail['deletions'] for detail in per_details)
     total_substitutions = sum(detail['substitutions'] for detail in per_details)
@@ -337,24 +341,35 @@ def calculate_phoneme_metrics(all_predictions: List[List[int]],
     per = total_errors / total_phonemes if total_phonemes > 0 else 0
 
     # Mispronunciation detection metrics
-    misp_metrics = {'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0, 'ta': 0, 'fr': 0, 'fa': 0, 'tr': 0}
+    mispronunciation_metrics = {
+        'precision': 0.0, 
+        'recall': 0.0, 
+        'f1_score': 0.0, 
+        'true_acceptance': 0, 
+        'false_rejection': 0, 
+        'false_acceptance': 0, 
+        'true_rejection': 0
+    }
+    
     if all_canonical and all_perceived:
-        misp_metrics = calculate_mispronunciation_metrics(all_predictions, all_canonical, all_perceived, id_to_phoneme)
+        mispronunciation_metrics = calculate_mispronunciation_metrics(
+            all_predictions, all_canonical, all_perceived, id_to_phoneme
+        )
 
     return {
         'per': float(per),
-        'mispronunciation_precision': float(misp_metrics['precision']),
-        'mispronunciation_recall': float(misp_metrics['recall']),
-        'mispronunciation_f1': float(misp_metrics['f1_score']),
+        'mispronunciation_precision': float(mispronunciation_metrics['precision']),
+        'mispronunciation_recall': float(mispronunciation_metrics['recall']),
+        'mispronunciation_f1': float(mispronunciation_metrics['f1_score']),
         'total_phonemes': int(total_phonemes),
         'total_errors': int(total_errors),
         'insertions': int(total_insertions),
         'deletions': int(total_deletions),
         'substitutions': int(total_substitutions),
         'confusion_matrix': {
-            'true_acceptance': int(misp_metrics['ta']),
-            'false_rejection': int(misp_metrics['fr']),
-            'false_acceptance': int(misp_metrics['fa']),
-            'true_rejection': int(misp_metrics['tr'])
+            'true_acceptance': int(mispronunciation_metrics['true_acceptance']),
+            'false_rejection': int(mispronunciation_metrics['false_rejection']),
+            'false_acceptance': int(mispronunciation_metrics['false_acceptance']),
+            'true_rejection': int(mispronunciation_metrics['true_rejection'])
         }
     }

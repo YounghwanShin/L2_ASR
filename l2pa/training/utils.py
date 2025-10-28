@@ -1,4 +1,4 @@
-"""Training utility functions for pronunciation assessment model.
+"""Training utility functions.
 
 This module provides utilities for experiment setup, checkpoint management,
 model type detection, and reproducibility.
@@ -14,7 +14,7 @@ from datetime import datetime
 import pytz
 
 
-def seed_everything(seed: int):
+def set_random_seed(seed: int):
     """Sets random seeds for reproducibility across all libraries.
     
     Args:
@@ -28,7 +28,7 @@ def seed_everything(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
-def setup_experiment_dirs(config, resume: bool = False):
+def setup_experiment_directories(config, resume: bool = False):
     """Sets up experiment directories and logging.
     
     Creates necessary directories for checkpoints, logs, and results.
@@ -98,8 +98,8 @@ def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, d
         device: Device to load checkpoint to.
         
     Returns:
-        tuple: (start_epoch, best_metrics) where start_epoch is the epoch
-            to resume from and best_metrics contains previous best metrics.
+        Tuple of (start_epoch, best_metrics) where start_epoch is the epoch
+        to resume from and best_metrics contains previous best metrics.
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Loading checkpoint from {checkpoint_path}")
@@ -120,20 +120,6 @@ def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, d
     return start_epoch, best_metrics
 
 
-def get_model_class(model_type: str):
-    """Returns model class and loss function based on model type.
-    
-    Args:
-        model_type: Type of model architecture.
-        
-    Returns:
-        tuple: (model_class, loss_class)
-    """
-    from ..models.unified_model import UnifiedModel
-    from ..models.losses import UnifiedLoss
-    return UnifiedModel, UnifiedLoss
-
-
 def detect_model_type_from_checkpoint(checkpoint_path: str) -> str:
     """Auto-detects model architecture type from checkpoint.
     
@@ -144,7 +130,7 @@ def detect_model_type_from_checkpoint(checkpoint_path: str) -> str:
         checkpoint_path: Path to model checkpoint.
         
     Returns:
-        str: Model type ('simple' or 'transformer').
+        Model type ('simple' or 'transformer').
     """
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
@@ -173,7 +159,7 @@ def remove_module_prefix(state_dict):
         state_dict: Model state dictionary.
         
     Returns:
-        dict: State dictionary with 'module.' prefix removed.
+        State dictionary with 'module.' prefix removed.
     """
     new_state_dict = {}
     for key, value in state_dict.items():

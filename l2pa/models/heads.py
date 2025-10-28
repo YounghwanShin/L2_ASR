@@ -1,4 +1,4 @@
-"""Output heads for pronunciation assessment model.
+"""Output heads for pronunciation assessment tasks.
 
 This module implements task-specific output heads for error detection
 and phoneme recognition.
@@ -14,7 +14,7 @@ class ErrorDetectionHead(nn.Module):
     insertion (I), substitution (S), or correct (C).
     
     Attributes:
-        linear: Linear layer for classification.
+        classifier: Linear layer for classification.
         dropout: Dropout layer.
     """
     
@@ -27,20 +27,20 @@ class ErrorDetectionHead(nn.Module):
             dropout: Dropout rate.
         """
         super().__init__()
-        self.linear = nn.Linear(input_dim, num_error_types)
+        self.classifier = nn.Linear(input_dim, num_error_types)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, features):
         """Computes error detection logits.
         
         Args:
-            x: Input features [batch_size, seq_len, input_dim].
+            features: Input features [batch_size, sequence_length, input_dim].
             
         Returns:
-            Error logits [batch_size, seq_len, num_error_types].
+            Error logits [batch_size, sequence_length, num_error_types].
         """
-        x = self.dropout(x)
-        return self.linear(x)
+        features = self.dropout(features)
+        return self.classifier(features)
 
 
 class PhonemeRecognitionHead(nn.Module):
@@ -49,7 +49,7 @@ class PhonemeRecognitionHead(nn.Module):
     Classifies each time step into phoneme classes for CTC decoding.
     
     Attributes:
-        linear: Linear layer for classification.
+        classifier: Linear layer for classification.
         dropout: Dropout layer.
     """
     
@@ -62,17 +62,17 @@ class PhonemeRecognitionHead(nn.Module):
             dropout: Dropout rate.
         """
         super().__init__()
-        self.linear = nn.Linear(input_dim, num_phonemes)
+        self.classifier = nn.Linear(input_dim, num_phonemes)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, features):
         """Computes phoneme recognition logits.
         
         Args:
-            x: Input features [batch_size, seq_len, input_dim].
+            features: Input features [batch_size, sequence_length, input_dim].
             
         Returns:
-            Phoneme logits [batch_size, seq_len, num_phonemes].
+            Phoneme logits [batch_size, sequence_length, num_phonemes].
         """
-        x = self.dropout(x)
-        return self.linear(x)
+        features = self.dropout(features)
+        return self.classifier(features)
