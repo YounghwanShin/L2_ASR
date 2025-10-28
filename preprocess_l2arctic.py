@@ -203,6 +203,10 @@ class L2ArcticProcessor:
         
         return " ".join(canonical_phones), " ".join(perceived_phones)
     
+    def remove_all_sil(self, phonemes):
+        """Remove all silence tokens from phoneme list."""
+        return [p for p in phonemes if p not in ['sil', 'sp', 'spn']]
+    
     def process_file(self, speaker_id, filename):
         """Process a single file."""
         # Check for annotation file first
@@ -255,6 +259,10 @@ class L2ArcticProcessor:
                 canonical_train_target, perceived_train_target = self.get_phonemes(
                     tg, keep_artificial_sil=False, rm_repetitive_sil=True
                 )
+                # Remove all silence from canonical train target
+                canonical_phones = canonical_train_target.split()
+                canonical_phones = self.remove_all_sil(canonical_phones)
+                canonical_train_target = " ".join(canonical_phones)
             else:
                 _, perceived_train_target = self.get_phonemes(
                     tg, keep_artificial_sil=False, rm_repetitive_sil=True
