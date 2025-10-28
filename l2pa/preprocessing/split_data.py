@@ -1,8 +1,7 @@
 """Data splitting utilities for train/validation/test sets.
 
 This module handles splitting the dataset into training, validation, and test sets
-based on speaker IDs. Test speakers are predefined, and the remaining speakers
-are used for training.
+based on speaker IDs. Test and validation speakers are predefined.
 """
 
 import json
@@ -10,8 +9,11 @@ from pathlib import Path
 from collections import defaultdict
 
 
-# Test speakers as specified
+# Default test speakers
 TEST_SPEAKERS = ['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK']
+
+# Default validation speakers
+VALIDATION_SPEAKERS = []
 
 
 def create_phoneme_map(data_dict):
@@ -41,16 +43,19 @@ def create_phoneme_map(data_dict):
     return phoneme_to_id
 
 
-def split_dataset_by_speakers(input_path, output_dir, test_speakers=None):
-    """Splits dataset into train and test sets based on speaker IDs.
+def split_dataset_by_speakers(input_path, output_dir, test_speakers=None, val_speakers=None):
+    """Splits dataset into train, validation, and test sets based on speaker IDs.
     
     Args:
         input_path: Path to input JSON file with complete dataset.
         output_dir: Directory where split files will be saved.
         test_speakers: List of speaker IDs to use for test set.
+        val_speakers: List of speaker IDs to use for validation set.
     """
     if test_speakers is None:
         test_speakers = TEST_SPEAKERS
+    if val_speakers is None:
+        val_speakers = VALIDATION_SPEAKERS
     
     print(f"Loading dataset from {input_path}...")
     with open(input_path, 'r', encoding='utf-8') as f:
@@ -58,9 +63,16 @@ def split_dataset_by_speakers(input_path, output_dir, test_speakers=None):
     
     print(f"Total samples: {len(data)}")
     print(f"Test speakers: {test_speakers}")
+    print(f"Validation speakers: {val_speakers}")
+    
+    # Verify no overlap between test and validation speakers
+    overlap = set(test_speakers) & set(val_speakers)
+    if overlap:
+        raise ValueError(f"Speakers cannot be in both test and validation sets: {overlap}")
     
     # Split data by speaker
     train_data = {}
+    val_data = {}
     test_data = {}
     
     speaker_counts = defaultdict(int)
@@ -71,15 +83,23 @@ def split_dataset_by_speakers(input_path, output_dir, test_speakers=None):
         
         if speaker_id in test_speakers:
             test_data[file_path] = item
+        elif speaker_id in val_speakers:
+            val_data[file_path] = item
         else:
             train_data[file_path] = item
     
     print("\nSpeaker distribution:")
     for speaker_id, count in sorted(speaker_counts.items()):
-        split_type = "TEST" if speaker_id in test_speakers else "TRAIN"
+        if speaker_id in test_speakers:
+            split_type = "TEST"
+        elif speaker_id in val_speakers:
+            split_type = "VAL"
+        else:
+            split_type = "TRAIN"
         print(f"  {speaker_id}: {count} samples ({split_type})")
     
     print(f"\nTrain samples: {len(train_data)}")
+    print(f"Validation samples: {len(val_data)}")
     print(f"Test samples: {len(test_data)}")
     
     # Create output directory
@@ -92,11 +112,11 @@ def split_dataset_by_speakers(input_path, output_dir, test_speakers=None):
     with open(train_path, 'w', encoding='utf-8') as f:
         json.dump(train_data, f, indent=2, ensure_ascii=False)
     
-    # Use train data as validation data (can be used with k-fold CV)
+    # Save validation data
     val_path = output_dir / 'val_labels.json'
     print(f"Saving validation data to {val_path}...")
     with open(val_path, 'w', encoding='utf-8') as f:
-        json.dump(train_data, f, indent=2, ensure_ascii=False)
+        json.dump(val_data, f, indent=2, ensure_ascii=False)
     
     # Save test data
     test_path = output_dir / 'test_labels.json'

@@ -1,7 +1,7 @@
 """Preprocessing entry point.
 
 This script provides a unified interface for dataset preprocessing,
-including data extraction, error label generation, and train/test splitting.
+including data extraction, error label generation, and train/validation/test splitting.
 """
 
 import argparse
@@ -33,7 +33,7 @@ def main():
                               help='Output JSON file')
     
     # Split command
-    split_parser = subparsers.add_parser('split', help='Split dataset into train/test')
+    split_parser = subparsers.add_parser('split', help='Split dataset into train/val/test')
     split_parser.add_argument('--input', type=str, default='data/processed_with_error.json',
                              help='Input JSON file')
     split_parser.add_argument('--output_dir', type=str, default='data',
@@ -41,6 +41,9 @@ def main():
     split_parser.add_argument('--test_speakers', nargs='+',
                              default=['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK'],
                              help='Speaker IDs for test set')
+    split_parser.add_argument('--val_speakers', nargs='+',
+                             default=[],
+                             help='Speaker IDs for validation set')
     
     # All command
     all_parser = subparsers.add_parser('all', help='Run all preprocessing steps')
@@ -48,6 +51,12 @@ def main():
                            help='L2-ARCTIC dataset root directory')
     all_parser.add_argument('--output_dir', type=str, default='data',
                            help='Output directory')
+    all_parser.add_argument('--test_speakers', nargs='+',
+                           default=['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK'],
+                           help='Speaker IDs for test set')
+    all_parser.add_argument('--val_speakers', nargs='+',
+                           default=[],
+                           help='Speaker IDs for validation set')
     
     args = parser.parse_args()
     
@@ -64,7 +73,7 @@ def main():
         
     elif args.command == 'split':
         print("Step 3: Splitting dataset...")
-        split_dataset_by_speakers(args.input, args.output_dir, args.test_speakers)
+        split_dataset_by_speakers(args.input, args.output_dir, args.test_speakers, args.val_speakers)
         
     elif args.command == 'all':
         print("Running all preprocessing steps...")
@@ -82,8 +91,7 @@ def main():
         
         # Step 3: Split
         print("\nStep 3: Splitting dataset...")
-        test_speakers = ['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK']
-        split_dataset_by_speakers(str(processed_path), args.output_dir, test_speakers)
+        split_dataset_by_speakers(str(processed_path), args.output_dir, args.test_speakers, args.val_speakers)
         
         print("\n" + "="*80)
         print("Preprocessing complete!")
