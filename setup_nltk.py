@@ -16,7 +16,7 @@ def download_nltk_data():
   packages = [
       ('cmudict', 'CMU Pronouncing Dictionary'),
       ('punkt', 'Punkt Tokenizer'),
-      ('averaged_perceptron_tagger', 'POS Tagger')
+      ('averaged_perceptron_tagger_eng', 'POS Tagger')
   ]
   
   for package_name, description in packages:

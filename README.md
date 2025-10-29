@@ -48,7 +48,6 @@ This creates:
 - `test_labels.json`: Fixed test set (speakers: TLV, NJS, TNI, TXHC, ZHAA, YKWK)
 - `fold_X/train_labels.json`: Training set for fold X
 - `fold_X/val_labels.json`: Validation set for fold X (one speaker each)
-- `phoneme_map.json`: Phoneme to ID mapping
 
 ### 3. Train Model
 
