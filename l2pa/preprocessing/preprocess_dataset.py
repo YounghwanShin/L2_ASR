@@ -277,12 +277,11 @@ class DatasetProcessor:
         
         Args:
             speaker_id: Speaker identifier.
-            filename: Base filename (without extension).
+            filename: Base filename without extension.
             
         Returns:
             Dictionary containing processed data or None if processing fails.
         """
-        # Check for annotation file first (more accurate)
         annotation_path = self.data_root / speaker_id / 'annotation' / f'{filename}.TextGrid'
         textgrid_path = self.data_root / speaker_id / 'textgrid' / f'{filename}.TextGrid'
         wav_path = self.data_root / speaker_id / 'wav' / f'{filename}.wav'
@@ -304,14 +303,11 @@ class DatasetProcessor:
             return None
         
         try:
-            # Parse TextGrid
             tg = TextGrid()
             tg.read(str(tg_path))
             
-            # Get audio duration
             duration = tg.maxTime
             
-            # Read transcript
             with open(transcript_path, 'r', encoding='utf-8') as f:
                 transcript = f.read().strip()
             
@@ -332,7 +328,6 @@ class DatasetProcessor:
                 canonical_train_target, perceived_train_target = self.extract_phonemes_from_textgrid(
                     tg, keep_artificial_sil=False, remove_consecutive_sil=True
                 )
-                # Remove all silence from canonical train target
                 canonical_phones = canonical_train_target.split()
                 canonical_phones = self.remove_all_silence(canonical_phones)
                 canonical_train_target = " ".join(canonical_phones)
@@ -343,11 +338,11 @@ class DatasetProcessor:
                 canonical_phonemes = self.get_canonical_phonemes_from_text(transcript)
                 canonical_train_target = " ".join(canonical_phonemes)
             
-            # Construct relative wav path
-            wav_relative = f"data/l2arctic/{speaker_id}/wav/{filename}.wav"
+            # Store absolute path for reliability
+            wav_absolute = str(wav_path.resolve())
             
             return {
-                'wav': wav_relative,
+                'wav': wav_absolute,
                 'duration': float(duration),
                 'spk_id': speaker_id,
                 'canonical_aligned': canonical_aligned,

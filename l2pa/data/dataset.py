@@ -7,6 +7,7 @@ canonical phonemes, perceived phonemes, and error labels.
 import json
 import torch
 import torchaudio
+import os
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from typing import Dict, List, Optional
@@ -69,22 +70,28 @@ class PronunciationDataset(Dataset):
         self.valid_files.append(file_path)
 
   def _filter_by_length(self):
-    """Filter files by audio length."""
+    """Filter files by audio length using metadata.
+    
+    Reads audio metadata without loading actual waveforms to efficiently
+    filter files that exceed the maximum length threshold.
+    """
     filtered_files = []
     excluded_count = 0
 
     for file_path in tqdm(self.valid_files, desc="Filtering by length"):
       try:
-        waveform, sample_rate = torchaudio.load(file_path)
+        if not os.path.exists(file_path):
+          excluded_count += 1
+          continue
+        
+        info = torchaudio.info(file_path)
+        
+        # Compute expected length after resampling
+        duration_samples = int(
+            info.num_frames * self.sampling_rate / info.sample_rate
+        )
 
-        if waveform.shape[0] > 1:
-          waveform = torch.mean(waveform, dim=0, keepdim=True)
-
-        if sample_rate != self.sampling_rate:
-          resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
-          waveform = resampler(waveform)
-
-        if waveform.shape[1] <= self.max_length:
+        if duration_samples <= self.max_length:
           filtered_files.append(file_path)
         else:
           excluded_count += 1
@@ -92,7 +99,7 @@ class PronunciationDataset(Dataset):
       except Exception as e:
         excluded_count += 1
 
-    print(f"Length filtering: {len(self.valid_files)} → {len(filtered_files)} "
+    print(f"Length filtering: {len(self.valid_files)} -> {len(filtered_files)} "
           f"({excluded_count} excluded)")
     self.valid_files = filtered_files
 
@@ -101,24 +108,30 @@ class PronunciationDataset(Dataset):
     return len(self.valid_files)
 
   def load_waveform(self, file_path: str) -> torch.Tensor:
-    """Load and preprocess audio file.
-    
-    Args:
-      file_path: Path to audio file.
+      """Load and preprocess audio file.
       
-    Returns:
-      Preprocessed waveform tensor.
-    """
-    waveform, sample_rate = torchaudio.load(file_path)
-    
-    if waveform.shape[0] > 1:
-      waveform = torch.mean(waveform, dim=0, keepdim=True)
+      Args:
+        file_path: Path to audio file.
+        
+      Returns:
+        Preprocessed waveform tensor.
+        
+      Raises:
+        FileNotFoundError: If audio file does not exist.
+      """
+      if not os.path.exists(file_path):
+          raise FileNotFoundError(f"Audio file not found: {file_path}")
+      
+      waveform, sample_rate = torchaudio.load(file_path)
+      
+      if waveform.shape[0] > 1:
+          waveform = torch.mean(waveform, dim=0, keepdim=True)
 
-    if sample_rate != self.sampling_rate:
-      resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
-      waveform = resampler(waveform)
+      if sample_rate != self.sampling_rate:
+          resampler = torchaudio.transforms.Resample(sample_rate, self.sampling_rate)
+          waveform = resampler(waveform)
 
-    return waveform.squeeze(0)
+      return waveform.squeeze(0)
 
   def __getitem__(self, idx: int) -> Dict:
     """Return a single dataset item.
