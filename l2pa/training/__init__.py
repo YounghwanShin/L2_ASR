@@ -1,1 +1,1 @@
-"""Training utilities and trainer classes."""
+"""Training module."""

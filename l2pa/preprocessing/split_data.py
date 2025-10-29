@@ -1,275 +1,223 @@
-"""Data splitting utilities for train/validation/test sets.
+"""Cross-validation data splitting utilities.
 
-This module handles dataset splitting with support for both standard
-train/val/test splits and K-fold cross-validation based on speaker IDs.
+This module handles splitting the dataset into cross-validation folds
+based on speaker IDs, with separate test speakers.
 """
 
 import json
-import random
-from pathlib import Path
+import os
 from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional
 
 
-# Default test speakers
-TEST_SPEAKERS = ['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK']
-
-# Default validation speakers
-VALIDATION_SPEAKERS = []
+DEFAULT_TEST_SPEAKERS = ['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK']
 
 
-def create_phoneme_map(data_dict):
-    """Creates phoneme to ID mapping from dataset.
+def create_phoneme_map(data_dict: Dict) -> Dict[str, int]:
+  """Create phoneme to ID mapping from dataset.
+  
+  Args:
+    data_dict: Dictionary of dataset samples.
     
-    Args:
-        data_dict: Dictionary of dataset samples.
-        
-    Returns:
-        Dictionary mapping phoneme strings to integer IDs.
-    """
-    phoneme_set = set()
-    
-    for item in data_dict.values():
-        canonical = item.get('canonical_train_target', '')
-        perceived = item.get('perceived_train_target', '')
-        
-        if canonical:
-            phoneme_set.update(canonical.split())
-        if perceived:
-            phoneme_set.update(perceived.split())
-    
-    # Sort for consistency and add blank at index 0
-    phonemes_sorted = ['<blank>'] + sorted(phoneme_set)
-    phoneme_to_id = {phoneme: idx for idx, phoneme in enumerate(phonemes_sorted)}
-    
-    return phoneme_to_id
+  Returns:
+    Dictionary mapping phoneme strings to integer IDs.
+  """
+  phoneme_set = set()
+  
+  for item in data_dict.values():
+    for key in ['canonical_train_target', 'perceived_train_target']:
+      phonemes = item.get(key, '')
+      if phonemes:
+        phoneme_set.update(phonemes.split())
+  
+  # Sort for consistency and add blank at index 0
+  phonemes_sorted = ['<blank>'] + sorted(phoneme_set)
+  return {phoneme: idx for idx, phoneme in enumerate(phonemes_sorted)}
 
 
-def split_dataset_by_speakers(input_path, output_dir, test_speakers=None, val_speakers=None):
-    """Splits dataset into train, validation, and test sets by speaker.
+def get_speaker_ids(data_dict: Dict) -> List[str]:
+  """Extract unique speaker IDs from dataset.
+  
+  Args:
+    data_dict: Dictionary of dataset samples.
     
-    Args:
-        input_path: Path to input JSON file with complete dataset.
-        output_dir: Directory where split files will be saved.
-        test_speakers: List of speaker IDs for test set.
-        val_speakers: List of speaker IDs for validation set.
-    """
-    if test_speakers is None:
-        test_speakers = TEST_SPEAKERS
-    if val_speakers is None:
-        val_speakers = VALIDATION_SPEAKERS
+  Returns:
+    Sorted list of unique speaker IDs.
+  """
+  speakers = set(item.get('spk_id', '') for item in data_dict.values())
+  return sorted(speakers - {''})
+
+
+def split_test_train_speakers(
+    all_speakers: List[str],
+    test_speakers: List[str]
+) -> tuple[List[str], List[str]]:
+  """Split speakers into test and train sets.
+  
+  Args:
+    all_speakers: List of all speaker IDs.
+    test_speakers: List of speaker IDs for test set.
     
-    print(f"Loading dataset from {input_path}...")
-    with open(input_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+  Returns:
+    Tuple of (test_speakers, train_speakers).
+  """
+  test_set = set(test_speakers)
+  train_speakers = [s for s in all_speakers if s not in test_set]
+  return list(test_set), train_speakers
+
+
+def create_cv_folds(
+    data_dict: Dict,
+    train_speakers: List[str],
+    output_dir: str
+) -> int:
+  """Create cross-validation folds for training speakers.
+  
+  Each fold uses one training speaker as validation set.
+  
+  Args:
+    data_dict: Complete dataset dictionary.
+    train_speakers: List of training speaker IDs.
+    output_dir: Output directory for fold data.
     
-    print(f"Total samples: {len(data)}")
-    print(f"Test speakers: {test_speakers}")
-    print(f"Validation speakers: {val_speakers}")
+  Returns:
+    Number of folds created.
+  """
+  num_folds = len(train_speakers)
+  
+  for fold_idx, val_speaker in enumerate(train_speakers):
+    fold_dir = Path(output_dir) / f'fold_{fold_idx}'
+    fold_dir.mkdir(parents=True, exist_ok=True)
     
-    # Verify no overlap
-    overlap = set(test_speakers) & set(val_speakers)
-    if overlap:
-        raise ValueError(f"Speakers cannot be in both test and validation: {overlap}")
-    
-    # Split data by speaker
+    # Split data
     train_data = {}
     val_data = {}
-    test_data = {}
     
-    speaker_counts = defaultdict(int)
+    for file_path, item in data_dict.items():
+      speaker_id = item.get('spk_id', '')
+      if speaker_id == val_speaker:
+        val_data[file_path] = item
+      elif speaker_id in train_speakers:
+        train_data[file_path] = item
     
-    for file_path, item in data.items():
-        speaker_id = item.get('spk_id', '')
-        speaker_counts[speaker_id] += 1
-        
-        if speaker_id in test_speakers:
-            test_data[file_path] = item
-        elif speaker_id in val_speakers:
-            val_data[file_path] = item
-        else:
-            train_data[file_path] = item
+    # Save fold data
+    with open(fold_dir / 'train_labels.json', 'w', encoding='utf-8') as f:
+      json.dump(train_data, f, indent=2, ensure_ascii=False)
     
-    _print_speaker_distribution(speaker_counts, test_speakers, val_speakers)
-    _save_splits(output_dir, train_data, val_data, test_data, data)
+    with open(fold_dir / 'val_labels.json', 'w', encoding='utf-8') as f:
+      json.dump(val_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"Fold {fold_idx}: Val={val_speaker} "
+          f"(Train={len(train_data)}, Val={len(val_data)})")
+  
+  return num_folds
 
 
-def create_cross_validation_splits(input_path, output_dir, num_folds=5, test_speakers=None, seed=42):
-    """Creates K-fold cross-validation splits.
-    
-    Splits non-test speakers into K folds for cross-validation while
-    keeping test speakers separate for final evaluation.
-    
-    Args:
-        input_path: Path to input JSON file with complete dataset.
-        output_dir: Directory where split files will be saved.
-        num_folds: Number of cross-validation folds.
-        test_speakers: List of speaker IDs for test set.
-        seed: Random seed for reproducibility.
-    """
-    if test_speakers is None:
-        test_speakers = TEST_SPEAKERS
-    
-    print(f"Creating {num_folds}-fold cross-validation splits...")
-    print(f"Loading dataset from {input_path}...")
-    
-    with open(input_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    print(f"Total samples: {len(data)}")
-    print(f"Test speakers (held out): {test_speakers}")
-    
-    # Separate test data
-    test_data = {}
-    train_val_data_by_speaker = defaultdict(dict)
-    
-    for file_path, item in data.items():
-        speaker_id = item.get('spk_id', '')
-        
-        if speaker_id in test_speakers:
-            test_data[file_path] = item
-        else:
-            train_val_data_by_speaker[speaker_id][file_path] = item
-    
-    # Get list of train/val speakers
-    train_val_speakers = list(train_val_data_by_speaker.keys())
-    
-    print(f"\nTrain/Val speakers: {len(train_val_speakers)}")
-    print(f"Test samples: {len(test_data)}")
-    
-    # Shuffle speakers for random fold assignment
-    random.seed(seed)
-    random.shuffle(train_val_speakers)
-    
-    # Create K folds
-    fold_size = len(train_val_speakers) // num_folds
-    folds = []
-    
-    for i in range(num_folds):
-        start_idx = i * fold_size
-        if i == num_folds - 1:
-            # Last fold gets remaining speakers
-            fold_speakers = train_val_speakers[start_idx:]
-        else:
-            fold_speakers = train_val_speakers[start_idx:start_idx + fold_size]
-        folds.append(fold_speakers)
-    
-    # Create and save cross-validation splits
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    for fold_idx in range(num_folds):
-        print(f"\n--- Fold {fold_idx} ---")
-        
-        # Validation speakers for this fold
-        val_speakers = folds[fold_idx]
-        
-        # Training speakers: all other folds
-        train_speakers = []
-        for other_fold_idx in range(num_folds):
-            if other_fold_idx != fold_idx:
-                train_speakers.extend(folds[other_fold_idx])
-        
-        # Create train and validation data
-        train_data = {}
-        val_data = {}
-        
-        for speaker in train_speakers:
-            train_data.update(train_val_data_by_speaker[speaker])
-        
-        for speaker in val_speakers:
-            val_data.update(train_val_data_by_speaker[speaker])
-        
-        print(f"Train speakers: {len(train_speakers)} ({len(train_data)} samples)")
-        print(f"Val speakers: {len(val_speakers)} ({len(val_data)} samples)")
-        
-        # Save fold splits
-        train_path = output_dir / f'fold_{fold_idx}_train.json'
-        val_path = output_dir / f'fold_{fold_idx}_val.json'
-        
-        with open(train_path, 'w', encoding='utf-8') as f:
-            json.dump(train_data, f, indent=2, ensure_ascii=False)
-        
-        with open(val_path, 'w', encoding='utf-8') as f:
-            json.dump(val_data, f, indent=2, ensure_ascii=False)
-        
-        print(f"Saved: {train_path}")
-        print(f"Saved: {val_path}")
-    
-    # Save test data (same for all folds)
-    test_path = output_dir / 'test_labels.json'
-    print(f"\nSaving test data to {test_path}...")
-    with open(test_path, 'w', encoding='utf-8') as f:
-        json.dump(test_data, f, indent=2, ensure_ascii=False)
-    
-    # Create phoneme map
-    print("\nCreating phoneme map...")
-    phoneme_map = create_phoneme_map(data)
-    phoneme_map_path = output_dir / 'phoneme_map.json'
-    with open(phoneme_map_path, 'w', encoding='utf-8') as f:
-        json.dump(phoneme_map, f, indent=2)
-    print(f"Total phonemes: {len(phoneme_map)}")
-    print(f"Saved: {phoneme_map_path}")
-    
-    print("\n" + "="*80)
-    print("Cross-validation splits created successfully!")
-    print("="*80)
+def create_test_split(
+    data_dict: Dict,
+    test_speakers: List[str],
+    output_dir: str
+):
+  """Create test split from test speakers.
+  
+  Args:
+    data_dict: Complete dataset dictionary.
+    test_speakers: List of test speaker IDs.
+    output_dir: Output directory.
+  """
+  test_data = {
+      path: item for path, item in data_dict.items()
+      if item.get('spk_id', '') in test_speakers
+  }
+  
+  test_path = Path(output_dir) / 'test_labels.json'
+  with open(test_path, 'w', encoding='utf-8') as f:
+    json.dump(test_data, f, indent=2, ensure_ascii=False)
+  
+  print(f"Test set: {len(test_data)} samples from {len(test_speakers)} speakers")
 
 
-def _print_speaker_distribution(speaker_counts, test_speakers, val_speakers):
-    """Prints speaker distribution across splits.
+def split_dataset_for_cv(
+    input_path: str,
+    output_dir: str,
+    test_speakers: Optional[List[str]] = None
+) -> Dict:
+  """Split dataset into cross-validation folds.
+  
+  Creates:
+    - test_labels.json: Fixed test set
+    - fold_X/train_labels.json: Training set for fold X
+    - fold_X/val_labels.json: Validation set for fold X
+    - phoneme_map.json: Phoneme to ID mapping
+  
+  Args:
+    input_path: Path to complete dataset JSON.
+    output_dir: Output directory for splits.
+    test_speakers: List of test speaker IDs.
     
-    Args:
-        speaker_counts: Dictionary of speaker sample counts.
-        test_speakers: List of test speaker IDs.
-        val_speakers: List of validation speaker IDs.
-    """
-    print("\nSpeaker distribution:")
-    for speaker_id, count in sorted(speaker_counts.items()):
-        if speaker_id in test_speakers:
-            split_type = "TEST"
-        elif speaker_id in val_speakers:
-            split_type = "VAL"
-        else:
-            split_type = "TRAIN"
-        print(f"  {speaker_id}: {count} samples ({split_type})")
+  Returns:
+    Dictionary with split statistics.
+  """
+  if test_speakers is None:
+    test_speakers = DEFAULT_TEST_SPEAKERS
+  
+  print(f"Loading dataset from {input_path}...")
+  with open(input_path, 'r', encoding='utf-8') as f:
+    data = json.load(f)
+  
+  print(f"Total samples: {len(data)}")
+  
+  # Get speakers
+  all_speakers = get_speaker_ids(data)
+  test_speakers_actual, train_speakers = split_test_train_speakers(
+      all_speakers, test_speakers
+  )
+  
+  print(f"\nSpeaker distribution:")
+  print(f"  Test speakers: {test_speakers_actual}")
+  print(f"  Train speakers: {train_speakers}")
+  print(f"  Total folds: {len(train_speakers)}")
+  
+  # Create output directory
+  os.makedirs(output_dir, exist_ok=True)
+  
+  # Create test split
+  create_test_split(data, test_speakers_actual, output_dir)
+  
+  # Create CV folds
+  print(f"\nCreating {len(train_speakers)} cross-validation folds...")
+  num_folds = create_cv_folds(data, train_speakers, output_dir)
+  
+  # Create phoneme map
+  print("\nCreating phoneme map...")
+  phoneme_map = create_phoneme_map(data)
+  phoneme_map_path = Path(output_dir) / 'phoneme_map.json'
+  with open(phoneme_map_path, 'w', encoding='utf-8') as f:
+    json.dump(phoneme_map, f, indent=2)
+  print(f"Total phonemes: {len(phoneme_map)}")
+  
+  # Statistics
+  stats = {
+      'total_samples': len(data),
+      'num_folds': num_folds,
+      'test_speakers': test_speakers_actual,
+      'train_speakers': train_speakers,
+      'num_phonemes': len(phoneme_map)
+  }
+  
+  # Save statistics
+  stats_path = Path(output_dir) / 'split_statistics.json'
+  with open(stats_path, 'w', encoding='utf-8') as f:
+    json.dump(stats, f, indent=2)
+  
+  print("\nDataset splitting complete!")
+  return stats
 
 
-def _save_splits(output_dir, train_data, val_data, test_data, full_data):
-    """Saves train/val/test splits and phoneme map.
-    
-    Args:
-        output_dir: Output directory path.
-        train_data: Training data dictionary.
-        val_data: Validation data dictionary.
-        test_data: Test data dictionary.
-        full_data: Complete dataset dictionary.
-    """
-    print(f"\nTrain samples: {len(train_data)}")
-    print(f"Validation samples: {len(val_data)}")
-    print(f"Test samples: {len(test_data)}")
-    
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save splits
-    splits = [
-        ('train_labels.json', train_data),
-        ('val_labels.json', val_data),
-        ('test_labels.json', test_data)
-    ]
-    
-    for filename, data in splits:
-        path = output_dir / filename
-        print(f"\nSaving {filename}...")
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    
-    # Create and save phoneme map
-    print("\nCreating phoneme map...")
-    phoneme_map = create_phoneme_map(full_data)
-    phoneme_map_path = output_dir / 'phoneme_map.json'
-    print(f"Total phonemes: {len(phoneme_map)}")
-    with open(phoneme_map_path, 'w', encoding='utf-8') as f:
-        json.dump(phoneme_map, f, indent=2)
-    
-    print("\nDataset splitting complete!")
+if __name__ == '__main__':
+  # Example usage
+  split_dataset_for_cv(
+      input_path='data/processed_with_error.json',
+      output_dir='data'
+  )

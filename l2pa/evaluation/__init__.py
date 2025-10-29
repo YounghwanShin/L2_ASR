@@ -1,1 +1,1 @@
-"""Evaluation package for pronunciation assessment model."""
+"""Evaluation module."""

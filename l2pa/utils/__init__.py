@@ -1,1 +1,1 @@
-"""Utility functions for audio processing and CTC decoding."""
+"""Utils module."""

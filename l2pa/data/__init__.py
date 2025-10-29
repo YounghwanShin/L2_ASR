@@ -1,1 +1,1 @@
-"""Data loading and processing package."""
+"""Data module."""

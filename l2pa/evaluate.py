@@ -1,159 +1,97 @@
-"""Evaluation script for pronunciation assessment model.
+"""Evaluation script."""
 
-This script evaluates a trained model on test data and generates comprehensive
-metrics for canonical phoneme recognition, perceived phoneme recognition,
-and error detection with per-speaker analysis.
-"""
-
-import os
 import json
 import logging
+import os
+from datetime import datetime
+
+import pytz
 import torch
 from torch.utils.data import DataLoader
-from datetime import datetime
-import pytz
 
 from .config import Config
 from .data.dataset import PronunciationDataset, collate_batch
-from .models.unified_model import UnifiedModel
 from .evaluation.evaluator import ModelEvaluator
-from .training.utils import detect_model_type_from_checkpoint, remove_module_prefix
+from .models.unified_model import UnifiedModel
 
 logger = logging.getLogger(__name__)
 
 
-def evaluate_model(checkpoint_path, config, save_predictions=False):
-    """Main evaluation function.
-    
-    Args:
-        checkpoint_path: Path to model checkpoint.
-        config: Configuration object.
-        save_predictions: Whether to save detailed predictions.
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
-    logger.info(f"Training mode: {config.training_mode}")
-    logger.info(f"Model type: {config.model_type}")
-    logger.info(f"Checkpoint: {checkpoint_path}")
+def evaluate_model(checkpoint_path, config):
+  """Main evaluation function."""
+  device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+  logger.info(f"Device: {device}, Mode: {config.training_mode}")
 
-    # Load phoneme mapping
-    with open(config.phoneme_map, 'r') as f:
-        phoneme_to_id = json.load(f)
-    id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
-    error_type_names = config.get_error_type_names()
+  with open(config.phoneme_map, 'r') as f:
+    phoneme_to_id = json.load(f)
+  id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
+  error_type_names = config.get_error_type_names()
 
-    # Create model
-    model_config = config.model_configs[config.model_type]
-    model = UnifiedModel(
-        pretrained_model_name=config.pretrained_model,
-        num_phonemes=config.num_phonemes,
-        num_error_types=config.num_error_types,
-        **model_config
+  model = UnifiedModel(
+      pretrained_model_name=config.pretrained_model,
+      num_phonemes=config.num_phonemes,
+      num_error_types=config.num_error_types,
+      **config.model_configs[config.model_type]
+  )
+
+  checkpoint = torch.load(checkpoint_path, map_location=device)
+  state_dict = checkpoint.get('model_state_dict', checkpoint)
+  
+  if any(k.startswith('module.') for k in state_dict.keys()):
+    state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+  
+  model.load_state_dict(state_dict)
+  model = model.to(device)
+  model.eval()
+
+  test_dataset = PronunciationDataset(
+      config.test_data, phoneme_to_id, config.training_mode,
+      config.max_length, config.sampling_rate, device
+  )
+  test_dataloader = DataLoader(
+      test_dataset, batch_size=config.eval_batch_size, shuffle=False,
+      collate_fn=lambda batch: collate_batch(batch, config.training_mode)
+  )
+
+  evaluator = ModelEvaluator(device)
+
+  eval_results = {'config': {
+      'training_mode': config.training_mode,
+      'model_type': config.model_type,
+      'checkpoint_path': checkpoint_path,
+      'date': datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S')
+  }}
+
+  if config.has_canonical_component():
+    canonical_results = evaluator.evaluate_phoneme_recognition(
+        model, test_dataloader, config.training_mode,
+        id_to_phoneme, 'canonical'
     )
+    logger.info(f"Canonical PER: {canonical_results['per']:.4f}")
+    eval_results['canonical'] = canonical_results
 
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-        logger.info(f"Loading model from epoch {checkpoint.get('epoch', 'unknown')}")
-    else:
-        state_dict = checkpoint
-
-    state_dict = remove_module_prefix(state_dict)
-    model.load_state_dict(state_dict)
-    model = model.to(device)
-    model.eval()
-
-    # Load evaluation dataset
-    eval_dataset = PronunciationDataset(
-        config.eval_data, phoneme_to_id,
-        training_mode=config.training_mode,
-        max_length=config.max_length,
-        sampling_rate=config.sampling_rate,
-        device=device
+  if config.has_perceived_component():
+    perceived_results = evaluator.evaluate_phoneme_recognition(
+        model, test_dataloader, config.training_mode,
+        id_to_phoneme, 'perceived'
     )
-    eval_dataloader = DataLoader(
-        eval_dataset, batch_size=config.eval_batch_size, shuffle=False,
-        collate_fn=lambda batch: collate_batch(batch, training_mode=config.training_mode)
+    logger.info(f"Perceived PER: {perceived_results['per']:.4f}")
+    eval_results['perceived'] = perceived_results
+
+  if config.has_error_component():
+    error_results = evaluator.evaluate_error_detection(
+        model, test_dataloader, config.training_mode, error_type_names
     )
+    logger.info(f"Error Accuracy: {error_results['token_accuracy']:.4f}")
+    eval_results['error'] = error_results
 
-    # Create evaluator
-    evaluator = ModelEvaluator(device)
+  results_dir = 'evaluation_results'
+  os.makedirs(results_dir, exist_ok=True)
+  
+  exp_name = os.path.basename(os.path.dirname(os.path.dirname(checkpoint_path)))
+  results_path = os.path.join(results_dir, f"{exp_name}_results.json")
 
-    logger.info("Starting evaluation...")
+  with open(results_path, 'w') as f:
+    json.dump(eval_results, f, indent=2)
 
-    # Evaluate canonical phoneme recognition (multitask only)
-    canonical_results = None
-    if config.has_canonical_component():
-        logger.info("Evaluating canonical phoneme recognition...")
-        canonical_results = evaluator.evaluate_canonical_recognition(
-            model=model,
-            dataloader=eval_dataloader,
-            training_mode=config.training_mode,
-            id_to_phoneme=id_to_phoneme
-        )
-
-    # Evaluate perceived phoneme recognition
-    logger.info("Evaluating perceived phoneme recognition...")
-    perceived_results = evaluator.evaluate_perceived_recognition(
-        model=model,
-        dataloader=eval_dataloader,
-        training_mode=config.training_mode,
-        id_to_phoneme=id_to_phoneme
-    )
-
-    # Evaluate error detection
-    error_results = None
-    if config.has_error_component():
-        logger.info("Evaluating error detection...")
-        error_results = evaluator.evaluate_error_detection(
-            model=model,
-            dataloader=eval_dataloader,
-            training_mode=config.training_mode,
-            error_type_names=error_type_names
-        )
-
-    # Print results
-    logger.info("\n" + "="*80)
-    logger.info("Evaluation Results")
-    logger.info("="*80)
-
-    if canonical_results:
-        logger.info("\n--- Canonical Phoneme Recognition ---")
-        logger.info(f"PER: {canonical_results['per']:.4f}")
-        logger.info(f"Accuracy: {1.0 - canonical_results['per']:.4f}")
-    
-    logger.info("\n--- Perceived Phoneme Recognition ---")
-    logger.info(f"PER: {perceived_results['per']:.4f}")
-    logger.info(f"Accuracy: {1.0 - perceived_results['per']:.4f}")
-    
-    if error_results:
-        logger.info("\n--- Error Detection ---")
-        logger.info(f"Token Accuracy: {error_results['token_accuracy']:.4f}")
-        logger.info(f"Weighted F1: {error_results['weighted_f1']:.4f}")
-
-    # Save results
-    results_dir = 'evaluation_results'
-    os.makedirs(results_dir, exist_ok=True)
-    
-    experiment_name = os.path.basename(os.path.dirname(os.path.dirname(checkpoint_path)))
-    results_filename = f"{experiment_name}_eval_results.json"
-    results_path = os.path.join(results_dir, results_filename)
-
-    eval_results = {
-        'config': {
-            'training_mode': config.training_mode,
-            'model_type': config.model_type,
-            'checkpoint_path': checkpoint_path,
-            'evaluation_date': datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M:%S')
-        },
-        'canonical_recognition': canonical_results,
-        'perceived_recognition': perceived_results,
-        'error_detection': error_results
-    }
-
-    with open(results_path, 'w') as f:
-        json.dump(eval_results, f, indent=2)
-
-    logger.info(f"\nResults saved to: {results_path}")
+  logger.info(f"Results saved to: {results_path}")
