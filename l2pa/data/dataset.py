@@ -70,38 +70,81 @@ class PronunciationDataset(Dataset):
         self.valid_files.append(file_path)
 
   def _filter_by_length(self):
-    """Filter files by audio length using metadata.
-    
-    Reads audio metadata without loading actual waveforms to efficiently
-    filter files that exceed the maximum length threshold.
-    """
-    filtered_files = []
-    excluded_count = 0
+      """Filter files by audio length using parallel processing.
+      
+      Uses multiprocessing to efficiently check audio file durations
+      against the maximum length threshold without loading full audio data.
+      """
+      from concurrent.futures import ProcessPoolExecutor, as_completed
+      
+      filtered_files = []
+      excluded_count = 0
+      
+      max_workers = min(os.cpu_count() or 4, 8)
+      
+      with ProcessPoolExecutor(max_workers=max_workers) as executor:
+          future_to_path = {
+              executor.submit(
+                  _check_audio_duration,
+                  file_path,
+                  self.max_length,
+                  self.sampling_rate
+              ): file_path
+              for file_path in self.valid_files
+          }
+          
+          progress = tqdm(total=len(self.valid_files), desc="Filtering by length")
+          
+          for future in as_completed(future_to_path):
+              file_path = future_to_path[future]
+              
+              try:
+                  is_valid = future.result()
+                  if is_valid:
+                      filtered_files.append(file_path)
+                  else:
+                      excluded_count += 1
+              except Exception as e:
+                  print(f"Warning: Failed to process {file_path}: {e}")
+                  excluded_count += 1
+              
+              progress.update(1)
+          
+          progress.close()
+      
+      print(f"Length filtering: {len(self.valid_files)} → {len(filtered_files)} "
+            f"({excluded_count} excluded)")
+      self.valid_files = filtered_files
 
-    for file_path in tqdm(self.valid_files, desc="Filtering by length"):
-      try:
-        if not os.path.exists(file_path):
-          excluded_count += 1
-          continue
-        
-        info = torchaudio.info(file_path)
-        
-        # Compute expected length after resampling
-        duration_samples = int(
-            info.num_frames * self.sampling_rate / info.sample_rate
-        )
 
-        if duration_samples <= self.max_length:
-          filtered_files.append(file_path)
-        else:
-          excluded_count += 1
-
-      except Exception as e:
-        excluded_count += 1
-
-    print(f"Length filtering: {len(self.valid_files)} -> {len(filtered_files)} "
-          f"({excluded_count} excluded)")
-    self.valid_files = filtered_files
+  def _check_audio_duration(file_path: str, 
+                            max_length: int, 
+                            target_sample_rate: int) -> bool:
+      """Check if audio file duration is within maximum length.
+      
+      Args:
+          file_path: Path to audio file.
+          max_length: Maximum allowed length in samples.
+          target_sample_rate: Target sampling rate for resampling calculation.
+          
+      Returns:
+          True if file duration is within limit, False otherwise.
+          
+      Raises:
+          Exception: If file cannot be read or does not exist.
+      """
+      import os
+      import torchaudio
+      
+      if not os.path.exists(file_path):
+          raise FileNotFoundError(f"File not found: {file_path}")
+      
+      info = torchaudio.info(file_path)
+      duration_samples = int(
+          info.num_frames * target_sample_rate / info.sample_rate
+      )
+      
+      return duration_samples <= max_length
 
   def __len__(self):
     """Return number of samples."""
