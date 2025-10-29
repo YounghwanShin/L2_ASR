@@ -159,7 +159,7 @@ class Config:
       self.val_data = os.path.join(self.data_dir, 'val_labels.json')
     
     self.test_data = os.path.join(self.data_dir, 'test_labels.json')
-    self.phoneme_map = os.path.join(self.data_dir, 'phoneme_map.json')
+    self.phoneme_map = os.path.join(self.data_dir, 'phoneme_to_id.json')
 
   def get_model_config(self) -> Dict:
     """Get model architecture configuration."""

@@ -1,4 +1,4 @@
-"""Cross-validation data splitting utilities.
+"""Data splitting utilities for cross-validation.
 
 This module handles splitting the dataset into cross-validation folds
 based on speaker IDs, with separate test speakers.
@@ -14,26 +14,33 @@ from typing import Dict, List, Optional
 DEFAULT_TEST_SPEAKERS = ['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK']
 
 
-def create_phoneme_map(data_dict: Dict) -> Dict[str, int]:
-  """Create phoneme to ID mapping from dataset.
+def verify_phoneme_mapping(data_dict: Dict, phoneme_map_path: str) -> bool:
+  """Verify that all phonemes in dataset exist in mapping.
   
   Args:
     data_dict: Dictionary of dataset samples.
+    phoneme_map_path: Path to phoneme to ID mapping file.
     
   Returns:
-    Dictionary mapping phoneme strings to integer IDs.
+    True if all phonemes are covered, False otherwise.
   """
-  phoneme_set = set()
+  with open(phoneme_map_path, 'r') as f:
+    phoneme_to_id = json.load(f)
   
+  dataset_phonemes = set()
   for item in data_dict.values():
     for key in ['canonical_train_target', 'perceived_train_target']:
       phonemes = item.get(key, '')
       if phonemes:
-        phoneme_set.update(phonemes.split())
+        dataset_phonemes.update(phonemes.split())
   
-  # Sort for consistency and add blank at index 0
-  phonemes_sorted = ['<blank>'] + sorted(phoneme_set)
-  return {phoneme: idx for idx, phoneme in enumerate(phonemes_sorted)}
+  missing_phonemes = dataset_phonemes - set(phoneme_to_id.keys())
+  
+  if missing_phonemes:
+    print(f"Warning: Phonemes not in mapping: {missing_phonemes}")
+    return False
+  
+  return True
 
 
 def get_speaker_ids(data_dict: Dict) -> List[str]:
@@ -90,7 +97,6 @@ def create_cv_folds(
     fold_dir = Path(output_dir) / f'fold_{fold_idx}'
     fold_dir.mkdir(parents=True, exist_ok=True)
     
-    # Split data
     train_data = {}
     val_data = {}
     
@@ -101,7 +107,6 @@ def create_cv_folds(
       elif speaker_id in train_speakers:
         train_data[file_path] = item
     
-    # Save fold data
     with open(fold_dir / 'train_labels.json', 'w', encoding='utf-8') as f:
       json.dump(train_data, f, indent=2, ensure_ascii=False)
     
@@ -141,6 +146,7 @@ def create_test_split(
 def split_dataset_for_cv(
     input_path: str,
     output_dir: str,
+    phoneme_map_path: str,
     test_speakers: Optional[List[str]] = None
 ) -> Dict:
   """Split dataset into cross-validation folds.
@@ -149,11 +155,11 @@ def split_dataset_for_cv(
     - test_labels.json: Fixed test set
     - fold_X/train_labels.json: Training set for fold X
     - fold_X/val_labels.json: Validation set for fold X
-    - phoneme_map.json: Phoneme to ID mapping
   
   Args:
     input_path: Path to complete dataset JSON.
     output_dir: Output directory for splits.
+    phoneme_map_path: Path to phoneme to ID mapping.
     test_speakers: List of test speaker IDs.
     
   Returns:
@@ -167,6 +173,13 @@ def split_dataset_for_cv(
     data = json.load(f)
   
   print(f"Total samples: {len(data)}")
+  
+  # Verify phoneme mapping
+  print(f"\nVerifying phoneme mapping...")
+  if not verify_phoneme_mapping(data, phoneme_map_path):
+    print("Warning: Some phonemes may not be in the mapping file")
+  else:
+    print("All phonemes verified in mapping")
   
   # Get speakers
   all_speakers = get_speaker_ids(data)
@@ -189,21 +202,12 @@ def split_dataset_for_cv(
   print(f"\nCreating {len(train_speakers)} cross-validation folds...")
   num_folds = create_cv_folds(data, train_speakers, output_dir)
   
-  # Create phoneme map
-  print("\nCreating phoneme map...")
-  phoneme_map = create_phoneme_map(data)
-  phoneme_map_path = Path(output_dir) / 'phoneme_map.json'
-  with open(phoneme_map_path, 'w', encoding='utf-8') as f:
-    json.dump(phoneme_map, f, indent=2)
-  print(f"Total phonemes: {len(phoneme_map)}")
-  
   # Statistics
   stats = {
       'total_samples': len(data),
       'num_folds': num_folds,
       'test_speakers': test_speakers_actual,
-      'train_speakers': train_speakers,
-      'num_phonemes': len(phoneme_map)
+      'train_speakers': train_speakers
   }
   
   # Save statistics
@@ -211,13 +215,5 @@ def split_dataset_for_cv(
   with open(stats_path, 'w', encoding='utf-8') as f:
     json.dump(stats, f, indent=2)
   
-  print("\nDataset splitting complete!")
+  print("\nDataset splitting complete")
   return stats
-
-
-if __name__ == '__main__':
-  # Example usage
-  split_dataset_for_cv(
-      input_path='data/processed_with_error.json',
-      output_dir='data'
-  )
