@@ -12,6 +12,7 @@ env/
 
 # Data files
 data/l2arctic/
+data/fold*
 data/*.json
 !data/phoneme_map.json
 

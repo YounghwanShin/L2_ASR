@@ -34,3 +34,5 @@ gdown>=4.7.1
 # Optional: Visualization
 matplotlib>=3.7.0
 seaborn>=0.12.0
+
+hf_transfer
