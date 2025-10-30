@@ -72,7 +72,7 @@ python main.py train --training_mode multitask --model_type transformer --no_cv
 ### 4. Evaluate Model
 
 ```bash
-python main.py eval --checkpoint experiments/[experiment_name]/checkpoints/best_perceived.pth
+python main.py eval --checkpoint experiments/multitask_transformer_cv0_20251029_141426/checkpoints/latest.pth
 ```
 
 ## Training Modes

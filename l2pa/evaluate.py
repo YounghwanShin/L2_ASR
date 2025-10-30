@@ -31,7 +31,7 @@ def evaluate_model(checkpoint_path, config):
       pretrained_model_name=config.pretrained_model,
       num_phonemes=config.num_phonemes,
       num_error_types=config.num_error_types,
-      **config.model_configs[config.model_type]
+      **config.get_model_config()
   )
 
   checkpoint = torch.load(checkpoint_path, map_location=device)
