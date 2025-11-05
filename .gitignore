@@ -39,6 +39,4 @@ Thumbs.db
 # Downloaded datasets
 *.tar.gz
 *.zip
-
-# NLTK data
-nltk_data/
+*.json
