@@ -23,7 +23,7 @@
 ### 설치
 
 ```bash
-# 저장소 클론
+# Clone repository
 git clone https://github.com/YounghwanShin/L2_ASR.git
 cd L2_ASR
 
