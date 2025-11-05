@@ -1,9 +1,7 @@
 """Training script with cross-validation support."""
-
 import json
 import logging
 import os
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -11,155 +9,85 @@ from torch.utils.data import DataLoader
 from .config import Config
 from .data.dataset import PronunciationDataset, collate_batch
 from .evaluation.evaluator import ModelEvaluator
-from .models.losses import UnifiedLoss
-from .models.unified_model import UnifiedModel
-from .training.trainer import ModelTrainer
-from .training.utils import (
-    load_checkpoint,
-    save_checkpoint,
-    set_random_seed,
-    setup_experiment_directories
-)
+from .models.losses import UnifiedMultitaskLoss
+from .models.unified_model import MultitaskPronunciationModel
+from .training.trainer import PronunciationTrainer
+from .training.utils import load_checkpoint, save_checkpoint, set_random_seed, setup_experiment_directories
 
 logger = logging.getLogger(__name__)
 
 
 def train_model(config, resume_checkpoint=None):
-  """Main training function.
-  
-  Args:
-    config: Configuration object.
-    resume_checkpoint: Optional path to checkpoint for resuming.
-  """
-  # Setup
-  set_random_seed(config.seed)
+  set_random_seed(config.random_seed)
   setup_experiment_directories(config, resume=bool(resume_checkpoint))
   
-  # Load phoneme mapping
-  with open(config.phoneme_map, 'r') as f:
+  with open(config.phoneme_mapping_path, 'r') as f:
     phoneme_to_id = json.load(f)
   id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
-  error_type_names = config.get_error_type_names()
+  error_type_names = config.get_error_label_names()
   
-  # Create model
-  model = UnifiedModel(
+  model = MultitaskPronunciationModel(
       pretrained_model_name=config.pretrained_model,
       num_phonemes=config.num_phonemes,
       num_error_types=config.num_error_types,
-      **config.get_model_config()
+      **config.get_model_architecture_config()
   )
   
   if torch.cuda.device_count() > 1:
     model = nn.DataParallel(model)
-  
   model = model.to(config.device)
   
-  # Create criterion
-  criterion = UnifiedLoss(
+  criterion = UnifiedMultitaskLoss(
       training_mode=config.training_mode,
-      canonical_weight=config.canonical_weight,
-      perceived_weight=config.perceived_weight,
-      error_weight=config.error_weight,
+      canonical_weight=config.canonical_loss_weight,
+      perceived_weight=config.perceived_loss_weight,
+      error_weight=config.error_loss_weight,
       focal_alpha=config.focal_alpha,
       focal_gamma=config.focal_gamma
   )
   
-  # Create trainer and optimizers
-  trainer = ModelTrainer(model, config, config.device, logger)
+  trainer = PronunciationTrainer(model, config, config.device, logger)
   wav2vec_optimizer, main_optimizer = trainer.get_optimizers()
   
-  # Create datasets
-  train_dataset = PronunciationDataset(
-      config.train_data, phoneme_to_id, config.training_mode,
-      config.max_length, config.sampling_rate, config.device
-  )
-  val_dataset = PronunciationDataset(
-      config.val_data, phoneme_to_id, config.training_mode,
-      config.max_length, config.sampling_rate, config.device
-  )
-  test_dataset = PronunciationDataset(
-      config.test_data, phoneme_to_id, config.training_mode,
-      config.max_length, config.sampling_rate, config.device
-  )
+  train_dataset = PronunciationDataset(config.train_labels_path, phoneme_to_id, config.training_mode, config.max_audio_length, config.sampling_rate)
+  val_dataset = PronunciationDataset(config.val_labels_path, phoneme_to_id, config.training_mode, config.max_audio_length, config.sampling_rate)
+  test_dataset = PronunciationDataset(config.test_labels_path, phoneme_to_id, config.training_mode, config.max_audio_length, config.sampling_rate)
   
-  # Create dataloaders
-  train_dataloader = DataLoader(
-      train_dataset,
-      batch_size=config.batch_size,
-      shuffle=True,
-      collate_fn=collate_batch
-  )
-  val_dataloader = DataLoader(
-      val_dataset,
-      batch_size=config.batch_size,
-      shuffle=False,
-      collate_fn=collate_batch
-  )
-  test_dataloader = DataLoader(
-      test_dataset,
-      batch_size=config.eval_batch_size,
-      shuffle=False,
-      collate_fn=collate_batch
-  )
+  train_dataloader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, collate_fn=collate_batch)
+  val_dataloader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, collate_fn=collate_batch)
+  test_dataloader = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False, collate_fn=collate_batch)
   
-  # Create evaluator
   evaluator = ModelEvaluator(config.device)
   
-  # Initialize tracking variables
-  best_metrics = {
-      'canonical_per': float('inf'),
-      'perceived_per': float('inf'),
-      'error_accuracy': 0.0,
-      'val_loss': float('inf')
-  }
+  best_metrics = {'canonical_per': float('inf'), 'perceived_per': float('inf'), 'error_accuracy': 0.0, 'val_loss': float('inf')}
   start_epoch = 1
   
-  # Resume from checkpoint if provided
   if resume_checkpoint:
-    start_epoch, best_metrics = load_checkpoint(
-        resume_checkpoint, model, wav2vec_optimizer,
-        main_optimizer, config.device
-    )
+    start_epoch, best_metrics = load_checkpoint(resume_checkpoint, model, wav2vec_optimizer, main_optimizer, config.device)
   
-  # Training loop
   for epoch in range(start_epoch, config.num_epochs + 1):
-    # Train and validate
     train_loss = trainer.train_epoch(train_dataloader, criterion, epoch)
     val_loss = trainer.validate_epoch(val_dataloader, criterion)
-    
     logger.info(f'Epoch {epoch}: Train={train_loss:.4f}, Val={val_loss:.4f}')
     
-    # Evaluate on test set
     metrics = {}
-    
     if config.has_canonical_task():
-      canonical_results = evaluator.evaluate_phoneme_recognition(
-          model, test_dataloader, config.training_mode,
-          id_to_phoneme, 'canonical'
-      )
+      canonical_results = evaluator.evaluate_phoneme_recognition(model, test_dataloader, config.training_mode, id_to_phoneme, 'canonical')
       metrics['canonical_per'] = canonical_results['per']
       logger.info(f"Canonical PER: {canonical_results['per']:.4f}")
     
     if config.has_perceived_task():
-      perceived_results = evaluator.evaluate_phoneme_recognition(
-          model, test_dataloader, config.training_mode,
-          id_to_phoneme, 'perceived'
-      )
+      perceived_results = evaluator.evaluate_phoneme_recognition(model, test_dataloader, config.training_mode, id_to_phoneme, 'perceived')
       metrics['perceived_per'] = perceived_results['per']
       logger.info(f"Perceived PER: {perceived_results['per']:.4f}")
     
     if config.has_error_task():
-      error_results = evaluator.evaluate_error_detection(
-          model, test_dataloader, config.training_mode,
-          error_type_names
-      )
+      error_results = evaluator.evaluate_error_detection(model, test_dataloader, config.training_mode, error_type_names)
       metrics['error_accuracy'] = error_results['token_accuracy']
       logger.info(f"Error Accuracy: {error_results['token_accuracy']:.4f}")
     
-    # Save best checkpoints
     for metric_name in config.save_best_metrics:
       should_save = False
-      
       if metric_name == 'canonical' and 'canonical_per' in metrics:
         if metrics['canonical_per'] < best_metrics['canonical_per']:
           best_metrics['canonical_per'] = metrics['canonical_per']
@@ -179,26 +107,17 @@ def train_model(config, resume_checkpoint=None):
       
       if should_save:
         path = os.path.join(config.checkpoint_dir, f'best_{metric_name}.pth')
-        save_checkpoint(
-            model, wav2vec_optimizer, main_optimizer,
-            epoch, val_loss, train_loss, best_metrics, path
-        )
+        save_checkpoint(model, wav2vec_optimizer, main_optimizer, epoch, val_loss, train_loss, best_metrics, path)
     
-    # Save latest checkpoint
     latest_path = os.path.join(config.checkpoint_dir, 'latest.pth')
-    save_checkpoint(
-        model, wav2vec_optimizer, main_optimizer,
-        epoch, val_loss, train_loss, best_metrics, latest_path
-    )
+    save_checkpoint(model, wav2vec_optimizer, main_optimizer, epoch, val_loss, train_loss, best_metrics, latest_path)
     
-    # Clear cache
     if torch.cuda.is_available():
       torch.cuda.empty_cache()
   
-  # Save final metrics
   final_metrics = {**best_metrics, 'completed_epochs': config.num_epochs}
   if config.use_cross_validation:
-    final_metrics['cv_fold'] = config.cv_fold
+    final_metrics['cv_fold'] = config.cv_fold_index
   
   metrics_path = os.path.join(config.result_dir, 'final_metrics.json')
   with open(metrics_path, 'w') as f:
