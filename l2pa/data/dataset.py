@@ -16,8 +16,7 @@ from torch.utils.data import Dataset
 class PronunciationDataset(Dataset):
   """Dataset for pronunciation assessment with multitask support.
   
-  Efficiently loads audio and labels for canonical/perceived phoneme
-  recognition and error detection tasks.
+  loads audio and labels for canonical/perceived phoneme recognition and error detection tasks.
   """
   
   def __init__(
