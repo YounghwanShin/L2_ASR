@@ -16,7 +16,7 @@ import torch
 
 
 def set_random_seed(seed: int):
-  """Set random seeds for reproducibility.
+  """Sets random seeds for reproducibility.
   
   Args:
     seed: Random seed value.
@@ -30,7 +30,7 @@ def set_random_seed(seed: int):
 
 
 def setup_experiment_directories(config, resume: bool = False):
-  """Setup experiment directories and logging.
+  """Sets up experiment directories and logging.
   
   Args:
     config: Configuration object.
@@ -39,14 +39,16 @@ def setup_experiment_directories(config, resume: bool = False):
   os.makedirs(config.checkpoint_dir, exist_ok=True)
   os.makedirs(config.log_dir, exist_ok=True)
   os.makedirs(config.result_dir, exist_ok=True)
-
+  
+  # Save configuration
   config_path = os.path.join(config.experiment_dir, 'config.json')
   if not resume:
     config.save_config(config_path)
-
+  
+  # Setup logging
   log_file = os.path.join(config.log_dir, 'training.log')
   file_mode = 'a' if resume else 'w'
-
+  
   logging.basicConfig(
       level=logging.INFO,
       format='%(asctime)s - %(levelname)s - %(message)s',
@@ -58,9 +60,17 @@ def setup_experiment_directories(config, resume: bool = False):
   )
 
 
-def save_checkpoint(model, wav2vec_opt, main_opt, epoch,
-                   val_loss, train_loss, metrics, path):
-  """Save model checkpoint.
+def save_checkpoint(
+    model,
+    wav2vec_opt,
+    main_opt,
+    epoch,
+    val_loss,
+    train_loss,
+    metrics,
+    path
+):
+  """Saves model checkpoint.
   
   Args:
     model: Model to save.
@@ -70,7 +80,7 @@ def save_checkpoint(model, wav2vec_opt, main_opt, epoch,
     val_loss: Validation loss.
     train_loss: Training loss.
     metrics: Evaluation metrics dictionary.
-    path: Output path.
+    path: Output checkpoint path.
   """
   checkpoint = {
       'epoch': epoch,
@@ -86,41 +96,46 @@ def save_checkpoint(model, wav2vec_opt, main_opt, epoch,
   torch.save(checkpoint, path)
 
 
-def load_checkpoint(checkpoint_path, model, wav2vec_optimizer,
-                   main_optimizer, device):
-  """Load checkpoint and restore training state.
+def load_checkpoint(checkpoint_path, model, wav2vec_optimizer, main_optimizer, device):
+  """Loads checkpoint and restores training state.
   
   Args:
-    checkpoint_path: Path to checkpoint.
+    checkpoint_path: Path to checkpoint file.
     model: Model to load state into.
     wav2vec_optimizer: Wav2Vec2 optimizer.
     main_optimizer: Main optimizer.
     device: Device to load to.
-    
+  
   Returns:
     Tuple of (start_epoch, best_metrics).
   """
   logger = logging.getLogger(__name__)
-  logger.info(f"Loading checkpoint from {checkpoint_path}")
+  logger.info(f'Loading checkpoint from {checkpoint_path}')
   
   checkpoint = torch.load(checkpoint_path, map_location=device)
-  model.load_state_dict(checkpoint['model_state_dict'])
+  
+  # Handle DataParallel state dict
+  state_dict = checkpoint.get('model_state_dict', checkpoint)
+  if any(k.startswith('module.') for k in state_dict.keys()):
+    state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+  
+  model.load_state_dict(state_dict)
   wav2vec_optimizer.load_state_dict(checkpoint['wav2vec_optimizer_state_dict'])
   main_optimizer.load_state_dict(checkpoint['main_optimizer_state_dict'])
   
   start_epoch = checkpoint['epoch'] + 1
   best_metrics = checkpoint.get('metrics', {})
   
-  logger.info(f"Resumed from epoch {checkpoint['epoch']}")
+  logger.info(f'Resumed from epoch {checkpoint["epoch"]}')
   return start_epoch, best_metrics
 
 
 def detect_model_type_from_checkpoint(checkpoint_path: str) -> str:
-  """Auto-detect model architecture from checkpoint.
+  """Auto-detects model architecture from checkpoint.
   
   Args:
-    checkpoint_path: Path to checkpoint.
-    
+    checkpoint_path: Path to checkpoint file.
+  
   Returns:
     Model type ('simple' or 'transformer').
   """

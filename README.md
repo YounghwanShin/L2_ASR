@@ -1,15 +1,24 @@
-# L2 Pronunciation Assessment with Cross-Validation
+# L2 Pronunciation Assessment with Multitask Learning
 
-State-of-the-art deep learning system for assessing pronunciation quality of second language learners, featuring multitask learning and speaker-based cross-validation.
+Deep learning system for assessing L2 learner pronunciation quality through multitask learning of phoneme recognition and error detection.
 
-## Features
+## Overview
 
-- **Multitask Learning**: Simultaneous canonical phoneme recognition, perceived phoneme recognition, and error detection
-- **Cross-Validation**: Robust evaluation with speaker-based k-fold cross-validation
-- **Flexible Architecture**: Support for Simple and Transformer encoders
-- **Comprehensive Metrics**: Per-speaker analysis, confusion matrices, and detailed error breakdowns
+This system simultaneously learns three related tasks:
+- **Canonical Phoneme Recognition**: Predicting correct phonemes
+- **Perceived Phoneme Recognition**: Recognizing actual pronunciations  
+- **Error Detection**: Classifying errors as Deletion (D), Insertion (I), Substitution (S), or Correct (C)
 
-## Installation
+## Key Features
+
+- **Multitask Learning**: Joint training of related pronunciation assessment tasks
+- **Flexible Architecture**: Simple feedforward or Transformer encoders
+- **Cross-Validation**: Speaker-based k-fold validation for robust evaluation
+- **Comprehensive Metrics**: Phoneme error rates, mispronunciation detection, error classification
+
+## Quick Start
+
+### Installation
 
 ```bash
 # Clone repository
@@ -18,109 +27,89 @@ cd l2-pronunciation-assessment
 
 # Create environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Setup NLTK
 python setup_nltk.py
 ```
 
-## Quick Start
-
-### 1. Download Dataset
+### Data Preparation
 
 ```bash
+# Download L2-ARCTIC dataset
 chmod +x download_dataset.sh
 ./download_dataset.sh
-```
 
-### 2. Preprocess Data
-
-Run all preprocessing steps including cross-validation split creation:
-
-```bash
+# Preprocess data (extract phonemes, generate error labels, create splits)
 python preprocess.py all --data_root data/l2arctic --output_dir data
 ```
 
-This creates:
-- `test_labels.json`: Fixed test set (speakers: TLV, NJS, TNI, TXHC, ZHAA, YKWK)
-- `fold_X/train_labels.json`: Training set for fold X
-- `fold_X/val_labels.json`: Validation set for fold X (one speaker each)
-
-### 3. Train Model
-
-**Train all cross-validation folds:**
+### Training
 
 ```bash
+# Train with multitask learning (recommended)
 python main.py train --training_mode multitask --model_type transformer
+
+# Train specific fold
+python main.py train --training_mode multitask --cv_fold 0
+
+# Train without cross-validation
+python main.py train --training_mode multitask --no_cv
 ```
 
-**Train specific fold:**
+### Evaluation
 
 ```bash
-python main.py train --training_mode multitask --model_type transformer --cv_fold 0
-```
-
-**Train without cross-validation:**
-
-```bash
-python main.py train --training_mode multitask --model_type transformer --no_cv
-```
-
-### 4. Evaluate Model
-
-```bash
-python main.py eval --checkpoint experiments/multitask_transformer_cv0_20251029_141426/checkpoints/latest.pth
+python main.py eval --checkpoint experiments/multitask_transformer_cv0_*/checkpoints/best_perceived.pth
 ```
 
 ## Training Modes
 
-### 1. Phoneme Only Mode
+### Multitask (Recommended)
+Jointly trains all three tasks for best performance:
+```bash
+python main.py train --training_mode multitask
+```
+
+### Phoneme-Error
+Trains perceived phoneme recognition and error detection:
+```bash
+python main.py train --training_mode phoneme_error
+```
+
+### Phoneme Only
 Trains only perceived phoneme recognition:
 ```bash
 python main.py train --training_mode phoneme_only
 ```
 
-### 2. Phoneme-Error Mode
-Trains perceived phoneme recognition + error detection:
-```bash
-python main.py train --training_mode phoneme_error
-```
-
-### 3. Multitask Mode (Recommended)
-Trains all three tasks: canonical phonemes, perceived phonemes, and error detection:
-```bash
-python main.py train --training_mode multitask
-```
-
 ## Model Architectures
 
-### Simple Encoder
-Feed-forward architecture:
-```bash
-python main.py train --model_type simple
-```
-
 ### Transformer Encoder (Recommended)
-Multi-head self-attention:
+Uses multi-head self-attention for contextual modeling:
 ```bash
 python main.py train --model_type transformer
 ```
 
+### Simple Encoder
+Feedforward architecture for faster training:
+```bash
+python main.py train --model_type simple
+```
+
 ## Configuration
 
-Key parameters in `l2pa/config.py`:
+Key settings in `l2pa/config.py`:
 
 ```python
-# Training mode
-training_mode = 'multitask'  # 'phoneme_only', 'phoneme_error', or 'multitask'
+# Training mode (main focus: multitask error learning)
+training_mode = 'multitask'
 
 # Model architecture
-model_type = 'transformer'  # 'simple' or 'transformer'
+model_type = 'transformer'
 
-# Loss weights (for multitask mode)
+# Loss weights
 canonical_weight = 0.3
 perceived_weight = 0.3
 error_weight = 0.4
@@ -131,95 +120,83 @@ num_epochs = 100
 gradient_accumulation = 2
 main_lr = 3e-4
 wav2vec_lr = 1e-5
-
-# Cross-validation
-use_cross_validation = True
 ```
 
-## Cross-Validation Details
+## Cross-Validation
 
-The system implements speaker-based cross-validation:
+Speaker-based cross-validation ensures model generalization:
 
-1. **Test Set**: Fixed 6 speakers (TLV, NJS, TNI, TXHC, ZHAA, YKWK)
-2. **Training Speakers**: Remaining speakers split into folds
-3. **Validation**: Each fold uses one training speaker for validation
-4. **Number of Folds**: Equals number of training speakers
+- **Test Set**: 6 fixed speakers (TLV, NJS, TNI, TXHC, ZHAA, YKWK)
+- **Training Folds**: Each fold uses different speaker for validation
+- **Automatic**: Runs all folds sequentially
 
-Example with 18 total speakers:
-- Test: 6 speakers (fixed)
-- Training: 12 speakers
-- Folds: 12 (each using 11 for train, 1 for validation)
+```bash
+# Train all folds
+python main.py train --training_mode multitask
+
+# Train specific fold
+python main.py train --training_mode multitask --cv_fold 0
+```
 
 ## Evaluation Metrics
 
-### Canonical Phoneme Recognition
+### Phoneme Recognition
 - Phoneme Error Rate (PER)
+- Mispronunciation detection (Precision, Recall, F1)
 - Per-speaker accuracy
 
-### Perceived Phoneme Recognition
-- Phoneme Error Rate (PER)
-- Mispronunciation Detection: Precision, Recall, F1
-- Confusion Matrix
-
 ### Error Detection
-- Token Accuracy
-- Per-class F1 scores (Deletion, Insertion, Substitution, Correct)
-- Weighted F1 / Macro F1
+- Token-level accuracy
+- Per-class F1 (Deletion, Insertion, Substitution, Correct)
+- Weighted/Macro F1 scores
 
 ## Advanced Usage
 
-**Custom configuration:**
+### Custom Configuration
 ```bash
 python main.py train \
     --training_mode multitask \
-    --model_type transformer \
     --config "batch_size=32,num_epochs=150,main_lr=5e-4" \
-    --experiment_name my_experiment
+    --experiment_name custom_experiment
 ```
 
-**Resume training:**
+### Resume Training
 ```bash
 python main.py train --resume experiments/my_experiment/checkpoints/latest.pth
-```
-
-**Evaluate specific fold:**
-```bash
-python main.py eval \
-    --checkpoint experiments/multitask_transformer_cv0_*/checkpoints/best_perceived.pth
 ```
 
 ## Project Structure
 
 ```
 l2-pronunciation-assessment/
-├── main.py                      # Main entry point
-├── preprocess.py                # Preprocessing entry point
-├── requirements.txt             # Dependencies
-├── README.md                    # This file
-├── data/                        # Data directory
-│   ├── l2arctic/                # L2-ARCTIC dataset
-│   ├── fold_X/                  # CV fold data
-│   ├── test_labels.json         # Test set
-│   └── phoneme_map.json         # Phoneme mapping
-├── experiments/                 # Experiment outputs
-└── l2pa/                        # Main package
-    ├── config.py                # Configuration
-    ├── train.py                 # Training logic
-    ├── evaluate.py              # Evaluation logic
-    ├── preprocessing/           # Preprocessing modules
-    ├── data/                    # Data loading
-    ├── models/                  # Model architectures
-    ├── training/                # Training utilities
-    ├── evaluation/              # Evaluation metrics
-    └── utils/                   # Utility functions
+├── main.py                     # Training/evaluation entry point
+├── preprocess.py               # Data preprocessing entry point
+├── requirements.txt
+├── README.md
+├── data/
+│   ├── l2arctic/              # L2-ARCTIC dataset
+│   ├── fold_X/                # Cross-validation folds
+│   ├── test_labels.json       # Test set
+│   └── phoneme_to_id.json     # Phoneme mapping
+├── experiments/               # Training outputs
+└── l2pa/                      # Main package
+    ├── config.py              # Configuration
+    ├── train.py               # Training logic
+    ├── evaluate.py            # Evaluation logic
+    ├── data/                  # Data loading
+    ├── models/                # Model architectures
+    ├── preprocessing/         # Data preprocessing
+    ├── training/              # Training utilities
+    ├── evaluation/            # Evaluation metrics
+    └── utils/                 # Utility functions
 ```
 
 ## Citation
 
 ```bibtex
 @misc{l2pronunciation2025,
-  title={L2 Pronunciation Assessment with Multitask Learning and Cross-Validation},
-  author={Research Team},
+  title={L2 Pronunciation Assessment with Multitask Learning},
+  author={L2PA Team},
   year={2025},
   publisher={GitHub},
   url={https://github.com/yourusername/l2-pronunciation-assessment}
@@ -233,5 +210,5 @@ MIT License - see LICENSE file for details.
 ## Acknowledgments
 
 - Wav2Vec2 model from Hugging Face Transformers
-- L2-ARCTIC dataset creators
+- L2-ARCTIC dataset
 - CMU Pronouncing Dictionary
