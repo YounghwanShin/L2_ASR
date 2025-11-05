@@ -22,8 +22,8 @@ This system simultaneously learns three related tasks:
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/l2-pronunciation-assessment.git
-cd l2-pronunciation-assessment
+git clone https://github.com/YounghwanShin/L2_ASR.git
+cd L2_ASR
 
 # Create environment
 python -m venv venv
