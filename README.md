@@ -1,214 +1,252 @@
-# L2 Pronunciation Assessment with Multitask Learning
+# L2 발음 평가 시스템 with 멀티태스크 학습
 
-Deep learning system for assessing L2 learner pronunciation quality through multitask learning of phoneme recognition and error detection.
+딥러닝 기반의 제2언어(L2) 학습자 발음 품질 평가 시스템입니다. 발음 오류 검출을 위한 멀티태스크 학습을 핵심 아이디어로 합니다.
 
-## Overview
+## 개요
 
-This system simultaneously learns three related tasks:
-- **Canonical Phoneme Recognition**: Predicting correct phonemes
-- **Perceived Phoneme Recognition**: Recognizing actual pronunciations  
-- **Error Detection**: Classifying errors as Deletion (D), Insertion (I), Substitution (S), or Correct (C)
+본 시스템은 세 가지 관련된 태스크를 동시에 학습합니다:
+- **표준 음소 인식**: 올바른 발음 예측
+- **실제 음소 인식**: 학습자의 실제 발음 인식
+- **오류 검출**: 발음 오류를 Deletion(D), Insertion(I), Substitution(S), Correct(C)로 분류
 
-## Key Features
+**핵심 아이디어**: 발음 오류 유형을 명시적으로 학습하여 더 정확한 발음 평가를 수행합니다.
 
-- **Multitask Learning**: Joint training of related pronunciation assessment tasks
-- **Flexible Architecture**: Simple feedforward or Transformer encoders
-- **Cross-Validation**: Speaker-based k-fold validation for robust evaluation
-- **Comprehensive Metrics**: Phoneme error rates, mispronunciation detection, error classification
+## 주요 기능
 
-## Quick Start
+- **멀티태스크 학습**: 관련 태스크들의 동시 학습으로 성능 향상
+- **유연한 아키텍처**: Simple Feedforward 또는 Transformer 인코더 선택 가능
+- **교차 검증**: 화자 기반 k-fold 검증으로 robust한 평가
+- **종합적 메트릭**: 음소 오류율(PER), 오발음 검출, 오류 분류 성능 측정
 
-### Installation
+## 빠른 시작
+
+### 설치
 
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/l2-pronunciation-assessment.git
-cd l2-pronunciation-assessment
+# 저장소 클론
+git clone https://github.com/YounghwanShin/L2_ASR.git
+cd L2_ASR
 
-# Create environment
+# 가상환경 생성
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Install dependencies
+# 의존성 설치
 pip install -r requirements.txt
-python setup_nltk.py
 ```
 
-### Data Preparation
+### 데이터 준비
+
+L2-ARCTIC 데이터셋을 다운로드하고 전처리합니다:
 
 ```bash
-# Download L2-ARCTIC dataset
-chmod +x download_dataset.sh
-./download_dataset.sh
+# 데이터셋 다운로드 (별도 스크립트 필요)
+# 다운로드 후 data/l2arctic 경로에 위치시킵니다
 
-# Preprocess data (extract phonemes, generate error labels, create splits)
-python preprocess.py all --data_root data/l2arctic --output_dir data
+# 오류 라벨 생성
+python preprocess.py labels --input data/preprocessed.json --output data/processed_with_error.json
+
+# 교차 검증을 위한 데이터 분할
+python preprocess.py split --input data/processed_with_error.json --output_dir data
 ```
 
-### Training
+### 학습
 
 ```bash
-# Train with multitask learning (recommended)
+# 멀티태스크 학습 (권장)
 python main.py train --training_mode multitask --model_type transformer
 
-# Train specific fold
+# 특정 fold 학습
 python main.py train --training_mode multitask --cv_fold 0
 
-# Train without cross-validation
+# 교차 검증 없이 학습
 python main.py train --training_mode multitask --no_cv
 ```
 
-### Evaluation
+### 평가
 
 ```bash
 python main.py eval --checkpoint experiments/multitask_transformer_cv0_*/checkpoints/best_perceived.pth
 ```
 
-## Training Modes
+## 학습 모드
 
-### Multitask (Recommended)
-Jointly trains all three tasks for best performance:
+### Multitask (권장)
+세 가지 태스크를 모두 학습하여 최고 성능 달성:
 ```bash
 python main.py train --training_mode multitask
 ```
 
 ### Phoneme-Error
-Trains perceived phoneme recognition and error detection:
+실제 음소 인식과 오류 검출만 학습:
 ```bash
 python main.py train --training_mode phoneme_error
 ```
 
 ### Phoneme Only
-Trains only perceived phoneme recognition:
+실제 음소 인식만 학습:
 ```bash
 python main.py train --training_mode phoneme_only
 ```
 
-## Model Architectures
+## 모델 아키텍처
 
-### Transformer Encoder (Recommended)
-Uses multi-head self-attention for contextual modeling:
+### Transformer Encoder (권장)
+Multi-head self-attention을 사용한 컨텍스트 모델링:
 ```bash
 python main.py train --model_type transformer
 ```
 
 ### Simple Encoder
-Feedforward architecture for faster training:
+빠른 학습을 위한 Feedforward 아키텍처:
 ```bash
 python main.py train --model_type simple
 ```
 
-## Configuration
+## 설정
 
-Key settings in `l2pa/config.py`:
+주요 설정은 `l2pa/config.py`에서 수정 가능합니다:
 
 ```python
-# Training mode (main focus: multitask error learning)
+# 학습 모드 (핵심: 멀티태스크 오류 학습)
 training_mode = 'multitask'
 
-# Model architecture
+# 모델 아키텍처
 model_type = 'transformer'
 
-# Loss weights
-canonical_weight = 0.3
-perceived_weight = 0.3
-error_weight = 0.4
+# 손실 가중치
+canonical_loss_weight = 0.3
+perceived_loss_weight = 0.3
+error_loss_weight = 0.4  # 오류 검출에 더 높은 가중치
 
-# Training hyperparameters
+# 학습 하이퍼파라미터
 batch_size = 16
 num_epochs = 100
-gradient_accumulation = 2
-main_lr = 3e-4
-wav2vec_lr = 1e-5
+gradient_accumulation_steps = 2
+main_learning_rate = 3e-4
+wav2vec_learning_rate = 1e-5
 ```
 
-## Cross-Validation
+## 교차 검증
 
-Speaker-based cross-validation ensures model generalization:
+화자 기반 교차 검증으로 모델의 일반화 성능을 확보합니다:
 
-- **Test Set**: 6 fixed speakers (TLV, NJS, TNI, TXHC, ZHAA, YKWK)
-- **Training Folds**: Each fold uses different speaker for validation
-- **Automatic**: Runs all folds sequentially
+- **테스트 세트**: 6명의 고정 화자 (TLV, NJS, TNI, TXHC, ZHAA, YKWK)
+- **학습 Fold**: 각 fold마다 다른 화자를 검증 세트로 사용
+- **자동 실행**: 모든 fold를 순차적으로 학습
 
 ```bash
-# Train all folds
+# 모든 fold 학습
 python main.py train --training_mode multitask
 
-# Train specific fold
+# 특정 fold 학습
 python main.py train --training_mode multitask --cv_fold 0
 ```
 
-## Evaluation Metrics
+## 평가 메트릭
 
-### Phoneme Recognition
-- Phoneme Error Rate (PER)
-- Mispronunciation detection (Precision, Recall, F1)
-- Per-speaker accuracy
+### 음소 인식
+- 음소 오류율(PER)
+- 오발음 검출 (Precision, Recall, F1)
+- 화자별 정확도
 
-### Error Detection
-- Token-level accuracy
-- Per-class F1 (Deletion, Insertion, Substitution, Correct)
-- Weighted/Macro F1 scores
+### 오류 검출
+- 토큰 레벨 정확도
+- 클래스별 F1 (Deletion, Insertion, Substitution, Correct)
+- Weighted/Macro F1 점수
 
-## Advanced Usage
+## 고급 사용법
 
-### Custom Configuration
+### 사용자 정의 설정
 ```bash
 python main.py train \
     --training_mode multitask \
-    --config "batch_size=32,num_epochs=150,main_lr=5e-4" \
+    --config "batch_size=32,num_epochs=150,main_learning_rate=5e-4" \
     --experiment_name custom_experiment
 ```
 
-### Resume Training
+### 학습 재개
 ```bash
 python main.py train --resume experiments/my_experiment/checkpoints/latest.pth
 ```
 
-## Project Structure
+## 프로젝트 구조
 
 ```
-l2-pronunciation-assessment/
-├── main.py                     # Training/evaluation entry point
-├── preprocess.py               # Data preprocessing entry point
+l2_pronunciation_assessment/
+├── main.py                     # 학습/평가 진입점
+├── preprocess.py               # 데이터 전처리 진입점
 ├── requirements.txt
 ├── README.md
 ├── data/
-│   ├── l2arctic/              # L2-ARCTIC dataset
-│   ├── fold_X/                # Cross-validation folds
-│   ├── test_labels.json       # Test set
-│   └── phoneme_to_id.json     # Phoneme mapping
-├── experiments/               # Training outputs
-└── l2pa/                      # Main package
-    ├── config.py              # Configuration
-    ├── train.py               # Training logic
-    ├── evaluate.py            # Evaluation logic
-    ├── data/                  # Data loading
-    ├── models/                # Model architectures
-    ├── preprocessing/         # Data preprocessing
-    ├── training/              # Training utilities
-    ├── evaluation/            # Evaluation metrics
-    └── utils/                 # Utility functions
+│   ├── l2arctic/              # L2-ARCTIC 데이터셋
+│   ├── fold_X/                # 교차 검증 fold
+│   ├── test_labels.json       # 테스트 세트
+│   └── phoneme_to_id.json     # 음소 매핑
+├── experiments/               # 학습 출력
+└── l2pa/                      # 메인 패키지
+    ├── config.py              # 설정
+    ├── train.py               # 학습 로직
+    ├── evaluate.py            # 평가 로직
+    ├── data/                  # 데이터 로딩
+    ├── models/                # 모델 아키텍처
+    ├── preprocessing/         # 데이터 전처리
+    ├── training/              # 학습 유틸리티
+    ├── evaluation/            # 평가 메트릭
+    └── utils/                 # 유틸리티 함수
 ```
 
-## Citation
+## 주요 개선사항
+
+### 1. 효율적인 데이터 로딩
+- Waveform을 한 번만 로드하여 처리 속도 향상
+- `__getitem__`에서 길이 필터링 수행
+
+### 2. 코드 품질
+- Google 스타일 가이드 준수
+- 명확한 docstring과 타입 힌트
+- 중복 코드 제거 및 가독성 향상
+
+### 3. 멀티태스크 학습 강조
+- 오류 검출이 핵심 아이디어임을 명확히 표현
+- 교차 검증은 평가 방법일 뿐
+
+## 인용
 
 ```bibtex
 @misc{l2pronunciation2025,
-  title={L2 Pronunciation Assessment with Multitask Learning},
+  title={L2 발음 평가 시스템 with 멀티태스크 학습},
   author={L2PA Team},
   year={2025},
   publisher={GitHub},
-  url={https://github.com/yourusername/l2-pronunciation-assessment}
+  url={https://github.com/yourusername/l2_pronunciation_assessment}
 }
 ```
 
-## License
+## 라이선스
 
-MIT License - see LICENSE file for details.
+MIT License - 자세한 내용은 LICENSE 파일 참조
 
-## Acknowledgments
+## 감사의 말
 
-- Wav2Vec2 model from Hugging Face Transformers
-- L2-ARCTIC dataset
+- Hugging Face Transformers의 Wav2Vec2 모델
+- L2-ARCTIC 데이터셋
 - CMU Pronouncing Dictionary
+
+## 문제 해결
+
+### 메모리 부족
+- `batch_size`를 줄이거나 `gradient_accumulation_steps`를 늘리세요
+- `max_audio_length`를 줄여보세요
+
+### CUDA 오류
+- PyTorch와 CUDA 버전 호환성을 확인하세요
+- `torch.cuda.empty_cache()`가 주기적으로 호출되는지 확인하세요
+
+### 학습 속도 저하
+- `model_type='simple'`을 사용해보세요
+- SpecAugment를 비활성화하려면 `enable_wav2vec_specaug=False` 설정
+
+## 연락처
+
+문의사항이나 버그 리포트는 GitHub Issues를 통해 제출해주세요.
