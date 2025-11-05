@@ -39,3 +39,4 @@ Thumbs.db
 # Downloaded datasets
 *.tar.gz
 *.zip
+*.json
