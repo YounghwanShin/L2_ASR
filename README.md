@@ -40,15 +40,28 @@ pip install -r requirements.txt
 L2-ARCTIC 데이터셋을 다운로드하고 전처리합니다:
 
 ```bash
-# 데이터셋 다운로드 (별도 스크립트 필요)
-# 다운로드 후 data/l2arctic 경로에 위치시킵니다
+# 1. 데이터셋 다운로드
+# L2-ARCTIC 웹사이트에서 수동 다운로드: https://psi.engr.tamu.edu/l2-arctic-corpus/
+# 다운로드 후 data/l2arctic 경로에 압축 해제
 
-# 오류 라벨 생성
+# 2. NLTK 데이터 설치 (선택사항, 음소 변환에 필요)
+python setup_nltk.py
+
+# 3-A. 전체 전처리 파이프라인 실행 (권장)
+python preprocess.py all --data_root data/l2arctic --output_dir data
+
+# 3-B. 또는 단계별 실행
+# Step 1: 데이터셋에서 음소 추출
+python preprocess.py dataset --data_root data/l2arctic --output data/preprocessed.json
+
+# Step 2: 오류 라벨 생성
 python preprocess.py labels --input data/preprocessed.json --output data/processed_with_error.json
 
-# 교차 검증을 위한 데이터 분할
+# Step 3: 교차 검증을 위한 데이터 분할
 python preprocess.py split --input data/processed_with_error.json --output_dir data
 ```
+
+**참고**: TextGrid 파일이 없는 경우, `preprocess_dataset.py`가 기본 처리를 수행합니다. 완전한 기능을 위해서는 L2-ARCTIC 데이터셋의 TextGrid 파일이 필요합니다.
 
 ### 학습
 
@@ -141,6 +154,51 @@ python main.py train --training_mode multitask
 
 # 특정 fold 학습
 python main.py train --training_mode multitask --cv_fold 0
+```
+
+## 전처리 상세 설명
+
+### 전처리 단계
+
+1. **데이터셋 추출** (`preprocess.py dataset`)
+   - TextGrid 파일에서 표준(canonical) 음소와 실제(perceived) 음소를 추출
+   - 화자별로 오디오 파일과 전사본 매핑
+   - 출력: `preprocessed.json`
+
+2. **오류 라벨 생성** (`preprocess.py labels`)
+   - Needleman-Wunsch 알고리즘으로 표준 음소와 실제 음소를 정렬
+   - 각 음소에 대해 D(Deletion), I(Insertion), S(Substitution), C(Correct) 라벨 할당
+   - 출력: `processed_with_error.json`
+
+3. **데이터 분할** (`preprocess.py split`)
+   - 테스트 세트 분리 (6명의 고정 화자)
+   - 나머지 화자들로 K-fold 교차 검증 세트 생성
+   - 출력: `fold_0/`, `fold_1/`, ..., `test_labels.json`
+
+### 전처리 옵션
+
+```bash
+# 전체 파이프라인 (권장)
+python preprocess.py all \
+    --data_root data/l2arctic \
+    --output_dir data \
+    --test_speakers TLV NJS TNI TXHC ZHAA YKWK
+
+# 데이터셋만 처리
+python preprocess.py dataset \
+    --data_root data/l2arctic \
+    --output data/preprocessed.json
+
+# 오류 라벨만 생성
+python preprocess.py labels \
+    --input data/preprocessed.json \
+    --output data/processed_with_error.json
+
+# 데이터 분할만 수행
+python preprocess.py split \
+    --input data/processed_with_error.json \
+    --output_dir data \
+    --test_speakers TLV NJS TNI TXHC ZHAA YKWK
 ```
 
 ## 평가 메트릭
