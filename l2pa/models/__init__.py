@@ -1,1 +1,1 @@
-"""Models package for pronunciation assessment."""
+"""Neural network models module."""

@@ -2,11 +2,11 @@
 
 set -e
 
-echo "================================"
+echo "========================================"
 echo "L2-ARCTIC Dataset Download"
-echo "================================"
+echo "========================================"
 
-# Check if gdown is installed
+# Check for gdown
 if ! command -v gdown &> /dev/null; then
     echo "Installing gdown..."
     pip install gdown
@@ -15,17 +15,34 @@ fi
 # Create data directory
 mkdir -p data
 
+# Download L2-ARCTIC dataset
 echo ""
 echo "Downloading L2-ARCTIC dataset..."
-echo "Note: You may need to manually download from:"
-echo "https://psi.engr.tamu.edu/l2-arctic-corpus/"
-echo ""
-echo "After downloading, extract to data/l2arctic/"
-echo ""
+gdown 1VzREuX7hP_-ksDewcbD1AGebSR5ASGiw -O dataset.tar.gz
 
-# Alternative: If you have direct download link
-# gdown YOUR_GOOGLE_DRIVE_ID -O dataset.tar.gz
-# tar -xzf dataset.tar.gz -C data/
-# rm dataset.tar.gz
+echo "Extracting L2-ARCTIC dataset..."
+tar -xzf dataset.tar.gz -C data/
+rm dataset.tar.gz
 
-echo "Please manually download the dataset and place it in data/l2arctic/"
+# Download phoneme mapping
+echo ""
+echo "Downloading phoneme to ID mapping..."
+gdown 1DbIckREiWy5aJ_uu3fNClZ-oKI75_pR0 -O data/phoneme_to_id.json
+
+# Verify downloads
+if [ -d "data/l2arctic" ] && [ -f "data/phoneme_to_id.json" ]; then
+    echo ""
+    echo "========================================"
+    echo "Download completed successfully"
+    echo "========================================"
+    echo "Dataset location: ./data/l2arctic/"
+    echo "Phoneme mapping: ./data/phoneme_to_id.json"
+    echo ""
+    echo "Next steps:"
+    echo "  1. python preprocess.py all"
+    echo "  2. python main.py train --training_mode multitask"
+    echo "========================================"
+else
+    echo "Error: Required files not found"
+    exit 1
+fi

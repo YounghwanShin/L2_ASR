@@ -14,7 +14,7 @@ env/
 data/l2arctic/
 data/fold*
 data/*.json
-!data/phoneme_to_id.json
+!data/phoneme_map.json
 
 # Experiments and checkpoints
 experiments/

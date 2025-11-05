@@ -1,87 +1,73 @@
 """Output heads for pronunciation assessment tasks.
 
-Provides task-specific classification heads for:
-  - Phoneme recognition with CTC decoding
-  - Error type classification (D/I/S/C)
+This module implements task-specific output heads for phoneme recognition
+and error detection.
 """
 
 import torch.nn as nn
 
 
-class PhonemeRecognitionHead(nn.Module):
-  """Output head for phoneme recognition with CTC decoding.
+class PhonemeHead(nn.Module):
+  """Output head for phoneme recognition.
   
-  Applies linear projection to predict phoneme probabilities at each
-  time step. Works with both canonical and perceived phoneme targets.
-  
-  Attributes:
-    dropout: Dropout layer for regularization.
-    classifier: Linear layer for phoneme classification.
+  Classifies each time step into phoneme classes using CTC decoding.
   """
   
   def __init__(self, input_dim: int, num_phonemes: int, dropout: float = 0.1):
-    """Initializes the phoneme recognition head.
+    """Initializes phoneme recognition head.
     
     Args:
-      input_dim: Dimension of input features.
-      num_phonemes: Number of phoneme classes (including blank token).
+      input_dim: Input feature dimension.
+      num_phonemes: Number of phoneme classes.
       dropout: Dropout probability.
     """
     super().__init__()
-    
     self.dropout = nn.Dropout(dropout)
     self.classifier = nn.Linear(input_dim, num_phonemes)
-  
+
   def forward(self, features):
     """Computes phoneme logits for each time step.
     
     Args:
-      features: Input features of shape [batch_size, sequence_length, input_dim].
-    
+      features: Input features of shape [batch_size, seq_len, input_dim].
+      
     Returns:
-      Phoneme logits of shape [batch_size, sequence_length, num_phonemes].
+      Phoneme logits of shape [batch_size, seq_len, num_phonemes].
     """
-    features = self.dropout(features)
-    return self.classifier(features)
+    return self.classifier(self.dropout(features))
 
 
-class ErrorClassificationHead(nn.Module):
-  """Output head for pronunciation error type classification.
+class ErrorDetectionHead(nn.Module):
+  """Output head for error detection.
   
-  Classifies each time step into one of: Deletion (D), Insertion (I),
-  Substitution (S), Correct (C), or blank.
-  
-  Attributes:
-    dropout: Dropout layer for regularization.
-    classifier: Linear layer for error type classification.
+  Classifies each time step into error types: blank, deletion (D),
+  insertion (I), substitution (S), or correct (C).
   """
   
   def __init__(
-      self,
-      input_dim: int,
-      num_error_types: int = 5,
+      self, 
+      input_dim: int, 
+      num_error_types: int = 5, 
       dropout: float = 0.1
   ):
-    """Initializes the error classification head.
+    """Initializes error detection head.
     
     Args:
-      input_dim: Dimension of input features.
-      num_error_types: Number of error types (blank + D/I/S/C = 5).
+      input_dim: Input feature dimension.
+      num_error_types: Number of error types (blank, D, I, S, C).
       dropout: Dropout probability.
     """
     super().__init__()
-    
     self.dropout = nn.Dropout(dropout)
     self.classifier = nn.Linear(input_dim, num_error_types)
-  
+
   def forward(self, features):
-    """Computes error type logits for each time step.
+    """Computes error detection logits for each time step.
     
     Args:
-      features: Input features of shape [batch_size, sequence_length, input_dim].
-    
+      features: Input features of shape [batch_size, seq_len, input_dim].
+      
     Returns:
-      Error logits of shape [batch_size, sequence_length, num_error_types].
+      Error logits of shape [batch_size, seq_len, num_error_types].
     """
-    features = self.dropout(features)
-    return self.classifier(features)
+    return self.classifier(self.dropout(features))
