@@ -1,9 +1,7 @@
 """Encoder architectures for pronunciation assessment.
 
-Provides audio encoding and feature enhancement layers:
-  - Wav2Vec2-based audio encoder for robust feature extraction
-  - Simple feedforward encoder for efficient feature transformation
-  - Transformer encoder for contextual feature modeling
+This module implements audio encoders including Wav2Vec2-based encoder,
+simple feed-forward encoder, and Transformer encoder for feature enhancement.
 """
 
 import torch.nn as nn
@@ -14,105 +12,78 @@ from transformers import Wav2Vec2Model, Wav2Vec2Config
 class Wav2VecEncoder(nn.Module):
   """Wav2Vec2-based audio encoder for robust feature extraction.
   
-  Wraps a pretrained Wav2Vec2 model and disables masking for fine-tuning.
-  Extracts contextualized audio representations from raw waveforms.
-  
-  Attributes:
-    wav2vec2: Pretrained Wav2Vec2 model instance.
+  Uses pretrained Wav2Vec2 model to extract contextualized audio features.
   """
   
-  def __init__(self, pretrained_model_name: str = 'facebook/wav2vec2-large-xlsr-53'):
-    """Initializes the Wav2Vec2 encoder.
+  def __init__(self, pretrained_model_name: str = "facebook/wav2vec2-large-xlsr-53"):
+    """Initializes Wav2Vec2 encoder.
     
     Args:
-      pretrained_model_name: HuggingFace model identifier for Wav2Vec2.
+      pretrained_model_name: Name or path of pretrained Wav2Vec2 model.
     """
     super().__init__()
-    
-    # Load configuration and disable masking for supervised fine-tuning
     config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
+    # Disable masking for inference stability
     config.mask_time_prob = 0.0
     config.mask_feature_prob = 0.0
-    
     self.wav2vec2 = Wav2Vec2Model.from_pretrained(
         pretrained_model_name,
         config=config
     )
-  
-  def forward(self, waveforms, attention_mask=None):
-    """Encodes audio waveforms into feature representations.
+
+  def forward(self, waveform, attention_mask=None):
+    """Encodes audio waveform to features.
     
     Args:
-      waveforms: Input audio tensor of shape [batch_size, audio_length].
-      attention_mask: Optional attention mask of shape [batch_size, audio_length].
-    
+      waveform: Input audio tensor of shape [batch_size, seq_len].
+      attention_mask: Optional attention mask of shape [batch_size, seq_len].
+      
     Returns:
-      Encoded audio features of shape [batch_size, sequence_length, hidden_dim].
+      Encoded features of shape [batch_size, seq_len, hidden_dim].
     """
-    outputs = self.wav2vec2(waveforms, attention_mask=attention_mask)
+    outputs = self.wav2vec2(waveform, attention_mask=attention_mask)
     return outputs.last_hidden_state
 
 
 class SimpleEncoder(nn.Module):
-  """Simple feedforward encoder for feature transformation.
+  """Simple feed-forward encoder for feature transformation.
   
-  Applies two-layer feedforward network with ReLU activation and
-  layer normalization for efficient feature enhancement.
-  
-  Attributes:
-    projection_layer: First linear transformation layer.
-    output_layer: Second linear transformation layer.
-    layer_norm: Layer normalization for stable training.
-    dropout: Dropout layer for regularization.
+  Applies two-layer MLP with residual connection for feature enhancement.
   """
   
   def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.1):
-    """Initializes the simple encoder.
+    """Initializes simple encoder.
     
     Args:
-      input_dim: Dimension of input features.
-      hidden_dim: Dimension of hidden and output features.
+      input_dim: Input feature dimension.
+      hidden_dim: Hidden layer dimension.
       dropout: Dropout probability.
     """
     super().__init__()
-    
-    self.projection_layer = nn.Linear(input_dim, hidden_dim)
-    self.output_layer = nn.Linear(hidden_dim, hidden_dim)
+    self.layer1 = nn.Linear(input_dim, hidden_dim)
+    self.layer2 = nn.Linear(hidden_dim, hidden_dim)
     self.layer_norm = nn.LayerNorm(hidden_dim)
     self.dropout = nn.Dropout(dropout)
-  
-  def forward(self, features, attention_mask=None):
-    """Transforms features through feedforward network.
+
+  def forward(self, features):
+    """Encodes features through feed-forward layers.
     
     Args:
-      features: Input features of shape [batch_size, sequence_length, input_dim].
-      attention_mask: Optional attention mask (not used in simple encoder).
-    
+      features: Input features of shape [batch_size, seq_len, input_dim].
+      
     Returns:
-      Transformed features of shape [batch_size, sequence_length, hidden_dim].
+      Encoded features of shape [batch_size, seq_len, hidden_dim].
     """
-    # First projection with ReLU activation
-    hidden = F.relu(self.projection_layer(features))
+    hidden = F.relu(self.layer1(features))
     hidden = self.dropout(hidden)
-    
-    # Second projection
-    output = self.output_layer(hidden)
-    
-    # Layer normalization for stable training
+    output = self.layer2(hidden)
     return self.layer_norm(output)
 
 
 class TransformerEncoder(nn.Module):
-  """Transformer-based encoder for contextual feature modeling.
+  """Transformer-based encoder for contextual feature enhancement.
   
-  Uses multi-head self-attention to model long-range dependencies in
-  audio features, enhancing the representations for downstream tasks.
-  
-  Attributes:
-    input_projection: Projects input features to hidden dimension.
-    transformer_encoder: PyTorch Transformer encoder layers.
-    layer_norm: Final layer normalization.
-    dropout: Dropout for regularization.
+  Uses multi-head self-attention to capture long-range dependencies.
   """
   
   def __init__(
@@ -123,54 +94,44 @@ class TransformerEncoder(nn.Module):
       num_heads: int = 8,
       dropout: float = 0.1
   ):
-    """Initializes the Transformer encoder.
+    """Initializes Transformer encoder.
     
     Args:
-      input_dim: Dimension of input features.
-      hidden_dim: Hidden dimension for Transformer layers.
-      num_layers: Number of Transformer encoder layers.
-      num_heads: Number of attention heads per layer.
+      input_dim: Input feature dimension.
+      hidden_dim: Hidden dimension for Transformer.
+      num_layers: Number of Transformer layers.
+      num_heads: Number of attention heads.
       dropout: Dropout probability.
     """
     super().__init__()
-    
-    # Project input to hidden dimension
     self.input_projection = nn.Linear(input_dim, hidden_dim)
-    
-    # Transformer encoder layers
+
     encoder_layer = nn.TransformerEncoderLayer(
         d_model=hidden_dim,
         nhead=num_heads,
         dim_feedforward=hidden_dim * 4,
         dropout=dropout,
         activation='relu',
-        batch_first=True  # Use batch-first format
+        batch_first=True
     )
-    
-    self.transformer_encoder = nn.TransformerEncoder(
-        encoder_layer,
+    self.transformer = nn.TransformerEncoder(
+        encoder_layer, 
         num_layers=num_layers
     )
-    
     self.layer_norm = nn.LayerNorm(hidden_dim)
     self.dropout = nn.Dropout(dropout)
-  
+
   def forward(self, features, attention_mask=None):
-    """Encodes features with Transformer self-attention.
+    """Encodes features through Transformer layers.
     
     Args:
-      features: Input features of shape [batch_size, sequence_length, input_dim].
-      attention_mask: Optional attention mask (not used in current implementation).
-    
+      features: Input features of shape [batch_size, seq_len, input_dim].
+      attention_mask: Optional attention mask of shape [batch_size, seq_len].
+      
     Returns:
-      Encoded features of shape [batch_size, sequence_length, hidden_dim].
+      Encoded features of shape [batch_size, seq_len, hidden_dim].
     """
-    # Project to hidden dimension
     projected = self.input_projection(features)
     projected = self.dropout(projected)
-    
-    # Apply Transformer layers
-    encoded = self.transformer_encoder(projected)
-    
-    # Final normalization
+    encoded = self.transformer(projected)
     return self.layer_norm(encoded)
