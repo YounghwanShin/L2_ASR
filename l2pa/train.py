@@ -101,19 +101,22 @@ def train_model(config, resume_checkpoint=None):
   # Create dataloaders
   train_dataloader = DataLoader(
       train_dataset, 
-      batch_size=config.batch_size, 
+      batch_size=config.batch_size,
+      num_workers=config.num_workers,
       shuffle=True,
       collate_fn=lambda batch: collate_batch(batch, config.training_mode)
   )
   val_dataloader = DataLoader(
       val_dataset, 
       batch_size=config.batch_size, 
+      num_workers=config.num_workers,
       shuffle=False,
       collate_fn=lambda batch: collate_batch(batch, config.training_mode)
   )
   test_dataloader = DataLoader(
       test_dataset, 
-      batch_size=config.eval_batch_size, 
+      batch_size=config.eval_batch_size,
+      num_workers=config.num_workers,
       shuffle=False,
       collate_fn=lambda batch: collate_batch(batch, config.training_mode)
   )
