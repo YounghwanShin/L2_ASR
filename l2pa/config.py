@@ -61,6 +61,7 @@ class Config:
   # Training hyperparameters
   batch_size: int = 16
   eval_batch_size: int = 16
+  num_workers: int = 4
   num_epochs: int = 100
   gradient_accumulation: int = 2
 
