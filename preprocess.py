@@ -11,11 +11,21 @@ from pathlib import Path
 
 from l2pa.preprocessing.generate_labels import add_error_labels_to_dataset
 from l2pa.preprocessing.preprocess_dataset import DatasetProcessor
-from l2pa.preprocessing.split_data import split_dataset_for_cv
+from l2pa.preprocessing.split_data import (
+    split_dataset_for_cv,
+    split_dataset_disjoint_text
+)
 
 
 def verify_phoneme_mapping_exists(data_dir: str) -> bool:
-    """Verifies that phoneme mapping file exists."""
+    """Verifies that phoneme mapping file exists.
+    
+    Args:
+        data_dir: Directory containing the phoneme mapping file.
+    
+    Returns:
+        True if mapping file exists, False otherwise.
+    """
     phoneme_map_path = Path(data_dir) / 'phoneme_to_id.json'
     if not phoneme_map_path.exists():
         print(f"Error: Phoneme mapping not found at {phoneme_map_path}")
@@ -31,7 +41,6 @@ def main():
     )
     subparsers = parser.add_subparsers(dest='command', help='Preprocessing command')
     
-    # Extract command
     extract_parser = subparsers.add_parser(
         'extract', help='Extract phoneme data from L2-ARCTIC'
     )
@@ -44,7 +53,6 @@ def main():
         help='Output JSON file path'
     )
     
-    # Generate labels command
     labels_parser = subparsers.add_parser(
         'labels', help='Generate error labels'
     )
@@ -57,7 +65,6 @@ def main():
         help='Output JSON file'
     )
     
-    # Split command
     split_parser = subparsers.add_parser(
         'split', help='Split dataset for cross-validation'
     )
@@ -75,7 +82,32 @@ def main():
         help='Speaker IDs for test set'
     )
     
-    # All command
+    disjoint_parser = subparsers.add_parser(
+        'split_disjoint', 
+        help='Split dataset with disjoint transcripts between test and train/val'
+    )
+    disjoint_parser.add_argument(
+        '--input', type=str, default='data/processed_with_error.json',
+        help='Input JSON file'
+    )
+    disjoint_parser.add_argument(
+        '--output_dir', type=str, default='data',
+        help='Output directory'
+    )
+    disjoint_parser.add_argument(
+        '--test_speakers', nargs='+',
+        default=['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK'],
+        help='Speaker IDs for test set'
+    )
+    disjoint_parser.add_argument(
+        '--val_speaker', type=str, default='MBMPS',
+        help='Speaker ID for validation set'
+    )
+    disjoint_parser.add_argument(
+        '--num_test_transcripts', type=int, default=100,
+        help='Number of unique transcripts for test set'
+    )
+    
     all_parser = subparsers.add_parser(
         'all', help='Run all preprocessing steps'
     )
@@ -91,6 +123,18 @@ def main():
         '--test_speakers', nargs='+',
         default=['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK'],
         help='Speaker IDs for test set'
+    )
+    all_parser.add_argument(
+        '--create_disjoint', action='store_true',
+        help='Also create disjoint text split'
+    )
+    all_parser.add_argument(
+        '--val_speaker', type=str, default='MBMPS',
+        help='Speaker ID for validation in disjoint split'
+    )
+    all_parser.add_argument(
+        '--num_test_transcripts', type=int, default=100,
+        help='Number of unique transcripts for test set in disjoint split'
     )
     
     args = parser.parse_args()
@@ -124,6 +168,23 @@ def main():
             args.test_speakers
         )
     
+    elif args.command == 'split_disjoint':
+        output_dir = Path(args.output_dir)
+        phoneme_map_path = output_dir / 'phoneme_to_id.json'
+        
+        if not verify_phoneme_mapping_exists(args.output_dir):
+            return
+        
+        print("Creating disjoint text split...")
+        split_dataset_disjoint_text(
+            args.input,
+            args.output_dir,
+            str(phoneme_map_path),
+            args.test_speakers,
+            args.val_speaker,
+            args.num_test_transcripts
+        )
+    
     elif args.command == 'all':
         print("Running all preprocessing steps...")
         output_dir = Path(args.output_dir)
@@ -131,18 +192,15 @@ def main():
         if not verify_phoneme_mapping_exists(args.output_dir):
             return
         
-        # Step 1: Extract
         print("\nStep 1: Extracting phoneme data...")
         preprocessed_path = output_dir / 'preprocessed.json'
         processor = DatasetProcessor(args.data_root, str(preprocessed_path))
         processor.process_all_files()
         
-        # Step 2: Generate labels
         print("\nStep 2: Generating error labels...")
         processed_path = output_dir / 'processed_with_error.json'
         add_error_labels_to_dataset(str(preprocessed_path), str(processed_path))
         
-        # Step 3: Create CV splits
         print("\nStep 3: Creating cross-validation splits...")
         phoneme_map_path = output_dir / 'phoneme_to_id.json'
         split_dataset_for_cv(
@@ -152,6 +210,16 @@ def main():
             args.test_speakers
         )
         
+        if args.create_disjoint:
+            split_dataset_disjoint_text(
+                str(processed_path),
+                args.output_dir,
+                str(phoneme_map_path),
+                args.test_speakers,
+                args.val_speaker,
+                args.num_test_transcripts
+            )
+        
         print("\n" + "="*80)
         print("Preprocessing complete")
         print("="*80)
@@ -159,6 +227,8 @@ def main():
         print("  1. Train all folds: python main.py train --training_mode multitask")
         print("  2. Train specific fold: python main.py train --cv_fold 0")
         print("  3. Evaluate: python main.py eval --checkpoint path/to/checkpoint.pth")
+        if args.create_disjoint:
+            print("  4. Train with disjoint split: Use data/disjoint_wrd_split/")
     
     else:
         parser.print_help()
