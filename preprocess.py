@@ -125,10 +125,6 @@ def main():
         help='Speaker IDs for test set'
     )
     all_parser.add_argument(
-        '--create_disjoint', action='store_true',
-        help='Also create disjoint text split'
-    )
-    all_parser.add_argument(
         '--val_speaker', type=str, default='MBMPS',
         help='Speaker ID for validation in disjoint split'
     )
@@ -210,25 +206,25 @@ def main():
             args.test_speakers
         )
         
-        if args.create_disjoint:
-            split_dataset_disjoint_text(
-                str(processed_path),
-                args.output_dir,
-                str(phoneme_map_path),
-                args.test_speakers,
-                args.val_speaker,
-                args.num_test_transcripts
-            )
+        print("\nStep 4: Creating disjoint text split...")
+        split_dataset_disjoint_text(
+            str(processed_path),
+            args.output_dir,
+            str(phoneme_map_path),
+            args.test_speakers,
+            args.val_speaker,
+            args.num_test_transcripts
+        )
         
         print("\n" + "="*80)
         print("Preprocessing complete")
         print("="*80)
+        print("\nGenerated splits:")
+        print("  1. Cross-validation: data/fold_0/, fold_1/, ..., test_labels.json")
+        print("  2. Disjoint text split: data/disjoint_wrd_split/")
         print("\nNext steps:")
-        print("  1. Train all folds: python main.py train --training_mode multitask")
-        print("  2. Train specific fold: python main.py train --cv_fold 0")
-        print("  3. Evaluate: python main.py eval --checkpoint path/to/checkpoint.pth")
-        if args.create_disjoint:
-            print("  4. Train with disjoint split: Use data/disjoint_wrd_split/")
+        print("  - Train with CV: python main.py train --training_mode multitask")
+        print("  - Train with disjoint split: Modify config.py to use disjoint_wrd_split/")
     
     else:
         parser.print_help()
