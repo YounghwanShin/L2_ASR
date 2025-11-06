@@ -1,96 +1,152 @@
-# L2 발음 평가 시스템
+# L2 발음 오류 탐지 시스템
 
-제2 언어 학습자의 발음 품질을 평가하는 최첨단 딥러닝 시스템으로, 멀티태스크 학습과 화자 기반 교차 검증을 특징으로 합니다.
+제2 언어(L2) 학습자의 발음 오류를 자동으로 탐지하고 분석하는 딥러닝 기반 시스템입니다. L2-ARCTIC 데이터셋을 사용하여 발음 오류(삭제, 삽입, 치환)를 검출합니다.
 
 ## 주요 기능
 
-- **멀티태스크 학습**: 정규 음소 인식, 인지된 음소 인식, 오류 탐지를 동시에 수행
-- **교차 검증**: 화자 기반 k-fold 교차 검증으로 강건한 평가
-- **유연한 아키텍처**: Simple 및 Transformer 인코더 지원
-- **포괄적인 메트릭**: 화자별 분석, 혼동 행렬, 상세한 오류 분석
+- **발음 오류 탐지**: 삭제(D), 삽입(I), 치환(S), 정답(C) 분류
+- **음소 인식**: 학습자가 실제로 발음한 음소 인식
+- **화자별 분석**: 화자 단위 상세 평가 제공
+- **교차 검증**: 화자 기반 k-fold 교차 검증 지원
 
 ## 설치
 
-```bash
-# 저장소 클론
-git clone https://github.com/yourusername/l2-pronunciation-assessment.git
-cd l2-pronunciation-assessment
+### 요구사항
+- Python 3.8 이상
+- CUDA GPU (권장)
+- 디스크 공간 20GB 이상
 
-# 가상 환경 생성
+### 설치 과정
+
+```bash
+# 1. 저장소 클론
+git clone https://github.com/YounghwanShin/L2_ASR.git
+cd L2_ASR
+
+# 2. 가상환경 생성 및 활성화
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# 의존성 설치
+# 3. 의존성 설치
 pip install -r requirements.txt
 
-# NLTK 데이터 설정
+# 4. NLTK 데이터 다운로드
 python setup_nltk.py
 ```
 
-## 빠른 시작
+## 사용 방법
 
-### 1. 데이터셋 다운로드
+### 1단계: 데이터셋 다운로드
 
 ```bash
 chmod +x download_dataset.sh
 ./download_dataset.sh
 ```
 
-### 2. 데이터 전처리
+생성되는 파일:
+- `data/l2arctic/` - L2-ARCTIC 데이터셋
+- `data/phoneme_to_id.json` - 음소 매핑 파일
 
-모든 전처리 단계(교차 검증 분할 생성 포함)를 실행:
+### 2단계: 데이터 전처리
 
+**전체 전처리 실행 (권장):**
 ```bash
 python preprocess.py all --data_root data/l2arctic --output_dir data
 ```
 
-생성되는 파일:
-- `test_labels.json`: 고정 테스트 세트 (화자: TLV, NJS, TNI, TXHC, ZHAA, YKWK)
-- `fold_X/train_labels.json`: X번 폴드의 훈련 세트
-- `fold_X/val_labels.json`: X번 폴드의 검증 세트 (화자 1명)
+이 명령어는 다음을 수행합니다:
+1. TextGrid 파일에서 음소 정렬 추출
+2. 오류 레이블(D, I, S, C) 생성
+3. 교차 검증용 폴드 생성
+4. 텍스트 분리 스플릿 생성
 
-### 3. 모델 훈련
+**생성되는 데이터 구조:**
+```
+data/
+├── fold_0/
+│   ├── train_labels.json
+│   └── val_labels.json
+├── fold_1/
+│   └── ...
+├── test_labels.json           # 고정 테스트 세트 (6명 화자)
+└── disjoint_wrd_split/        # 텍스트 분리 스플릿
+    ├── train_labels.json
+    ├── val_labels.json
+    └── test_labels.json
+```
 
-**모든 교차 검증 폴드 훈련:**
+**개별 전처리 단계 실행:**
+```bash
+# 음소 추출만
+python preprocess.py extract --data_root data/l2arctic --output data/preprocessed.json
 
+# 오류 레이블 생성만
+python preprocess.py labels --input data/preprocessed.json --output data/processed_with_error.json
+
+# 교차 검증 스플릿만
+python preprocess.py split --input data/processed_with_error.json --output_dir data
+
+# 텍스트 분리 스플릿만
+python preprocess.py split_disjoint --input data/processed_with_error.json --output_dir data
+```
+
+### 3단계: 모델 훈련
+
+**기본 훈련 (모든 교차 검증 폴드):**
 ```bash
 python main.py train --training_mode multitask --model_type transformer
 ```
 
 **특정 폴드만 훈련:**
-
 ```bash
 python main.py train --training_mode multitask --model_type transformer --cv_fold 0
 ```
 
 **교차 검증 없이 훈련:**
-
 ```bash
 python main.py train --training_mode multitask --model_type transformer --no_cv
 ```
 
-### 4. 모델 평가
+**텍스트 분리 스플릿으로 훈련:**
+
+`l2pa/config.py` 파일을 수정:
+```python
+# 교차 검증 비활성화
+use_cross_validation = False
+
+# 데이터 경로 수정
+train_data = 'data/disjoint_wrd_split/train_labels.json'
+val_data = 'data/disjoint_wrd_split/val_labels.json'
+test_data = 'data/disjoint_wrd_split/test_labels.json'
+```
+
+그 후 훈련:
+```bash
+python main.py train --training_mode multitask --model_type transformer
+```
+
+### 4단계: 모델 평가
 
 ```bash
-python main.py eval --checkpoint experiments/multitask_transformer_cv0_20251029_141426/checkpoints/latest.pth
+python main.py eval --checkpoint experiments/multitask_transformer_cv0_*/checkpoints/best_perceived.pth
 ```
 
 ## 훈련 모드
 
-### 1. Phoneme Only 모드
-인지된 음소 인식만 훈련:
+### 1. phoneme_only
+인지된 음소 인식만 수행:
 ```bash
 python main.py train --training_mode phoneme_only
 ```
 
-### 2. Phoneme-Error 모드
-인지된 음소 인식 + 오류 탐지 훈련:
+### 2. phoneme_error (오류 탐지 권장)
+인지된 음소 인식 + 오류 탐지:
 ```bash
 python main.py train --training_mode phoneme_error
 ```
 
-### 3. Multitask 모드 (권장)
-세 가지 작업 모두 훈련: 정규 음소, 인지된 음소, 오류 탐지:
+### 3. multitask
+정규 음소, 인지 음소, 오류 탐지 모두 수행:
 ```bash
 python main.py train --training_mode multitask
 ```
@@ -98,7 +154,7 @@ python main.py train --training_mode multitask
 ## 모델 아키텍처
 
 ### Simple Encoder
-피드포워드 아키텍처:
+피드포워드 구조:
 ```bash
 python main.py train --model_type simple
 ```
@@ -111,127 +167,195 @@ python main.py train --model_type transformer
 
 ## 설정
 
-`l2pa/config.py`의 주요 파라미터:
+`l2pa/config.py`에서 주요 파라미터 조정:
 
 ```python
 # 훈련 모드
-training_mode = 'multitask'  # 'phoneme_only', 'phoneme_error', 또는 'multitask'
+training_mode = 'multitask'  # 'phoneme_only', 'phoneme_error', 'multitask'
 
-# 모델 아키텍처
+# 모델 타입
 model_type = 'transformer'  # 'simple' 또는 'transformer'
 
-# 손실 가중치 (multitask 모드용)
-canonical_weight = 0.3
-perceived_weight = 0.3
-error_weight = 0.4
-
-# 훈련 하이퍼파라미터
+# 하이퍼파라미터
 batch_size = 16
 num_epochs = 100
-gradient_accumulation = 2
 main_lr = 3e-4
 wav2vec_lr = 1e-5
 
-# 교차 검증
-use_cross_validation = True
+# 손실 가중치 (multitask 모드)
+canonical_weight = 0.3
+perceived_weight = 0.3
+error_weight = 0.4
 ```
 
-## 교차 검증 상세
-
-시스템은 화자 기반 교차 검증을 구현합니다:
-
-1. **테스트 세트**: 고정 6명의 화자 (TLV, NJS, TNI, TXHC, ZHAA, YKWK)
-2. **훈련 화자**: 나머지 화자들을 폴드로 분할
-3. **검증**: 각 폴드는 1명의 훈련 화자를 검증용으로 사용
-4. **폴드 수**: 훈련 화자 수와 동일
-
-예시 (총 18명의 화자):
-- 테스트: 6명 (고정)
-- 훈련: 12명
-- 폴드: 12개 (각각 11명 훈련, 1명 검증)
-
-## 평가 메트릭
-
-### 정규 음소 인식
-- 음소 오류율 (PER)
-- 화자별 정확도
-
-### 인지된 음소 인식
-- 음소 오류율 (PER)
-- 발음 오류 탐지: Precision, Recall, F1
-- 혼동 행렬
-
-### 오류 탐지
-- 토큰 정확도
-- 클래스별 F1 점수 (Deletion, Insertion, Substitution, Correct)
-- Weighted F1 / Macro F1
-
-## 고급 사용법
-
-**커스텀 설정:**
+**커맨드라인에서 설정 오버라이드:**
 ```bash
 python main.py train \
     --training_mode multitask \
     --model_type transformer \
-    --config "batch_size=32,num_epochs=150,main_lr=5e-4" \
-    --experiment_name my_experiment
+    --config "batch_size=32,num_epochs=150,main_lr=5e-4"
 ```
 
-**훈련 재개:**
+## 데이터 스플릿 종류
+
+### 1. 교차 검증 스플릿 (기본)
+- 화자 기반 k-fold 교차 검증
+- 테스트: 고정 6명 화자
+- 폴드별로 1명씩 검증용으로 사용
+- 위치: `data/fold_0/`, `data/fold_1/`, ...
+
+### 2. 텍스트 분리 스플릿
+- 훈련/검증/테스트 세트 간 텍스트 중복 없음
+- 정규 음소 정보 누출 방지
+- 위치: `data/disjoint_wrd_split/`
+- 사용법: `config.py`에서 경로 수정 후 훈련
+
+## 평가 지표
+
+### 오류 탐지
+- Token Accuracy: 전체 토큰 정확도
+- Weighted F1 / Macro F1
+- 클래스별 성능: Deletion, Insertion, Substitution, Correct
+
+### 음소 인식
+- Phoneme Error Rate (PER)
+- 발음 오류 탐지: Precision, Recall, F1
+- 화자별 정확도
+
+### 출력 예시
+```json
+{
+  "error": {
+    "token_accuracy": 0.8542,
+    "weighted_f1": 0.8321,
+    "class_metrics": {
+      "deletion": {"f1": 0.7234},
+      "insertion": {"f1": 0.6891},
+      "substitution": {"f1": 0.7456},
+      "correct": {"f1": 0.9123}
+    }
+  }
+}
+```
+
+## 고급 사용법
+
+### 훈련 재개
 ```bash
 python main.py train --resume experiments/my_experiment/checkpoints/latest.pth
 ```
 
-**특정 폴드 평가:**
+### 실험 이름 지정
+```bash
+python main.py train \
+    --training_mode multitask \
+    --model_type transformer \
+    --experiment_name my_experiment
+```
+
+### 특정 체크포인트 평가
 ```bash
 python main.py eval \
-    --checkpoint experiments/multitask_transformer_cv0_*/checkpoints/best_perceived.pth
+    --checkpoint experiments/my_experiment/checkpoints/best_error.pth \
+    --training_mode multitask
 ```
 
 ## 프로젝트 구조
 
 ```
-l2-pronunciation-assessment/
+L2_ASR/
 ├── main.py                      # 메인 진입점
 ├── preprocess.py                # 전처리 진입점
 ├── requirements.txt             # 의존성
-├── README.md                    # 이 파일
+├── download_dataset.sh          # 데이터셋 다운로드
 ├── data/                        # 데이터 디렉토리
-│   ├── l2arctic/                # L2-ARCTIC 데이터셋
-│   ├── fold_X/                  # 교차 검증 폴드 데이터
-│   ├── test_labels.json         # 테스트 세트
-│   └── phoneme_to_id.json       # 음소 매핑
+│   ├── l2arctic/               # 원본 데이터
+│   ├── fold_X/                 # CV 폴드
+│   ├── disjoint_wrd_split/     # 텍스트 분리 스플릿
+│   └── test_labels.json        # 테스트 세트
 ├── experiments/                 # 실험 결과
-└── l2pa/                        # 메인 패키지
-    ├── config.py                # 설정
-    ├── train.py                 # 훈련 로직
-    ├── evaluate.py              # 평가 로직
-    ├── preprocessing/           # 전처리 모듈
-    ├── data/                    # 데이터 로딩
-    ├── models/                  # 모델 아키텍처
-    ├── training/                # 훈련 유틸리티
-    ├── evaluation/              # 평가 메트릭
-    └── utils/                   # 유틸리티 함수
+│   └── [실험명]/
+│       ├── checkpoints/        # 모델 체크포인트
+│       ├── logs/              # 훈련 로그
+│       └── results/           # 평가 결과
+└── l2pa/                       # 메인 패키지
+    ├── config.py              # 설정
+    ├── train.py               # 훈련 로직
+    ├── evaluate.py            # 평가 로직
+    ├── preprocessing/         # 전처리
+    ├── data/                  # 데이터 로딩
+    ├── models/                # 모델 구조
+    ├── training/              # 훈련 유틸
+    ├── evaluation/            # 평가 메트릭
+    └── utils/                 # 헬퍼 함수
+```
+
+## 출력 파일
+
+훈련 및 평가 후 생성되는 파일:
+
+### 체크포인트
+`experiments/[실험명]/checkpoints/`
+- `best_perceived.pth` - 최고 음소 인식 모델
+- `best_error.pth` - 최고 오류 탐지 모델
+- `best_canonical.pth` - 최고 정규 음소 모델
+- `latest.pth` - 최신 체크포인트
+
+### 로그
+`experiments/[실험명]/logs/training.log`
+
+### 평가 결과
+`evaluation_results/[실험명]_results.json`
+
+## 문제 해결
+
+### CUDA 메모리 부족
+```bash
+python main.py train --config "batch_size=8,gradient_accumulation=4"
+```
+
+### NLTK 데이터 누락
+```bash
+python setup_nltk.py
+```
+
+### 데이터셋 찾을 수 없음
+```bash
+./download_dataset.sh
+```
+
+### 전처리 오류
+```bash
+# 단계별로 실행
+python preprocess.py extract --data_root data/l2arctic
+python preprocess.py labels --input data/preprocessed.json
+python preprocess.py split --input data/processed_with_error.json
 ```
 
 ## 인용
 
+이 코드를 연구에 사용하는 경우:
+
 ```bibtex
 @misc{l2pronunciation2025,
-  title={L2 Pronunciation Assessment with Multitask Learning and Cross-Validation},
-  author={Research Team},
+  title={L2 Pronunciation Error Detection with Deep Learning},
+  author={Younghwan Shin},
   year={2025},
   publisher={GitHub},
-  url={https://github.com/yourusername/l2-pronunciation-assessment}
+  url={https://github.com/YounghwanShin/L2_ASR}
 }
 ```
 
 ## 라이선스
 
-MIT License - LICENSE 파일 참조
+MIT License
 
 ## 감사의 글
 
-- Hugging Face Transformers의 Wav2Vec2 모델
-- L2-ARCTIC 데이터셋 제작자
+- Hugging Face Transformers (Wav2Vec2)
+- L2-ARCTIC 데이터셋
 - CMU Pronouncing Dictionary
+
+---
+
+문의사항은 [GitHub Issues](https://github.com/YounghwanShin/L2_ASR/issues)에 등록해주세요.
