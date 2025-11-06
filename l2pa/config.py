@@ -48,6 +48,7 @@ class Config:
     use_cross_validation: Whether to use k-fold cross-validation.
     cv_fold: Current cross-validation fold index (0-indexed).
     num_cv_folds: Total number of cross-validation folds.
+    data_split_mode: Type of data split - 'cv', 'disjoint', or 'standard'.
     test_speakers: Speaker IDs reserved for test set.
     base_experiment_dir: Root directory for all experiments.
     experiment_name: Name of current experiment (auto-generated if None).
@@ -96,10 +97,11 @@ class Config:
   wav2vec2_specaug: bool = True
   seed: int = 42
 
-  # Cross-validation settings
+  # Cross-validation and data split settings
   use_cross_validation: bool = True
   cv_fold: int = 0
   num_cv_folds: Optional[int] = None
+  data_split_mode: str = 'cv'
   test_speakers: List[str] = field(
       default_factory=lambda: ['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK']
   )
@@ -169,7 +171,12 @@ class Config:
     
     Creates a unique experiment name with timestamp if not provided.
     Configures all necessary directories (checkpoints, logs, results)
-    and sets appropriate data split paths based on cross-validation mode.
+    and sets appropriate data split paths based on the selected mode.
+    
+    Three data split modes are supported:
+      - 'cv': Cross-validation with speaker-based folds
+      - 'disjoint': Disjoint text split (no transcript overlap)
+      - 'standard': Simple train/val/test split
     """
     if self.experiment_name is None:
       timestamp = datetime.now(
@@ -182,8 +189,10 @@ class Config:
             f"cv{self.cv_fold}_{timestamp}"
         )
       else:
+        split_suffix = f"_{self.data_split_mode}" if self.data_split_mode != 'standard' else ""
         self.experiment_name = (
-            f"{self.training_mode}_{self.model_type}_{timestamp}"
+            f"{self.training_mode}_{self.model_type}"
+            f"{split_suffix}_{timestamp}"
         )
     
     self.experiment_dir = os.path.join(
@@ -201,11 +210,17 @@ class Config:
       fold_dir = os.path.join(self.data_dir, f'fold_{self.cv_fold}')
       self.train_data = os.path.join(fold_dir, 'train_labels.json')
       self.val_data = os.path.join(fold_dir, 'val_labels.json')
+      self.test_data = os.path.join(self.data_dir, 'test_labels.json')
+    elif self.data_split_mode == 'disjoint':
+      split_dir = os.path.join(self.data_dir, 'disjoint_wrd_split')
+      self.train_data = os.path.join(split_dir, 'train_labels.json')
+      self.val_data = os.path.join(split_dir, 'val_labels.json')
+      self.test_data = os.path.join(split_dir, 'test_labels.json')
     else:
       self.train_data = os.path.join(self.data_dir, 'train_labels.json')
       self.val_data = os.path.join(self.data_dir, 'val_labels.json')
+      self.test_data = os.path.join(self.data_dir, 'test_labels.json')
     
-    self.test_data = os.path.join(self.data_dir, 'test_labels.json')
     self.phoneme_map = os.path.join(self.data_dir, 'phoneme_to_id.json')
 
   def get_model_config(self) -> Dict:
