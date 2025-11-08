@@ -75,6 +75,12 @@ def main():
         help='Disable cross-validation (use single train/val split)'
     )
     train_parser.add_argument(
+        '--data_split_mode', type=str,
+        choices=['cv', 'disjoint', 'standard'],
+        default='standard',
+        help='Data split mode: cv (cross-validation), disjoint (no transcript overlap), or standard (simple split)'
+    )
+    train_parser.add_argument(
         '--config', type=str,
         help='Config overrides (key=value format, comma-separated)'
     )
@@ -102,6 +108,12 @@ def main():
         '--model_type', type=str,
         help='Model type (auto-detected if not specified)'
     )
+    eval_parser.add_argument(
+        '--data_split_mode', type=str,
+        choices=['cv', 'disjoint', 'standard'],
+        default='standard',
+        help='Data split mode for test set selection'
+    )
     
     args = parser.parse_args()
     
@@ -121,6 +133,7 @@ def main():
             config.experiment_name = args.experiment_name
         if args.no_cv:
             config.use_cross_validation = False
+            config.data_split_mode = args.data_split_mode
         
         if args.resume:
             detected_type = detect_model_type_from_checkpoint(args.resume)
@@ -162,6 +175,8 @@ def main():
             config.model_type = detect_model_type_from_checkpoint(args.checkpoint)
             logging.info(f"Auto-detected model type: {config.model_type}")
         
+        config.use_cross_validation = False
+        config.data_split_mode = args.data_split_mode
         config.__post_init__()
         
         evaluate_model(args.checkpoint, config)
