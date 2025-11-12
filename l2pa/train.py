@@ -44,6 +44,14 @@ def train_model(config, resume_checkpoint=None):
   id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
   error_type_names = config.get_error_type_names()
 
+  # Log configuration
+  logger.info(f"Training mode: {config.training_mode}")
+  logger.info(f"Model type: {config.model_type}")
+  logger.info(f"Pretrained model: {config.pretrained_model}")
+  logger.info(f"Hidden dimension: {config.get_model_config()['hidden_dim']}")
+  if config.use_cross_validation:
+    logger.info(f"Cross-validation fold: {config.cv_fold}")
+
   # Initialize model
   model = UnifiedModel(
       pretrained_model_name=config.pretrained_model,
@@ -54,6 +62,7 @@ def train_model(config, resume_checkpoint=None):
 
   # Data parallel if multiple GPUs available
   if torch.cuda.device_count() > 1:
+    logger.info(f"Using {torch.cuda.device_count()} GPUs for training")
     model = nn.DataParallel(model)
 
   model = model.to(config.device)
@@ -139,7 +148,8 @@ def train_model(config, resume_checkpoint=None):
         model, 
         wav2vec_optimizer,
         main_optimizer, 
-        config.device
+        config.device,
+        config
     )
 
   # Training loop
@@ -214,26 +224,29 @@ def train_model(config, resume_checkpoint=None):
         )
         save_checkpoint(
             model, 
-            wav2vec_optimizer, 
+            wav2vec_optimizer,
             main_optimizer,
             epoch, 
             val_loss, 
             train_loss, 
             best_metrics, 
-            path
+            path,
+            config
         )
+        logger.info(f"Saved best {metric_name} checkpoint")
 
     # Save latest checkpoint
     latest_path = os.path.join(config.checkpoint_dir, 'latest.pth')
     save_checkpoint(
         model, 
-        wav2vec_optimizer, 
+        wav2vec_optimizer,
         main_optimizer,
         epoch, 
         val_loss, 
         train_loss, 
         best_metrics, 
-        latest_path
+        latest_path,
+        config
     )
 
     # Memory cleanup

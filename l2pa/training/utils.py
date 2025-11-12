@@ -86,9 +86,10 @@ def save_checkpoint(
     val_loss, 
     train_loss, 
     metrics, 
-    path
+    path,
+    config=None
 ):
-  """Saves model checkpoint.
+  """Saves model checkpoint with configuration.
   
   Args:
     model: Model to save.
@@ -99,6 +100,7 @@ def save_checkpoint(
     train_loss: Training loss.
     metrics: Dictionary of evaluation metrics.
     path: Output checkpoint path.
+    config: Configuration object to save with checkpoint.
   """
   checkpoint = {
       'epoch': epoch,
@@ -112,6 +114,18 @@ def save_checkpoint(
           pytz.timezone('Asia/Seoul')
       ).strftime('%Y-%m-%d %H:%M:%S')
   }
+  
+  # Save configuration information
+  if config is not None:
+    checkpoint['config'] = {
+        'pretrained_model': config.pretrained_model,
+        'training_mode': config.training_mode,
+        'model_type': config.model_type,
+        'hidden_dim': config.get_model_config()['hidden_dim'],
+        'num_phonemes': config.num_phonemes,
+        'num_error_types': config.num_error_types
+    }
+  
   os.makedirs(os.path.dirname(path), exist_ok=True)
   torch.save(checkpoint, path)
 
@@ -121,7 +135,8 @@ def load_checkpoint(
     model, 
     wav2vec_optimizer,
     main_optimizer, 
-    device
+    device,
+    config=None
 ):
   """Loads checkpoint and restores training state.
   
@@ -131,6 +146,7 @@ def load_checkpoint(
     wav2vec_optimizer: Wav2Vec2 optimizer.
     main_optimizer: Main optimizer.
     device: Device to load model to.
+    config: Configuration object for validation.
     
   Returns:
     Tuple of (start_epoch, best_metrics).
@@ -139,6 +155,23 @@ def load_checkpoint(
   logger.info(f"Loading checkpoint from {checkpoint_path}")
   
   checkpoint = torch.load(checkpoint_path, map_location=device)
+  
+  # Validate configuration if available
+  if 'config' in checkpoint and config is not None:
+    ckpt_config = checkpoint['config']
+    if ckpt_config.get('pretrained_model') != config.pretrained_model:
+      logger.warning(
+          f"Pretrained model mismatch: "
+          f"checkpoint={ckpt_config.get('pretrained_model')}, "
+          f"current={config.pretrained_model}"
+      )
+    if ckpt_config.get('training_mode') != config.training_mode:
+      logger.warning(
+          f"Training mode mismatch: "
+          f"checkpoint={ckpt_config.get('training_mode')}, "
+          f"current={config.training_mode}"
+      )
+  
   model.load_state_dict(checkpoint['model_state_dict'])
   wav2vec_optimizer.load_state_dict(
       checkpoint['wav2vec_optimizer_state_dict']
@@ -151,6 +184,8 @@ def load_checkpoint(
   best_metrics = checkpoint.get('metrics', {})
   
   logger.info(f"Resumed from epoch {checkpoint['epoch']}")
+  logger.info(f"Best metrics: {best_metrics}")
+  
   return start_epoch, best_metrics
 
 
@@ -164,9 +199,28 @@ def detect_model_type_from_checkpoint(checkpoint_path: str) -> str:
     Model type ('simple' or 'transformer').
   """
   checkpoint = torch.load(checkpoint_path, map_location='cpu')
-  state_dict = checkpoint.get('model_state_dict', checkpoint)
   
+  # Try to get from saved config first
+  if 'config' in checkpoint and 'model_type' in checkpoint['config']:
+    return checkpoint['config']['model_type']
+  
+  # Fallback to checking state dict keys
+  state_dict = checkpoint.get('model_state_dict', checkpoint)
   keys = list(state_dict.keys())
+  
   if any('feature_encoder.transformer' in key for key in keys):
     return 'transformer'
   return 'simple'
+
+
+def get_checkpoint_config(checkpoint_path: str) -> dict:
+  """Extracts configuration from checkpoint.
+  
+  Args:
+    checkpoint_path: Path to checkpoint file.
+    
+  Returns:
+    Dictionary containing configuration information.
+  """
+  checkpoint = torch.load(checkpoint_path, map_location='cpu')
+  return checkpoint.get('config', {})

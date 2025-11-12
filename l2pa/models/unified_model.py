@@ -1,7 +1,8 @@
 """Unified model architecture for pronunciation assessment.
 
 This module implements the main model combining Wav2Vec2 encoder,
-feature processing, and task-specific output heads.
+feature processing, and task-specific output heads with automatic
+architecture adaptation.
 """
 
 import torch.nn as nn
@@ -18,12 +19,15 @@ class UnifiedModel(nn.Module):
     1. Wav2Vec2 encoder: Extracts audio features
     2. Feature encoder: Enhances features (Simple or Transformer)
     3. Task-specific heads: Canonical, perceived, error detection
+  
+  The model automatically adapts its dimensions based on the pretrained
+  Wav2Vec2 model configuration.
   """
   
   def __init__(
       self,
       pretrained_model_name: str = "facebook/wav2vec2-large-xlsr-53",
-      hidden_dim: int = 512,
+      hidden_dim: int = 1024,
       num_phonemes: int = 42,
       num_error_types: int = 5,
       dropout: float = 0.1,
@@ -48,7 +52,7 @@ class UnifiedModel(nn.Module):
     # Wav2Vec2 audio encoder
     self.encoder = Wav2VecEncoder(pretrained_model_name)
 
-    # Get Wav2Vec2 output dimension
+    # Get Wav2Vec2 output dimension from configuration
     config = Wav2Vec2Config.from_pretrained(pretrained_model_name)
     wav2vec_dim = config.hidden_size
 
