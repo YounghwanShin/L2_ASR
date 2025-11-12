@@ -1,8 +1,8 @@
 """Configuration for pronunciation assessment model.
 
 This module defines all hyperparameters, model settings, and file paths
-for the L2 pronunciation assessment system with automatic model architecture
-adaptation based on pretrained model configuration.
+for the L2 pronunciation error detection system with automatic model 
+architecture adaptation based on pretrained model configuration.
 """
 
 import json
@@ -17,10 +17,10 @@ from transformers import Wav2Vec2Config
 
 @dataclass
 class Config:
-  """Configuration for model training and evaluation.
+  """Configuration for pronunciation error detection model training.
   
   This class contains all hyperparameters and settings needed for training
-  and evaluating pronunciation assessment models. It automatically adapts
+  and evaluating pronunciation error detection models. It automatically adapts
   to different Wav2Vec2 model architectures and handles path setup, loss
   weight normalization, and data split configuration.
   
@@ -28,7 +28,7 @@ class Config:
     pretrained_model: Hugging Face model identifier for Wav2Vec2.
     sampling_rate: Audio sampling rate in Hz.
     max_length: Maximum audio length in samples (longer clips are filtered).
-    num_phonemes: Total number of phoneme classes including blank.
+    num_phonemes: Total number of phoneme classes including blank token.
     num_error_types: Number of error types (blank, D, I, S, C).
     training_mode: One of 'phoneme_only', 'phoneme_error', or 'multitask'.
     model_type: Model architecture - 'simple' or 'transformer'.
@@ -47,10 +47,10 @@ class Config:
     save_best_metrics: Metrics to track for saving best checkpoints.
     wav2vec2_specaug: Whether to apply SpecAugment during training.
     seed: Random seed for reproducibility.
-    use_cross_validation: Whether to use k-fold cross-validation.
-    cv_fold: Current cross-validation fold index (0-indexed).
-    num_cv_folds: Total number of cross-validation folds.
-    data_split_mode: Type of data split - 'cv', 'disjoint', or 'standard'.
+    use_speaker_splits: Whether to use speaker-based data splits.
+    split_index: Current split index (0-indexed).
+    num_splits: Total number of splits.
+    data_split_mode: Type of data split - 'speaker', 'disjoint', or 'standard'.
     test_speakers: Speaker IDs reserved for test set.
     base_experiment_dir: Root directory for all experiments.
     experiment_name: Name of current experiment (auto-generated if None).
@@ -99,11 +99,11 @@ class Config:
   wav2vec2_specaug: bool = True
   seed: int = 42
 
-  # Cross-validation and data split settings
-  use_cross_validation: bool = True
-  cv_fold: int = 0
-  num_cv_folds: Optional[int] = None
-  data_split_mode: str = 'cv'
+  # Data split settings
+  use_speaker_splits: bool = True
+  split_index: int = 0
+  num_splits: Optional[int] = None
+  data_split_mode: str = 'speaker'
   test_speakers: List[str] = field(
       default_factory=lambda: ['TLV', 'NJS', 'TNI', 'TXHC', 'ZHAA', 'YKWK']
   )
@@ -226,7 +226,7 @@ class Config:
     and sets appropriate data split paths based on the selected mode.
     
     Three data split modes are supported:
-      - 'cv': Cross-validation with speaker-based folds
+      - 'speaker': Speaker-based splits for robust evaluation
       - 'disjoint': Disjoint text split (no transcript overlap)
       - 'standard': Simple train/val/test split
     """
@@ -241,12 +241,12 @@ class Config:
           self.model_type
       ]
       
-      # Add fold information for cross-validation
-      if self.use_cross_validation:
-        name_parts.append(f"fold{self.cv_fold}")
+      # Add split information
+      if self.use_speaker_splits:
+        name_parts.append(f"split{self.split_index}")
       
-      # Add data split mode if not standard CV
-      if not self.use_cross_validation and self.data_split_mode != 'standard':
+      # Add data split mode if not standard speaker-based
+      if not self.use_speaker_splits and self.data_split_mode != 'standard':
         name_parts.append(self.data_split_mode)
       
       # Add hyperparameter suffix
@@ -271,10 +271,10 @@ class Config:
     self.result_dir = os.path.join(self.experiment_dir, 'results')
     
     # Set data paths based on split mode
-    if self.use_cross_validation:
-      fold_dir = os.path.join(self.data_dir, f'fold_{self.cv_fold}')
-      self.train_data = os.path.join(fold_dir, 'train_labels.json')
-      self.val_data = os.path.join(fold_dir, 'val_labels.json')
+    if self.use_speaker_splits:
+      split_dir = os.path.join(self.data_dir, f'fold_{self.split_index}')
+      self.train_data = os.path.join(split_dir, 'train_labels.json')
+      self.val_data = os.path.join(split_dir, 'val_labels.json')
       self.test_data = os.path.join(self.data_dir, 'test_labels.json')
     elif self.data_split_mode == 'disjoint':
       split_dir = os.path.join(self.data_dir, 'disjoint_wrd_split')
