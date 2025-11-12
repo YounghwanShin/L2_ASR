@@ -1,7 +1,7 @@
 """Evaluation script for trained models.
 
 This module provides functionality to evaluate trained pronunciation
-assessment models on test datasets.
+assessment models on test datasets with automatic configuration loading.
 """
 
 import json
@@ -17,6 +17,7 @@ from .config import Config
 from .data.dataset import PronunciationDataset, collate_batch
 from .evaluation.evaluator import ModelEvaluator
 from .models.unified_model import UnifiedModel
+from .training.utils import get_checkpoint_config
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,20 @@ def evaluate_model(checkpoint_path, config):
     config: Configuration object.
   """
   device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+  
+  # Load checkpoint configuration if available
+  ckpt_config = get_checkpoint_config(checkpoint_path)
+  if ckpt_config:
+    logger.info("Loading configuration from checkpoint")
+    if 'pretrained_model' in ckpt_config:
+      config.pretrained_model = ckpt_config['pretrained_model']
+      logger.info(f"Using pretrained model: {config.pretrained_model}")
+    if 'training_mode' in ckpt_config:
+      config.training_mode = ckpt_config['training_mode']
+      logger.info(f"Using training mode: {config.training_mode}")
+  
   logger.info(f"Device: {device}, Mode: {config.training_mode}")
+  logger.info(f"Pretrained model: {config.pretrained_model}")
 
   # Load phoneme mapping
   with open(config.phoneme_map, 'r') as f:
@@ -37,19 +51,22 @@ def evaluate_model(checkpoint_path, config):
   id_to_phoneme = {str(v): k for k, v in phoneme_to_id.items()}
   error_type_names = config.get_error_type_names()
 
-  # Initialize model
+  # Initialize model with configuration
+  model_config = config.get_model_config()
+  logger.info(f"Model hidden dimension: {model_config['hidden_dim']}")
+  
   model = UnifiedModel(
       pretrained_model_name=config.pretrained_model,
       num_phonemes=config.num_phonemes,
       num_error_types=config.num_error_types,
-      **config.get_model_config()
+      **model_config
   )
 
   # Load checkpoint
   checkpoint = torch.load(checkpoint_path, map_location=device)
   state_dict = checkpoint.get('model_state_dict', checkpoint)
   
-  # Remove 'module.' prefix if present
+  # Remove 'module.' prefix if present (from DataParallel)
   if any(k.startswith('module.') for k in state_dict.keys()):
     state_dict = {
         k.replace('module.', ''): v 
@@ -84,6 +101,7 @@ def evaluate_model(checkpoint_path, config):
       'config': {
           'training_mode': config.training_mode,
           'model_type': config.model_type,
+          'pretrained_model': config.pretrained_model,
           'checkpoint_path': checkpoint_path,
           'date': datetime.now(
               pytz.timezone('Asia/Seoul')

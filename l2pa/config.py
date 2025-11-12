@@ -1,8 +1,8 @@
 """Configuration for pronunciation assessment model.
 
 This module defines all hyperparameters, model settings, and file paths
-for the L2 pronunciation assessment system. Supports both cross-validation
-and single-split training modes.
+for the L2 pronunciation assessment system with automatic model architecture
+adaptation based on pretrained model configuration.
 """
 
 import json
@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from pytz import timezone
+from transformers import Wav2Vec2Config
 
 
 @dataclass
@@ -19,8 +20,9 @@ class Config:
   """Configuration for model training and evaluation.
   
   This class contains all hyperparameters and settings needed for training
-  and evaluating pronunciation assessment models. It automatically handles
-  path setup, loss weight normalization, and cross-validation configuration.
+  and evaluating pronunciation assessment models. It automatically adapts
+  to different Wav2Vec2 model architectures and handles path setup, loss
+  weight normalization, and data split configuration.
   
   Attributes:
     pretrained_model: Hugging Face model identifier for Wav2Vec2.
@@ -115,11 +117,11 @@ class Config:
   # Model architecture configurations
   model_configs: Dict = field(default_factory=lambda: {
       'simple': {
-          'hidden_dim': 1024,
+          'hidden_dim': None,  # Will be set automatically
           'dropout': 0.1
       },
       'transformer': {
-          'hidden_dim': 1024,
+          'hidden_dim': None,  # Will be set automatically
           'num_layers': 2,
           'num_heads': 8,
           'dropout': 0.1
@@ -130,12 +132,37 @@ class Config:
     """Initializes configuration after dataclass initialization.
     
     Performs the following operations:
-      1. Normalizes loss weights based on training mode
-      2. Sets up experiment directory structure
-      3. Configures data file paths
+      1. Sets model hidden dimensions based on pretrained model
+      2. Normalizes loss weights based on training mode
+      3. Sets up experiment directory structure
+      4. Configures data file paths
     """
+    self._setup_model_dimensions()
     self._normalize_loss_weights()
     self._setup_experiment_paths()
+
+  def _setup_model_dimensions(self):
+    """Sets up model dimensions automatically based on pretrained model.
+    
+    Loads the pretrained Wav2Vec2 configuration and extracts the hidden
+    size to set appropriate dimensions for the feature encoder and output
+    heads. This ensures compatibility with different Wav2Vec2 variants
+    (base, large, etc.).
+    """
+    try:
+      wav2vec_config = Wav2Vec2Config.from_pretrained(self.pretrained_model)
+      hidden_dim = wav2vec_config.hidden_size
+      
+      # Update model configs with detected hidden dimension
+      for config_type in self.model_configs:
+        if self.model_configs[config_type]['hidden_dim'] is None:
+          self.model_configs[config_type]['hidden_dim'] = hidden_dim
+    except Exception as e:
+      print(f"Warning: Could not load Wav2Vec2 config: {e}")
+      print("Using default hidden_dim=1024")
+      for config_type in self.model_configs:
+        if self.model_configs[config_type]['hidden_dim'] is None:
+          self.model_configs[config_type]['hidden_dim'] = 1024
 
   def _normalize_loss_weights(self):
     """Normalizes loss weights to sum to 1.0 based on training mode.
@@ -166,6 +193,31 @@ class Config:
         self.perceived_weight /= total
         self.error_weight /= total
 
+  def _get_experiment_suffix(self) -> str:
+    """Generates experiment suffix based on key hyperparameters.
+    
+    Creates a descriptive suffix including important configuration settings
+    to differentiate experiments.
+    
+    Returns:
+      String suffix describing key hyperparameters.
+    """
+    suffix_parts = []
+    
+    # Add batch size if non-default
+    if self.batch_size != 16:
+      suffix_parts.append(f"bs{self.batch_size}")
+    
+    # Add learning rate if non-default
+    if self.main_lr != 3e-4:
+      suffix_parts.append(f"lr{self.main_lr:.0e}")
+    
+    # Add epochs if non-default
+    if self.num_epochs != 30:
+      suffix_parts.append(f"ep{self.num_epochs}")
+    
+    return "_".join(suffix_parts) if suffix_parts else ""
+
   def _setup_experiment_paths(self):
     """Sets up experiment directory structure and data file paths.
     
@@ -183,17 +235,29 @@ class Config:
           timezone('Asia/Seoul')
       ).strftime('%Y%m%d_%H%M%S')
       
+      # Base name components
+      name_parts = [
+          self.training_mode,
+          self.model_type
+      ]
+      
+      # Add fold information for cross-validation
       if self.use_cross_validation:
-        self.experiment_name = (
-            f"{self.training_mode}_{self.model_type}_"
-            f"cv{self.cv_fold}_{timestamp}"
-        )
-      else:
-        split_suffix = f"_{self.data_split_mode}" if self.data_split_mode != 'standard' else ""
-        self.experiment_name = (
-            f"{self.training_mode}_{self.model_type}"
-            f"{split_suffix}_{timestamp}"
-        )
+        name_parts.append(f"fold{self.cv_fold}")
+      
+      # Add data split mode if not standard CV
+      if not self.use_cross_validation and self.data_split_mode != 'standard':
+        name_parts.append(self.data_split_mode)
+      
+      # Add hyperparameter suffix
+      suffix = self._get_experiment_suffix()
+      if suffix:
+        name_parts.append(suffix)
+      
+      # Add timestamp
+      name_parts.append(timestamp)
+      
+      self.experiment_name = "_".join(name_parts)
     
     self.experiment_dir = os.path.join(
         self.base_experiment_dir, 
@@ -206,6 +270,7 @@ class Config:
     self.log_dir = os.path.join(self.experiment_dir, 'logs')
     self.result_dir = os.path.join(self.experiment_dir, 'results')
     
+    # Set data paths based on split mode
     if self.use_cross_validation:
       fold_dir = os.path.join(self.data_dir, f'fold_{self.cv_fold}')
       self.train_data = os.path.join(fold_dir, 'train_labels.json')
@@ -233,6 +298,14 @@ class Config:
     config = self.model_configs[self.model_type].copy()
     config['use_transformer'] = (self.model_type == 'transformer')
     return config
+
+  def get_wav2vec2_hidden_dim(self) -> int:
+    """Gets the hidden dimension of the pretrained Wav2Vec2 model.
+    
+    Returns:
+      Hidden dimension size of Wav2Vec2 model.
+    """
+    return self.model_configs[self.model_type]['hidden_dim']
 
   def has_canonical_task(self) -> bool:
     """Checks if current configuration includes canonical phoneme task.
