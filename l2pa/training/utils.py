@@ -47,15 +47,35 @@ def setup_experiment_directories(config, resume: bool = False):
   log_file = os.path.join(config.log_dir, 'training.log')
   file_mode = 'a' if resume else 'w'
 
-  logging.basicConfig(
-      level=logging.INFO,
-      format='%(asctime)s - %(levelname)s - %(message)s',
-      datefmt='%Y-%m-%d %H:%M:%S',
-      handlers=[
-          logging.FileHandler(log_file, mode=file_mode),
-          logging.StreamHandler()
-      ]
+  # Get root logger
+  root_logger = logging.getLogger()
+  
+  # Remove existing handlers to avoid duplicates
+  for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+  
+  # Set logging level
+  root_logger.setLevel(logging.INFO)
+  
+  # Create formatter
+  formatter = logging.Formatter(
+      '%(asctime)s - %(levelname)s - %(message)s',
+      datefmt='%Y-%m-%d %H:%M:%S'
   )
+  
+  # Add file handler
+  file_handler = logging.FileHandler(log_file, mode=file_mode, encoding='utf-8')
+  file_handler.setLevel(logging.INFO)
+  file_handler.setFormatter(formatter)
+  root_logger.addHandler(file_handler)
+  
+  # Add console handler
+  console_handler = logging.StreamHandler()
+  console_handler.setLevel(logging.INFO)
+  console_handler.setFormatter(formatter)
+  root_logger.addHandler(console_handler)
+  
+  logging.info(f"Logging initialized - Log file: {log_file}")
 
 
 def save_checkpoint(

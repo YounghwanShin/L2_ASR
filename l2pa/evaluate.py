@@ -72,6 +72,7 @@ def evaluate_model(checkpoint_path, config):
   test_dataloader = DataLoader(
       test_dataset, 
       batch_size=config.eval_batch_size, 
+      num_workers=config.num_workers,
       shuffle=False,
       collate_fn=lambda batch: collate_batch(batch, config.training_mode)
   )
