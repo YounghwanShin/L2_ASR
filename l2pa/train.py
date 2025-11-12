@@ -224,8 +224,8 @@ def train_model(config, resume_checkpoint=None):
         )
         save_checkpoint(
             model, 
-            wav2vec_opt, 
-            main_opt,
+            wav2vec_optimizer,
+            main_optimizer,
             epoch, 
             val_loss, 
             train_loss, 
@@ -239,7 +239,7 @@ def train_model(config, resume_checkpoint=None):
     latest_path = os.path.join(config.checkpoint_dir, 'latest.pth')
     save_checkpoint(
         model, 
-        wav2vec_optimizer, 
+        wav2vec_optimizer,
         main_optimizer,
         epoch, 
         val_loss, 
