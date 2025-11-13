@@ -1,8 +1,8 @@
 """Configuration for pronunciation assessment model.
 
-This module defines all hyperparameters, model settings, and file paths
-for the L2 pronunciation error detection system with automatic model 
-architecture adaptation based on pretrained model configuration.
+This module defines hyperparameters, model settings, and file paths for the
+L2 pronunciation error detection system with automatic model architecture
+adaptation based on pretrained model configuration.
 """
 
 import json
@@ -21,42 +21,41 @@ class Config:
   
   This class contains all hyperparameters and settings needed for training
   and evaluating pronunciation error detection models. It automatically adapts
-  to different Wav2Vec2 model architectures and handles path setup, loss
-  weight normalization, and data split configuration.
+  to different Wav2Vec2 model architectures and handles path setup.
   
   Attributes:
-    pretrained_model: Hugging Face model identifier for Wav2Vec2.
-    sampling_rate: Audio sampling rate in Hz.
-    max_length: Maximum audio length in samples (longer clips are filtered).
-    num_phonemes: Total number of phoneme classes including blank token.
-    num_error_types: Number of error types (blank, D, I, S, C).
-    training_mode: One of 'phoneme_only', 'phoneme_error', or 'multitask'.
-    model_type: Model architecture - 'simple' or 'transformer'.
-    batch_size: Batch size for training.
-    eval_batch_size: Batch size for evaluation.
-    num_workers: Number of data loader worker processes.
-    num_epochs: Total number of training epochs.
-    gradient_accumulation: Number of gradient accumulation steps.
-    main_lr: Learning rate for main model parameters.
-    wav2vec_lr: Learning rate for Wav2Vec2 parameters.
-    canonical_weight: Loss weight for canonical phoneme prediction.
-    perceived_weight: Loss weight for perceived phoneme prediction.
-    error_weight: Loss weight for error detection.
-    focal_alpha: Focal loss alpha parameter for class balancing.
-    focal_gamma: Focal loss gamma parameter for focusing on hard examples.
-    save_best_metrics: Metrics to track for saving best checkpoints.
-    wav2vec2_specaug: Whether to apply SpecAugment during training.
-    seed: Random seed for reproducibility.
-    use_speaker_splits: Whether to use speaker-based data splits.
-    split_index: Current split index (0-indexed).
-    num_splits: Total number of splits.
-    data_split_mode: Type of data split - 'speaker', 'disjoint', or 'standard'.
-    test_speakers: Speaker IDs reserved for test set.
-    base_experiment_dir: Root directory for all experiments.
-    experiment_name: Name of current experiment (auto-generated if None).
-    data_dir: Root directory containing dataset files.
-    device: Device for training ('cuda' or 'cpu').
-    model_configs: Architecture-specific hyperparameters.
+    pretrained_model: Hugging Face model identifier for Wav2Vec2
+    sampling_rate: Audio sampling rate in Hz
+    max_length: Maximum audio length in samples
+    num_phonemes: Total number of phoneme classes including blank token
+    num_error_types: Number of error types (blank, D, I, S, C)
+    training_mode: Training objective ('phoneme_only', 'phoneme_error', 'multitask')
+    model_type: Model architecture ('simple' or 'transformer')
+    batch_size: Training batch size
+    eval_batch_size: Evaluation batch size
+    num_workers: Number of data loader workers
+    num_epochs: Total training epochs
+    gradient_accumulation: Gradient accumulation steps
+    main_lr: Learning rate for main model
+    wav2vec_lr: Learning rate for Wav2Vec2
+    canonical_weight: Loss weight for canonical phoneme prediction
+    perceived_weight: Loss weight for perceived phoneme prediction
+    error_weight: Loss weight for error detection
+    focal_alpha: Focal loss alpha for class balancing
+    focal_gamma: Focal loss gamma for hard example focus
+    save_best_metrics: Metrics to track for best checkpoints
+    wav2vec2_specaug: Whether to apply SpecAugment
+    seed: Random seed for reproducibility
+    use_speaker_splits: Whether to use speaker-based data splits
+    split_index: Current split index (0-indexed)
+    num_splits: Total number of splits
+    data_split_mode: Data split type ('speaker', 'disjoint', 'standard')
+    test_speakers: Speaker IDs reserved for test set
+    base_experiment_dir: Root directory for experiments
+    experiment_name: Name of current experiment
+    data_dir: Root directory containing dataset
+    device: Training device ('cuda' or 'cpu')
+    model_configs: Architecture-specific hyperparameters
   """
   
   # Pretrained model configuration
@@ -117,11 +116,11 @@ class Config:
   # Model architecture configurations
   model_configs: Dict = field(default_factory=lambda: {
       'simple': {
-          'hidden_dim': None,  # Will be set automatically
+          'hidden_dim': None,  # Set automatically
           'dropout': 0.1
       },
       'transformer': {
-          'hidden_dim': None,  # Will be set automatically
+          'hidden_dim': None,  # Set automatically
           'num_layers': 2,
           'num_heads': 8,
           'dropout': 0.1
@@ -129,9 +128,9 @@ class Config:
   })
 
   def __post_init__(self):
-    """Initializes configuration after dataclass initialization.
+    """Initialize configuration after dataclass initialization.
     
-    Performs the following operations:
+    This method:
       1. Sets model hidden dimensions based on pretrained model
       2. Normalizes loss weights based on training mode
       3. Sets up experiment directory structure
@@ -142,12 +141,10 @@ class Config:
     self._setup_experiment_paths()
 
   def _setup_model_dimensions(self):
-    """Sets up model dimensions automatically based on pretrained model.
+    """Set up model dimensions automatically based on pretrained model.
     
     Loads the pretrained Wav2Vec2 configuration and extracts the hidden
-    size to set appropriate dimensions for the feature encoder and output
-    heads. This ensures compatibility with different Wav2Vec2 variants
-    (base, large, etc.).
+    size to set appropriate dimensions for the model architecture.
     """
     try:
       wav2vec_config = Wav2Vec2Config.from_pretrained(self.pretrained_model)
@@ -165,14 +162,14 @@ class Config:
           self.model_configs[config_type]['hidden_dim'] = 1024
 
   def _normalize_loss_weights(self):
-    """Normalizes loss weights to sum to 1.0 based on training mode.
+    """Normalize loss weights to sum to 1.0 based on training mode.
     
     Different training modes use different combinations of losses:
       - phoneme_only: Only perceived phoneme (weight=1.0)
       - phoneme_error: Perceived phoneme + error detection
       - multitask: All three tasks (canonical, perceived, error)
     
-    Weights are automatically normalized to sum to 1.0 for the active tasks.
+    Weights are automatically normalized to sum to 1.0 for active tasks.
     """
     if self.training_mode == 'phoneme_only':
       self.canonical_weight = 0.0
@@ -194,10 +191,7 @@ class Config:
         self.error_weight /= total
 
   def _get_experiment_suffix(self) -> str:
-    """Generates experiment suffix based on key hyperparameters.
-    
-    Creates a descriptive suffix including important configuration settings
-    to differentiate experiments.
+    """Generate experiment suffix based on key hyperparameters.
     
     Returns:
       String suffix describing key hyperparameters.
@@ -219,7 +213,7 @@ class Config:
     return "_".join(suffix_parts) if suffix_parts else ""
 
   def _setup_experiment_paths(self):
-    """Sets up experiment directory structure and data file paths.
+    """Set up experiment directory structure and data file paths.
     
     Creates a unique experiment name with timestamp if not provided.
     Configures all necessary directories (checkpoints, logs, results)
@@ -259,6 +253,7 @@ class Config:
       
       self.experiment_name = "_".join(name_parts)
     
+    # Set up directory paths
     self.experiment_dir = os.path.join(
         self.base_experiment_dir, 
         self.experiment_name
@@ -289,7 +284,7 @@ class Config:
     self.phoneme_map = os.path.join(self.data_dir, 'phoneme_to_id.json')
 
   def get_model_config(self) -> Dict:
-    """Returns architecture-specific configuration for model initialization.
+    """Get architecture-specific configuration for model initialization.
     
     Returns:
       Dictionary containing model hyperparameters including hidden_dim,
@@ -300,7 +295,7 @@ class Config:
     return config
 
   def get_wav2vec2_hidden_dim(self) -> int:
-    """Gets the hidden dimension of the pretrained Wav2Vec2 model.
+    """Get the hidden dimension of the pretrained Wav2Vec2 model.
     
     Returns:
       Hidden dimension size of Wav2Vec2 model.
@@ -308,7 +303,7 @@ class Config:
     return self.model_configs[self.model_type]['hidden_dim']
 
   def has_canonical_task(self) -> bool:
-    """Checks if current configuration includes canonical phoneme task.
+    """Check if current configuration includes canonical phoneme task.
     
     Returns:
       True if canonical phoneme prediction is enabled.
@@ -316,7 +311,7 @@ class Config:
     return self.training_mode == 'multitask'
 
   def has_perceived_task(self) -> bool:
-    """Checks if current configuration includes perceived phoneme task.
+    """Check if current configuration includes perceived phoneme task.
     
     Returns:
       True if perceived phoneme prediction is enabled.
@@ -328,7 +323,7 @@ class Config:
     ]
 
   def has_error_task(self) -> bool:
-    """Checks if current configuration includes error detection task.
+    """Check if current configuration includes error detection task.
     
     Returns:
       True if error detection is enabled.
@@ -336,7 +331,7 @@ class Config:
     return self.training_mode in ['phoneme_error', 'multitask']
 
   def save_config(self, path: str):
-    """Saves configuration to JSON file.
+    """Save configuration to JSON file.
     
     Args:
       path: Output file path for saving configuration.
@@ -352,7 +347,7 @@ class Config:
 
   @staticmethod
   def get_error_type_names() -> Dict[int, str]:
-    """Returns mapping from error type ID to human-readable name.
+    """Get mapping from error type ID to human-readable name.
     
     Returns:
       Dictionary mapping error type IDs to their names:
