@@ -1,4 +1,4 @@
-"""Training script with cross-validation support.
+"""Training script with speaker-based split support.
 
 This module implements the main training logic including dataset loading,
 model initialization, and training loop execution.
@@ -32,9 +32,10 @@ def train_model(config, resume_checkpoint=None):
   """Main training function with full training loop.
   
   Args:
-    config: Configuration object containing hyperparameters.
-    resume_checkpoint: Path to checkpoint file for resuming training.
+    config: Configuration object containing hyperparameters
+    resume_checkpoint: Path to checkpoint file for resuming training
   """
+  # Set random seed for reproducibility
   set_random_seed(config.seed)
   setup_experiment_directories(config, resume=bool(resume_checkpoint))
 
@@ -49,8 +50,8 @@ def train_model(config, resume_checkpoint=None):
   logger.info(f"Model type: {config.model_type}")
   logger.info(f"Pretrained model: {config.pretrained_model}")
   logger.info(f"Hidden dimension: {config.get_model_config()['hidden_dim']}")
-  if config.use_cross_validation:
-    logger.info(f"Cross-validation fold: {config.cv_fold}")
+  if config.use_speaker_splits:
+    logger.info(f"Speaker-based split: {config.split_index}")
 
   # Initialize model
   model = UnifiedModel(
@@ -67,7 +68,7 @@ def train_model(config, resume_checkpoint=None):
 
   model = model.to(config.device)
 
-  # Initialize loss
+  # Initialize loss function
   criterion = UnifiedLoss(
       training_mode=config.training_mode,
       canonical_weight=config.canonical_weight,
@@ -258,8 +259,8 @@ def train_model(config, resume_checkpoint=None):
       **best_metrics, 
       'completed_epochs': config.num_epochs
   }
-  if config.use_cross_validation:
-    final_metrics['cv_fold'] = config.cv_fold
+  if config.use_speaker_splits:
+    final_metrics['split_index'] = config.split_index
   
   metrics_path = os.path.join(config.result_dir, 'final_metrics.json')
   with open(metrics_path, 'w') as f:

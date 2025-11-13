@@ -78,17 +78,17 @@ python preprocess.py all --data_root data/l2arctic --output_dir data
 
 **모든 폴드 교차 검증 훈련**:
 ```bash
-python main.py train --training_mode multitask --model_type transformer
+python main.py train --training_mode multitask --model_type simple
 ```
 
 **특정 폴드만 훈련**:
 ```bash
-python main.py train --training_mode multitask --model_type transformer --cv_fold 0
+python main.py train --training_mode multitask --model_type transformer --split_index 0
 ```
 
 **텍스트 분리 스플릿으로 훈련**:
 ```bash
-python main.py train --training_mode multitask --model_type transformer --no_cv --data_split_mode disjoint
+python main.py train --training_mode multitask --model_type transformer --no_speaker_splits --data_split_mode disjoint
 ```
 
 ### 4단계: 모델 평가
@@ -153,7 +153,7 @@ python main.py train --pretrained_model facebook/wav2vec2-base
 python main.py train --training_mode multitask
 
 # 특정 폴드만
-python main.py train --training_mode multitask --cv_fold 2
+python main.py train --training_mode multitask --split_index 2
 ```
 
 **장점**: 모든 데이터 활용, 로버스트한 평가
@@ -161,7 +161,7 @@ python main.py train --training_mode multitask --cv_fold 2
 #### 텍스트 분리 스플릿
 훈련/검증/테스트 세트 간 텍스트 중복이 없습니다.
 ```bash
-python main.py train --training_mode multitask --no_cv --data_split_mode disjoint
+python main.py train --training_mode multitask --no_speaker_splits --data_split_mode disjoint
 ```
 
 **장점**: 정규 음소 정보 누출 방지, 일반화 능력 평가
@@ -169,7 +169,7 @@ python main.py train --training_mode multitask --no_cv --data_split_mode disjoin
 #### 표준 스플릿
 단순한 훈련/검증/테스트 분할입니다.
 ```bash
-python main.py train --training_mode multitask --no_cv --data_split_mode standard
+python main.py train --training_mode multitask --no_speaker_splits --data_split_mode standard
 ```
 
 **장점**: 간단한 설정, 빠른 실험
@@ -496,5 +496,3 @@ MIT License - 자유롭게 사용, 수정, 배포할 수 있습니다.
 - **Discussion**: [GitHub Discussions](https://github.com/YounghwanShin/L2_ASR/discussions)
 
 ---
-
-**마지막 업데이트**: 2025년 5월
